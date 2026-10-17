@@ -1,4 +1,5 @@
 // Cursor 映射的手机端数据：连 /api/cursor/stream，拿连接状态、项目 / 会话列表、当前会话的消息（快照 + 增量）
+import { t, tr } from '$lib/i18n'
 export type CSession = { id: string; title: string; age: string; status: string; active: boolean; unread?: boolean; waiting?: boolean; choices?: string[] }
 export type CProject = { id: string; label: string; uri: string; sessions: CSession[] }
 export type CMsg =
@@ -118,12 +119,12 @@ export function startDraft(project: string) {
   if (wanted) connectCursor()
 }
 
-export async function cursorCmd(t: string, body: Record<string, unknown> = {}) {
-  cur.busy = t
+export async function cursorCmd(cmd: string, body: Record<string, unknown> = {}) {
+  cur.busy = cmd
   try {
-    const r = await fetch('api/cursor/cmd', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ t, ...body }) })
+    const r = await fetch('api/cursor/cmd', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ t: cmd, ...body }) })
     const d = await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }))
-    if (!d.ok) throw new Error(d.error || '失败')
+    if (!d.ok) throw new Error(d.error ? tr(d.error) : t('失败')) // 电脑那边的错误文案在这里翻好，调用方直接显示
     return d
   } finally { cur.busy = '' }
 }

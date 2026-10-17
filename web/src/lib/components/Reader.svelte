@@ -9,6 +9,7 @@
   import { stripAnsi } from '$lib/prompts'
   import * as session from '$lib/session.svelte'
   import { openInPreview } from '$lib/preview/request.svelte'
+  import { t } from '$lib/i18n'
 
   let { open = $bindable(false), onpreview }: { open?: boolean; onpreview: () => void } = $props()
   let text = $state('')
@@ -51,8 +52,8 @@
     body?.querySelector(`[data-mark="${hit}"]`)?.scrollIntoView({ block: 'center' })
   })
 
-  async function copy(s: string, what: string) {
-    try { await navigator.clipboard.writeText(s); toast(`已复制${what}`) } catch { toast.error('复制失败（需要 HTTPS）') }
+  async function copy(s: string, done: string) {
+    try { await navigator.clipboard.writeText(s); toast(done) } catch { toast.error(t('复制失败（需要 HTTPS）')) }
   }
   function preview(u: string) {
     open = false
@@ -67,25 +68,25 @@
     <div class="flex items-center gap-1.5 border-b bg-card px-2 py-1.5">
       <input
         bind:value={query}
-        placeholder="搜索"
+        placeholder={t('搜索')}
         autocapitalize="off"
         spellcheck="false"
         class="h-9 min-w-0 flex-1 rounded-lg border bg-background px-2.5 outline-none focus:ring-2 focus:ring-ring"
       />
       {#if query}
         <span class="flex-none text-xs text-muted-foreground tabular-nums">{total ? hit + 1 : 0}/{total}</span>
-        <button class="grid size-9 place-items-center rounded-lg active:bg-accent" aria-label="上一个" onclick={() => (hit = (hit - 1 + total) % Math.max(1, total))}><ChevronUp class="size-4" /></button>
-        <button class="grid size-9 place-items-center rounded-lg active:bg-accent" aria-label="下一个" onclick={() => (hit = (hit + 1) % Math.max(1, total))}><ChevronDown class="size-4" /></button>
+        <button class="grid size-9 place-items-center rounded-lg active:bg-accent" aria-label={t('上一个')} onclick={() => (hit = (hit - 1 + total) % Math.max(1, total))}><ChevronUp class="size-4" /></button>
+        <button class="grid size-9 place-items-center rounded-lg active:bg-accent" aria-label={t('下一个')} onclick={() => (hit = (hit + 1) % Math.max(1, total))}><ChevronDown class="size-4" /></button>
       {/if}
-      <button class="grid size-9 place-items-center rounded-lg active:bg-accent" aria-label="复制" onclick={() => { const s = sel(); copy(s || text, s ? '选中的文字' : '全部内容') }}><Copy class="size-4" /></button>
-      <button class="grid size-9 place-items-center rounded-lg active:bg-accent" aria-label="关闭" onclick={() => (open = false)}><X class="size-4" /></button>
+      <button class="grid size-9 place-items-center rounded-lg active:bg-accent" aria-label={t('复制')} onclick={() => { const s = sel(); copy(s || text, s ? t('已复制选中的文字') : t('已复制全部内容')) }}><Copy class="size-4" /></button>
+      <button class="grid size-9 place-items-center rounded-lg active:bg-accent" aria-label={t('关闭')} onclick={() => (open = false)}><X class="size-4" /></button>
     </div>
     {#if links.length}
       <div class="no-scrollbar flex gap-1.5 overflow-x-auto border-b bg-card px-2 py-1.5">
         {#each links as u (u)}
           <span class="flex flex-none items-center overflow-hidden rounded-full border text-xs">
             <button class="flex max-w-[60vw] items-center gap-1 truncate py-1 pr-1.5 pl-2.5 active:bg-accent" onclick={() => preview(u)}><Globe class="size-3 flex-none" /><span class="truncate font-mono">{u}</span></button>
-            <button class="border-l px-2 py-1 text-muted-foreground active:bg-accent" aria-label="复制链接" onclick={() => copy(u, '链接')}><Copy class="size-3" /></button>
+            <button class="border-l px-2 py-1 text-muted-foreground active:bg-accent" aria-label={t('复制链接')} onclick={() => copy(u, t('已复制链接'))}><Copy class="size-3" /></button>
           </span>
         {/each}
       </div>

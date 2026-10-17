@@ -1,4 +1,5 @@
 // 和 server.mjs 的接口一一对应
+import { t, tr } from './i18n'
 export type Pane = {
   pane: number
   tab: number
@@ -69,10 +70,10 @@ async function pump() {
       body: JSON.stringify({ pane: Number(pane), data }),
       signal: ctl.signal,
     })
-    if (!r.ok) onError((await r.json().catch(() => ({}))).error || `发送失败 ${r.status}`)
+    if (!r.ok) { const err = (await r.json().catch(() => ({}))).error; onError(err ? tr(err) : t('发送失败 {status}', { status: r.status })) }
   } catch (e) {
     if (dropped.has(ctl)) return
-    onError(ctl.signal.aborted ? '发送超时，这一下可能没发出去，看一眼再决定要不要重发' : (e as Error).message)
+    onError(ctl.signal.aborted ? t('发送超时，这一下可能没发出去，看一眼再决定要不要重发') : tr((e as Error).message))
     report('send-fail', `${ctl.signal.aborted ? 'timeout' : (e as Error).message} len=${data.length}`)
   } finally {
     clearTimeout(timer)

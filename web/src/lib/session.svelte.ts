@@ -2,6 +2,7 @@
 // 不走 Svelte 的深度响应式。
 import { fetchPanes, label, report, resetSendQueue, type Pane } from './api'
 import { prefs } from './prefs.svelte'
+import { t, tr } from './i18n'
 
 const SHELLS = new Set(['zsh', 'bash', 'sh', 'fish', 'dash', 'ksh', 'tcsh', 'nu', 'login', '-zsh', '-bash'])
 
@@ -69,7 +70,7 @@ export const currentPane = () => ui.panes.find((p) => String(p.pane) === ui.curr
 export const paneName = () => {
   const p = currentPane()
   if (ui.title) return `#${ui.current} ${ui.title}`
-  return p ? `#${p.pane} ${label(p)}` : ui.current ? `#${ui.current}` : '选择 pane'
+  return p ? `#${p.pane} ${label(p)}` : ui.current ? `#${ui.current}` : t('选择 pane')
 }
 
 export let lines: string[] = []
@@ -133,7 +134,7 @@ function connect() {
   es?.close()
   clearTimeout(retryTimer)
   if (!ui.current) return
-  if (!ui.hasFrame) setStatus('idle', '连接中…')
+  if (!ui.hasFrame) setStatus('idle', t('连接中…'))
   const since = ui.hasFrame && seq ? `&since=${seq}` : ''
   const src = new EventSource(`api/stream?pane=${encodeURIComponent(ui.current)}${since}`)
   es = src
@@ -145,7 +146,7 @@ function connect() {
     if (id) seq = id
   }
   src.addEventListener('ping', alive)
-  src.addEventListener('resume', (e) => { alive(e); setStatus('live', '已连接') })
+  src.addEventListener('resume', (e) => { alive(e); setStatus('live', t('已连接')) })
   src.addEventListener('size', (e) => {
     alive(e)
     const d = JSON.parse((e as MessageEvent).data)
@@ -157,7 +158,7 @@ function connect() {
   })
   src.addEventListener('full', (e) => {
     alive(e)
-    setStatus('live', '已连接')
+    setStatus('live', t('已连接'))
     lines = JSON.parse((e as MessageEvent).data).lines
     ui.hasFrame = true
     updateAlt()
@@ -165,7 +166,7 @@ function connect() {
   })
   src.addEventListener('delta', (e) => {
     alive(e)
-    if (ui.status !== 'live') setStatus('live', '已连接')
+    if (ui.status !== 'live') setStatus('live', t('已连接'))
     const d = JSON.parse((e as MessageEvent).data)
     const grew = d.total !== lines.length
     lines.length = d.total
@@ -173,9 +174,9 @@ function connect() {
     if (grew) { updateAlt(); emit(null) } else emit(Object.keys(d.set).map(Number))
   })
   src.addEventListener('openurl', (e) => openHandler(JSON.parse((e as MessageEvent).data).url))
-  src.addEventListener('fail', (e) => setStatus('err', JSON.parse((e as MessageEvent).data).message))
+  src.addEventListener('fail', (e) => setStatus('err', tr(JSON.parse((e as MessageEvent).data).message)))
   src.onerror = () => {
-    setStatus('err', '连接断开，自动重连中')
+    setStatus('err', t('连接断开，自动重连中'))
     // 浏览器自己会按 retry 重连；只有彻底关掉（比如服务端返回错误码）时才手动重连，退避 + 随机抖动
     if (src.readyState === EventSource.CLOSED && es === src) {
       const wait = Math.min(16000, 1000 * 2 ** retries++) * (0.7 + Math.random() * 0.6)
@@ -189,7 +190,7 @@ export async function reconnectPane() {
   const pane = ui.current
   if (!pane) return { dropped: 0, mac: '' }
   const dropped = resetSendQueue()
-  setStatus('idle', '重连中…')
+  setStatus('idle', t('重连中…'))
   es?.close(); es = null
   clearTimeout(retryTimer); retries = 0
   frames.delete(pane)
@@ -223,7 +224,7 @@ export function setPaused(v: boolean) {
 // 假死检测：服务端每 15 秒发 ping，40 秒什么都没收到就当连接已经断了（iOS 切网络时常见），主动重连
 setInterval(() => {
   if (!paused && document.visibilityState === 'visible' && ui.current && es && Date.now() - lastMsgAt > 40000) {
-    setStatus('err', '连接没有响应，重连中')
+    setStatus('err', t('连接没有响应，重连中'))
     connect()
   }
 }, 10000)
@@ -242,11 +243,11 @@ export async function boot() {
   const want = urlPane && /^\d+$/.test(urlPane) ? urlPane : prefs.pane
   try {
     const list = await loadPanes()
-    if (!list.length) { setStatus('err', '没有 pane'); return }
+    if (!list.length) { setStatus('err', t('没有 pane')); return }
     const keep = list.find((p) => String(p.pane) === String(want))
     select((keep || list.find((p) => p.active) || list[0]).pane)
   } catch (e) {
-    setStatus('err', `读取失败：${(e as Error).message}`)
+    setStatus('err', t('读取失败：{msg}', { msg: tr((e as Error).message) }))
     report('boot-panes', (e as Error).message)
   }
 }

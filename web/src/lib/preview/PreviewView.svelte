@@ -24,6 +24,7 @@
   import { Button } from '$lib/components/ui/button'
   import { cn } from '$lib/utils'
   import { previewRequest, previewUi } from './request.svelte'
+  import { t, tr, lang } from '$lib/i18n'
 
   type Tab = { id: string; url: string; title: string }
   let nav = $state({ url: '', title: '', loading: false })
@@ -82,7 +83,7 @@
     resetZoom()
     if (matchMedia('(orientation: landscape)').matches) setImmersive(v) // 已经横着拿：直接进 / 出全屏（会触发尺寸变化，自动重发 viewport）
     sendViewport()
-    toast(v ? '电脑模式：桌面版 Chrome 的 UA，按 1280 宽渲染，已重新加载' : '手机模式：iPhone Safari 的 UA，已重新加载', { description: v ? '双指缩放看细节，长按 = 鼠标悬停；横过手机自动全屏' : undefined })
+    toast(v ? t('电脑模式：桌面版 Chrome 的 UA，按 1280 宽渲染，已重新加载') : t('手机模式：iPhone Safari 的 UA，已重新加载'), { description: v ? t('双指缩放看细节，长按 = 鼠标悬停；横过手机自动全屏') : undefined })
   }
   function setSource(v: 'chrome' | 'cursor') {
     if (v === source) return
@@ -93,7 +94,7 @@
     tabs = { list: [], current: null }
     resetZoom()
     connect()
-    toast(v === 'cursor' ? '预览切到 Cursor 的内置浏览器' : '预览切到电脑上的 Chrome')
+    toast(v === 'cursor' ? t('预览切到 Cursor 的内置浏览器') : t('预览切到电脑上的 Chrome'))
   }
   function setImmersive(v: boolean) {
     previewUi.immersive = v
@@ -159,8 +160,8 @@
     stageSize = { ...view }
     pan = clampPan(pan)
     if (view.w < 50 || view.h < 50) return
-    // 像素密度最多 2：3 倍图的流量多一倍多，手机上看差别不大
-    send({ t: 'viewport', w: view.w, h: view.h, dpr: Math.min(2, devicePixelRatio || 2), desktop: desktop || source === 'cursor' })
+    // 像素密度最多 2：3 倍图的流量多一倍多，手机上看差别不大。lang：电脑那边生成的文件浏览器页面跟着手机的界面语言
+    send({ t: 'viewport', w: view.w, h: view.h, dpr: Math.min(2, devicePixelRatio || 2), desktop: desktop || source === 'cursor', lang })
   }
 
   let retry = 0
@@ -201,15 +202,15 @@
       if (m.t === 'frame') meta = m
       else if (m.t === 'nav') { nav = m; if (!editing) address = m.url === 'about:blank' ? '' : m.url }
       else if (m.t === 'tabs') tabs = m
-      else if (m.t === 'error') { if (source === 'cursor' && /没打开网页|关掉了|没有接入/.test(m.msg)) note = m.msg; else toast.error(m.msg) }
-      else if (m.t === 'notice') { note = ''; toast(m.msg) }
-      else if (m.t === 'opened') toast('电脑上要打开的网页，已在这里打开', { description: m.url })
-      else if (m.t === 'closed') { status = 'closed'; if (m.msg) toast.error(m.msg) }
+      else if (m.t === 'error') { if (source === 'cursor' && /没打开网页|关掉了|没有接入/.test(m.msg)) note = tr(m.msg); else toast.error(tr(m.msg)) }
+      else if (m.t === 'notice') { note = ''; toast(tr(m.msg)) }
+      else if (m.t === 'opened') toast(t('电脑上要打开的网页，已在这里打开'), { description: m.url })
+      else if (m.t === 'closed') { status = 'closed'; if (m.msg) toast.error(tr(m.msg)) }
     }
     sock.onclose = (e) => {
       if (ws !== sock) return
       status = 'closed'
-      if (e.code === 4000) { toast(e.reason || '另一台设备打开了预览'); return }
+      if (e.code === 4000) { toast(tr(e.reason) || t('另一台设备打开了预览')); return }
       if (document.visibilityState === 'visible') retryTimer = setTimeout(connect, Math.min(10000, 800 * 2 ** retry++))
     }
   }
@@ -330,18 +331,18 @@
 {#if !previewUi.immersive}
 <div class="flex items-center gap-1 border-b bg-card px-1.5 py-1.5">
   {#if appConfig.modules.cursor}
-  <button class={cn(iconBtn, isCursor && 'bg-accent text-foreground')} aria-label={isCursor ? '来源：Cursor 浏览器（点一下换成电脑 Chrome）' : '来源：电脑 Chrome（点一下换成 Cursor 浏览器）'} onclick={() => setSource(isCursor ? 'chrome' : 'cursor')}>
+  <button class={cn(iconBtn, isCursor && 'bg-accent text-foreground')} aria-label={isCursor ? t('来源：Cursor 浏览器（点一下换成电脑 Chrome）') : t('来源：电脑 Chrome（点一下换成 Cursor 浏览器）')} onclick={() => setSource(isCursor ? 'chrome' : 'cursor')}>
     {#if isCursor}<CursorIcon class="size-4" />{:else}<Globe class="size-4" />{/if}
   </button>
   {/if}
-  <button class={iconBtn} aria-label="后退" onclick={() => send({ t: 'back' })}><ArrowLeft class="size-4" /></button>
-  <button class={iconBtn} aria-label="前进" onclick={() => send({ t: 'forward' })}><ArrowRight class="size-4" /></button>
+  <button class={iconBtn} aria-label={t('后退')} onclick={() => send({ t: 'back' })}><ArrowLeft class="size-4" /></button>
+  <button class={iconBtn} aria-label={t('前进')} onclick={() => send({ t: 'forward' })}><ArrowRight class="size-4" /></button>
   <form class="relative min-w-0 flex-1" onsubmit={go}>
     <input
       bind:value={address}
       onfocus={(e) => { editing = true; (e.currentTarget as HTMLInputElement).select() }}
       onblur={() => setTimeout(() => (editing = false), 150)}
-      placeholder="网址、localhost:3000 或 ~/文件路径"
+      placeholder={t('网址、localhost:3000 或 ~/文件路径')}
       enterkeyhint="go"
       autocapitalize="off"
       spellcheck="false"
@@ -350,15 +351,15 @@
     />
     {#if nav.loading}<span class="absolute right-0 bottom-0 left-0 h-0.5 animate-pulse rounded bg-primary"></span>{/if}
   </form>
-  <button class={iconBtn} aria-label={nav.loading ? '停止' : '刷新'} onclick={() => send({ t: 'reload' })}>
+  <button class={iconBtn} aria-label={nav.loading ? t('停止') : t('刷新')} onclick={() => send({ t: 'reload' })}>
     {#if nav.loading}<X class="size-4" />{:else}<RotateCw class="size-4" />{/if}
   </button>
-  <button class={cn(iconBtn, 'relative')} aria-label="标签页" onclick={() => (tabsOpen = true)}>
+  <button class={cn(iconBtn, 'relative')} aria-label={t('标签页')} onclick={() => (tabsOpen = true)}>
     <Layers class="size-4" />
     {#if tabs.list.length > 1}<span class="absolute top-0.5 right-0.5 rounded-full bg-primary px-1 text-[10px] leading-4 text-primary-foreground">{tabs.list.length}</span>{/if}
   </button>
   {#if !isCursor}
-  <button class={cn(iconBtn, desktop && 'bg-accent text-foreground')} aria-label={desktop ? '电脑模式（点一下换回手机模式）' : '手机模式（点一下换成电脑模式）'} aria-pressed={desktop} onclick={() => setDesktop(!desktop)}>
+  <button class={cn(iconBtn, desktop && 'bg-accent text-foreground')} aria-label={desktop ? t('电脑模式（点一下换回手机模式）') : t('手机模式（点一下换成电脑模式）')} aria-pressed={desktop} onclick={() => setDesktop(!desktop)}>
     {#if desktop}<Monitor class="size-4" />{:else}<Smartphone class="size-4" />{/if}
   </button>
   {/if}
@@ -371,7 +372,7 @@
   <div class="max-h-[45dvh] overflow-y-auto overscroll-contain border-b bg-card px-1.5 pb-1.5">
     <button class="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-primary active:bg-accent" onpointerdown={(ev) => ev.preventDefault()} onclick={() => { address = pathDir; go() }}>
       <span class="flex-none">📂</span>
-      <span class="min-w-0 truncate text-[13px] font-medium">打开这个文件夹 <span class="font-mono">{pathDir}</span></span>
+      <span class="min-w-0 truncate text-[13px] font-medium">{t('打开这个文件夹')} <span class="font-mono">{pathDir}</span></span>
     </button>
     {#each pathMatches as e (e.name)}
       <button class="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left active:bg-accent" onpointerdown={(ev) => ev.preventDefault()} onclick={() => pickEntry(e)}>
@@ -379,7 +380,7 @@
         <span class="min-w-0 truncate font-mono text-[13px]">{e.name}{e.dir ? '/' : ''}</span>
       </button>
     {:else}
-      <p class="px-2.5 py-2 text-xs text-muted-foreground">没有匹配的文件或文件夹</p>
+      <p class="px-2.5 py-2 text-xs text-muted-foreground">{t('没有匹配的文件或文件夹')}</p>
     {/each}
   </div>
 {:else if editing && recent.length}
@@ -401,8 +402,8 @@
   {#if status !== 'live' || note}
     <div class="absolute inset-0 grid place-items-center bg-background/80 p-6 text-center text-sm text-muted-foreground">
       {#if note}<div class="grid max-w-xs gap-2"><CursorIcon class="mx-auto size-6" />{note}</div>
-      {:else if status === 'connecting'}{isCursor ? '正在连接 Cursor 的浏览器…' : '正在连接电脑上的浏览器…'}{:else}
-        <div class="grid gap-3">预览已断开<Button size="sm" onclick={connect}>重新连接</Button></div>
+      {:else if status === 'connecting'}{isCursor ? t('正在连接 Cursor 的浏览器…') : t('正在连接电脑上的浏览器…')}{:else}
+        <div class="grid gap-3">{t('预览已断开')}<Button size="sm" onclick={connect}>{t('重新连接')}</Button></div>
       {/if}
     </div>
   {/if}
@@ -418,19 +419,19 @@
     ontouchend={(e) => e.stopPropagation()}
   >
     {#if zoom > 1.01}
-      <button class={floatBtn} aria-label="缩放复位" onclick={resetZoom}><span class="text-[11px] font-semibold">1×</span></button>
+      <button class={floatBtn} aria-label={t('缩放复位')} onclick={resetZoom}><span class="text-[11px] font-semibold">1×</span></button>
     {/if}
     {#if previewUi.immersive}
-      <button class={floatBtn} aria-label="后退" onclick={() => send({ t: 'back' })}><ArrowLeft class="size-4" /></button>
-      <button class={floatBtn} aria-label="刷新" onclick={() => send({ t: 'reload' })}><RotateCw class="size-4" /></button>
-      <button class={cn(floatBtn, kbOpen && 'bg-primary')} aria-label="输入" onclick={() => (kbOpen = !kbOpen)}><Keyboard class="size-4" /></button>
+      <button class={floatBtn} aria-label={t('后退')} onclick={() => send({ t: 'back' })}><ArrowLeft class="size-4" /></button>
+      <button class={floatBtn} aria-label={t('刷新')} onclick={() => send({ t: 'reload' })}><RotateCw class="size-4" /></button>
+      <button class={cn(floatBtn, kbOpen && 'bg-primary')} aria-label={t('输入')} onclick={() => (kbOpen = !kbOpen)}><Keyboard class="size-4" /></button>
       {#if !isCursor}
-      <button class={floatBtn} aria-label={desktop ? '换成手机模式' : '换成电脑模式'} onclick={() => setDesktop(!desktop)}>
+      <button class={floatBtn} aria-label={desktop ? t('换成手机模式') : t('换成电脑模式')} onclick={() => setDesktop(!desktop)}>
         {#if desktop}<Smartphone class="size-4" />{:else}<Monitor class="size-4" />{/if}
       </button>
       {/if}
     {/if}
-    <button class={floatBtn} aria-label={previewUi.immersive ? '退出全屏' : '全屏'} onclick={() => setImmersive(!previewUi.immersive)}>
+    <button class={floatBtn} aria-label={previewUi.immersive ? t('退出全屏') : t('全屏')} onclick={() => setImmersive(!previewUi.immersive)}>
       {#if previewUi.immersive}<Minimize class="size-4" />{:else}<Maximize class="size-4" />{/if}
     </button>
   </div>
@@ -440,32 +441,32 @@
 <form class="flex items-center gap-1.5 border-t bg-card px-2 pt-1.5 pb-[calc(env(safe-area-inset-bottom)+6px)]" style:padding-left="calc(env(safe-area-inset-left) + 8px)" style:padding-right="calc(env(safe-area-inset-right) + 8px)" onsubmit={typeText}>
   <input
     bind:value={typed}
-    placeholder="先点页面里的输入框，再在这里打字"
+    placeholder={t('先点页面里的输入框，再在这里打字')}
     enterkeyhint="send"
     autocapitalize="off"
     spellcheck="false"
     class="h-9 min-w-0 flex-1 rounded-lg border bg-background px-2.5 text-base outline-none focus:ring-2 focus:ring-ring"
   />
-  <button type="button" class={iconBtn} aria-label="退格" onpointerdown={(e) => e.preventDefault()} onclick={() => key('Backspace')}><Delete class="size-4" /></button>
-  <button type="button" class={iconBtn} aria-label="回车" onpointerdown={(e) => e.preventDefault()} onclick={() => key('Enter')}><CornerDownLeft class="size-4" /></button>
-  <Button type="submit" size="sm" class="h-9" onpointerdown={(e: PointerEvent) => e.preventDefault()}>输入</Button>
+  <button type="button" class={iconBtn} aria-label={t('退格')} onpointerdown={(e) => e.preventDefault()} onclick={() => key('Backspace')}><Delete class="size-4" /></button>
+  <button type="button" class={iconBtn} aria-label={t('回车')} onpointerdown={(e) => e.preventDefault()} onclick={() => key('Enter')}><CornerDownLeft class="size-4" /></button>
+  <Button type="submit" size="sm" class="h-9" onpointerdown={(e: PointerEvent) => e.preventDefault()}>{t('输入')}</Button>
 </form>
 {/if}
 
 <Drawer.Root bind:open={tabsOpen}>
   <Drawer.Content>
     <Drawer.Header class="flex-row items-center justify-between border-b py-3">
-      <Drawer.Title>标签页</Drawer.Title>
-      {#if !isCursor}<Button size="sm" class="rounded-full" onclick={() => { send({ t: 'new' }); tabsOpen = false }}><Plus /> 新标签</Button>{:else}<span class="text-xs text-muted-foreground">Cursor 浏览器的标签在 Cursor 里开关</span>{/if}
+      <Drawer.Title>{t('标签页')}</Drawer.Title>
+      {#if !isCursor}<Button size="sm" class="rounded-full" onclick={() => { send({ t: 'new' }); tabsOpen = false }}><Plus /> {t('新标签')}</Button>{:else}<span class="text-xs text-muted-foreground">{t('Cursor 浏览器的标签在 Cursor 里开关')}</span>{/if}
     </Drawer.Header>
     <div class="grid px-1.5 pb-[calc(env(safe-area-inset-bottom)+8px)]">
-      {#each tabs.list as t (t.id)}
+      {#each tabs.list as tab (tab.id)}
         <div class="flex items-center gap-1">
-          <button class={cn('grid min-w-0 flex-1 gap-0.5 rounded-[10px] px-3 py-2.5 text-left active:bg-accent', t.id === tabs.current && 'bg-accent')} onclick={() => { send({ t: 'switch', id: t.id }); tabsOpen = false }}>
-            <span class="truncate font-medium">{t.title || '无标题'}</span>
-            <span class="truncate font-mono text-xs text-muted-foreground">{t.url}</span>
+          <button class={cn('grid min-w-0 flex-1 gap-0.5 rounded-[10px] px-3 py-2.5 text-left active:bg-accent', tab.id === tabs.current && 'bg-accent')} onclick={() => { send({ t: 'switch', id: tab.id }); tabsOpen = false }}>
+            <span class="truncate font-medium">{tab.title || t('无标题')}</span>
+            <span class="truncate font-mono text-xs text-muted-foreground">{tab.url}</span>
           </button>
-          <Button variant="ghost" size="icon" aria-label="关闭标签" onclick={() => send({ t: 'close', id: t.id })}><X /></Button>
+          <Button variant="ghost" size="icon" aria-label={t('关闭标签')} onclick={() => send({ t: 'close', id: tab.id })}><X /></Button>
         </div>
       {/each}
     </div>

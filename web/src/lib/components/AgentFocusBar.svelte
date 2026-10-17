@@ -5,6 +5,7 @@
   import { toast } from 'svelte-sonner'
   import { ui, onFrame } from '$lib/session.svelte'
   import { detectAgentFocus, backToMain, type AgentFocus } from '$lib/agentFocus.svelte'
+  import { t } from '$lib/i18n'
 
   let focus = $state<AgentFocus>({ kind: 'ok' })
   let busy = $state(false)
@@ -18,16 +19,16 @@
   $effect(() => { ui.current; ui.agent; focus = ui.agent === 'claude' ? detectAgentFocus() : { kind: 'ok' } })
 
   const text = $derived(
-    focus.kind === 'viewing' ? `正在看后台 agent「${focus.viewing}」，现在发的消息会发给它，不是主会话`
-    : focus.kind === 'list' && focus.selected !== 'main' ? `焦点在后台 agent 列表上，选中了「${focus.selected}」：这时回车会打开它、按 x 会停掉它`
-    : focus.kind === 'list' ? '焦点在后台 agent 列表上，打字和发送进不了输入框'
+    focus.kind === 'viewing' ? t('正在看后台 agent「{name}」，现在发的消息会发给它，不是主会话', { name: focus.viewing })
+    : focus.kind === 'list' && focus.selected !== 'main' ? t('焦点在后台 agent 列表上，选中了「{name}」：这时回车会打开它、按 x 会停掉它', { name: focus.selected })
+    : focus.kind === 'list' ? t('焦点在后台 agent 列表上，打字和发送进不了输入框')
     : '',
   )
   async function back() {
     busy = true
     const ok = await backToMain()
     busy = false
-    if (!ok) toast.error('没能自动回到主会话，打开终端视图看一眼')
+    if (!ok) toast.error(t('没能自动回到主会话，打开终端视图看一眼'))
   }
 </script>
 
@@ -36,7 +37,7 @@
     <TriangleAlert class="size-3.5 flex-none text-warn" />
     <span class="min-w-0 flex-1 leading-snug">{text}</span>
     <button class="h-7 flex-none rounded-md border border-warn/50 bg-card px-2 font-medium active:bg-accent" disabled={busy} onclick={back}>
-      {busy ? '处理中…' : focus.kind === 'list' && !focus.viewing ? '回到输入框' : '回到主会话'}
+      {busy ? t('处理中…') : focus.kind === 'list' && !focus.viewing ? t('回到输入框') : t('回到主会话')}
     </button>
   </div>
 {/if}

@@ -23,6 +23,9 @@
   import Inbox from '$lib/components/Inbox.svelte'
   import Reader from '$lib/components/Reader.svelte'
   import FileText from '@lucide/svelte/icons/file-text'
+  import Ellipsis from '@lucide/svelte/icons/ellipsis'
+  import Languages from '@lucide/svelte/icons/languages'
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
   import Sparkles from '@lucide/svelte/icons/sparkles'
   import GitFork from '@lucide/svelte/icons/git-fork'
   import ChatView from '$lib/claude/ChatView.svelte'
@@ -42,6 +45,7 @@
   import { update } from '$lib/update.svelte'
   import { appConfig, loadAppConfig } from '$lib/appConfig.svelte'
   import { cn } from '$lib/utils'
+  import { t, tr, isEn, setLang } from '$lib/i18n'
 
   let ctrl = $state(false)
   let pickOpen = $state(false)
@@ -90,14 +94,14 @@
     // 没开预览模块：网址直接在手机浏览器里开（本机地址、文件手机上打不开，就算了）
     if (appConfig.loaded && !appConfig.modules.preview) {
       if (/^https?:\/\//.test(url) && !/^https?:\/\/(localhost|127\.|\[::1\])/.test(url)) window.open(url, '_blank', 'noopener')
-      else toast('预览模块没开，电脑上的地址和文件在手机上打不开', { description: url })
+      else toast(t('预览模块没开，电脑上的地址和文件在手机上打不开'), { description: url })
       return
     }
     openInPreview(url)
     mode = 'preview'
   }
   onOpenUrl((url) => {
-    toast('电脑要打开一个网页', { description: url, duration: 10000, action: { label: '在预览中打开', onClick: () => previewUrl(url) } })
+    toast(t('电脑要打开一个网页'), { description: url, duration: 10000, action: { label: t('在预览中打开'), onClick: () => previewUrl(url) } })
   })
   // 从 Cursor 的通知点进来会带 ?cursor=会话
   {
@@ -110,7 +114,7 @@
     const q = new URLSearchParams(location.search).get('preview')
     if (q) {
       history.replaceState(null, '', location.pathname)
-      setTimeout(() => toast('要在预览里打开这个网页吗？', { description: q.slice(0, 300), duration: 15000, action: { label: '打开', onClick: () => previewUrl(q) } }), 600)
+      setTimeout(() => toast(t('要在预览里打开这个网页吗？'), { description: q.slice(0, 300), duration: 15000, action: { label: t('打开'), onClick: () => previewUrl(q) } }), 600)
     }
   }
 
@@ -152,8 +156,8 @@
     const { dropped, mac } = await reconnectPane()
     reconnecting = false
     if (ui.current) refreshCrons(true)
-    const notes = [dropped ? `丢掉了 ${dropped} 个卡住没发出去的输入` : '', mac.startsWith('reset') ? `电脑连接重建：${mac.includes('→ ok') ? '已恢复' : '还是连不上'}` : mac && mac !== 'ok' ? `服务端：${mac}` : '']
-    toast('已重连', { description: notes.filter(Boolean).join('；') || undefined })
+    const notes = [dropped ? t('丢掉了 {n} 个卡住没发出去的输入', { n: dropped }) : '', mac.startsWith('reset') ? (mac.includes('→ ok') ? t('电脑连接重建：已恢复') : t('电脑连接重建：还是连不上')) : mac && mac !== 'ok' ? t('服务端：{msg}', { msg: tr(mac) }) : '']
+    toast(t('已重连'), { description: notes.filter(Boolean).join(t('；')) || undefined })
   }
 
   function zoom(d: number) {
@@ -174,19 +178,19 @@
      顶部是 fixed / sticky 元素时 Safari 改用它的底色填充，不再叠渐隐。页面本身不滚动，sticky 对布局没有影响 -->
 <header class="sticky top-0 z-30 flex items-center gap-2 border-b bg-card px-3 pt-[calc(env(safe-area-inset-top)+6px)] pb-1.5">
   <div class="flex flex-none rounded-lg bg-secondary p-0.5">
-    <button class={cn('grid h-7 w-8 place-items-center rounded-md text-muted-foreground', mode === 'term' && 'bg-card text-foreground shadow-sm')} aria-label="终端" aria-pressed={mode === 'term'} onclick={() => (mode = 'term')}><Terminal class="size-4" /></button>
+    <button class={cn('grid h-7 w-8 place-items-center rounded-md text-muted-foreground', mode === 'term' && 'bg-card text-foreground shadow-sm')} aria-label={t('终端')} aria-pressed={mode === 'term'} onclick={() => (mode = 'term')}><Terminal class="size-4" /></button>
     {#if appConfig.modules.preview}
-      <button class={cn('grid h-7 w-8 place-items-center rounded-md text-muted-foreground', mode === 'preview' && 'bg-card text-foreground shadow-sm')} aria-label="预览" aria-pressed={mode === 'preview'} onclick={() => (mode = 'preview')}><Globe class="size-4" /></button>
+      <button class={cn('grid h-7 w-8 place-items-center rounded-md text-muted-foreground', mode === 'preview' && 'bg-card text-foreground shadow-sm')} aria-label={t('预览')} aria-pressed={mode === 'preview'} onclick={() => (mode = 'preview')}><Globe class="size-4" /></button>
     {/if}
     {#if appConfig.modules.cursor}
       <button class={cn('grid h-7 w-8 place-items-center rounded-md text-muted-foreground', mode === 'cursor' && 'bg-card text-foreground shadow-sm')} aria-label="Cursor" aria-pressed={mode === 'cursor'} onclick={() => (mode = 'cursor')}><span class="relative"><CursorIcon class="size-4" />{#if mode !== 'cursor' && (cursorSummary.waiting.length || cursorSummary.unread)}<span class={cn('absolute -top-1 -right-1.5 size-2 rounded-full ring-2 ring-secondary', cursorSummary.waiting.length ? 'bg-warn' : 'bg-primary')}></span>{/if}</span></button>
     {/if}
   </div>
   {#if update.available}
-    <button class="flex-none rounded-full bg-primary px-2.5 text-[12px] leading-6 font-semibold text-primary-foreground active:opacity-80" onclick={() => location.reload()}>更新</button>
+    <button class="flex-none rounded-full bg-primary px-2.5 text-[12px] leading-6 font-semibold text-primary-foreground active:opacity-80" onclick={() => location.reload()}>{t('更新')}</button>
   {/if}
   {#if mode === 'term'}
-    <button class="-mr-2 grid size-8 flex-none place-items-center rounded-lg active:bg-accent" aria-label="重连（{ui.statusMsg}）" title="点一下手动重连" onclick={reconnect}>
+    <button class="-mr-2 grid size-8 flex-none place-items-center rounded-lg active:bg-accent" aria-label={t('重连（{msg}）', { msg: ui.statusMsg })} title={t('点一下手动重连')} onclick={reconnect}>
       <span class={cn('size-2 rounded-full bg-muted-foreground', ui.status === 'live' && 'bg-ok', ui.status === 'err' && 'bg-destructive', reconnecting && 'animate-ping bg-primary')}></span>
     </button>
     <button class="flex min-w-0 flex-1 items-center gap-2 px-1 py-1.5 text-left" aria-haspopup="dialog" onclick={() => (pickOpen = true)}>
@@ -194,23 +198,29 @@
       <ChevronDown class="size-4 flex-none text-muted-foreground" />
     </button>
     {#if waitingOthers()}
-      <button class="flex-none rounded-full bg-warn px-2 text-[11px] leading-5 font-semibold text-black" title="别的 pane / Cursor 会话在等你操作" onclick={() => (inboxOpen = true)}>{waitingOthers()} 待办</button>
+      <button class="flex-none rounded-full bg-warn px-2 text-[11px] leading-5 font-semibold text-black" title={t('别的 pane / Cursor 会话在等你操作')} onclick={() => (inboxOpen = true)}>{t('{n} 待办', { n: waitingOthers() })}</button>
     {/if}
-    <div class="flex gap-0.5">
-      <button class={iconBtn} aria-label="阅读模式（复制、搜索、打开链接）" onclick={() => (readerOpen = true)}><FileText class="size-4" /></button>
-      <button class={iconBtn} aria-label="缩小字号" onclick={() => zoom(-1)}>A−</button>
-      <button class={iconBtn} aria-label="放大字号" onclick={() => zoom(1)}>A+</button>
-      <button class={cn(iconBtn, pushOn && 'text-foreground')} aria-label="推送通知" aria-pressed={pushOn} onclick={() => (notifOpen = true)}>
-        {#if pushOn}<Bell class="size-4" />{:else}<BellOff class="size-4" />{/if}
-      </button>
-      <button class={cn(iconBtn, prefs.fit && 'bg-accent text-foreground')} aria-label="适配屏幕宽度" aria-pressed={prefs.fit} onclick={() => (prefs.fit = !prefs.fit)}>
-        <MoveHorizontal class="size-4" />
-      </button>
-    </div>
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger class={iconBtn} aria-label={t('更多：阅读、字号、通知、语言')}>
+        <Ellipsis class="size-4" />
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Content align="end" class="w-64">
+        <DropdownMenu.Item onSelect={() => (readerOpen = true)}><FileText />{t('阅读模式')}<span class="ml-auto text-xs text-muted-foreground">{t('复制、搜索、链接')}</span></DropdownMenu.Item>
+        <div class="flex items-center gap-1.5 px-1.5 py-1 text-sm">
+          <span class="flex-1">{t('字号 {n}', { n: prefs.fs })}</span>
+          <button class="h-7 w-9 rounded-md border active:bg-accent" aria-label={t('缩小字号')} onclick={() => zoom(-1)}>A−</button>
+          <button class="h-7 w-9 rounded-md border active:bg-accent" aria-label={t('放大字号')} onclick={() => zoom(1)}>A+</button>
+        </div>
+        <DropdownMenu.Item onSelect={(e) => { e.preventDefault(); prefs.fit = !prefs.fit }}><MoveHorizontal />{t('适配屏幕宽度')}<span class="ml-auto text-xs {prefs.fit ? 'text-ok' : 'text-muted-foreground'}">{prefs.fit ? t('开') : t('关')}</span></DropdownMenu.Item>
+        <DropdownMenu.Item onSelect={() => (notifOpen = true)}>{#if pushOn}<Bell />{:else}<BellOff />{/if}{t('推送通知')}<span class="ml-auto text-xs text-muted-foreground">{pushOn ? t('已开') : t('未开')}</span></DropdownMenu.Item>
+        <DropdownMenu.Separator />
+        <DropdownMenu.Item onSelect={() => setLang(isEn ? 'zh' : 'en')}><Languages />{t('语言')}<span class="ml-auto text-xs text-muted-foreground">{isEn ? 'English → 中文' : '中文 → English'}</span></DropdownMenu.Item>
+      </DropdownMenu.Content>
+    </DropdownMenu.Root>
   {:else}
-    <span class="min-w-0 flex-1 truncate font-semibold">{mode === 'cursor' ? 'Cursor · 电脑上的 IDE' : '预览 · 电脑上的浏览器'}</span>
+    <span class="min-w-0 flex-1 truncate font-semibold">{mode === 'cursor' ? t('Cursor · 电脑上的 IDE') : t('预览 · 电脑上的浏览器')}</span>
     {#if waitingAll()}
-      <button class="flex-none rounded-full bg-warn px-2 text-[11px] leading-5 font-semibold text-black" onclick={() => (inboxOpen = true)}>{waitingAll()} 待办</button>
+      <button class="flex-none rounded-full bg-warn px-2 text-[11px] leading-5 font-semibold text-black" onclick={() => (inboxOpen = true)}>{t('{n} 待办', { n: waitingAll() })}</button>
     {/if}
   {/if}
 </header>
@@ -220,30 +230,30 @@
   {#if ui.status === 'err' && ui.hasFrame}
     <div class="flex items-center gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-1 text-xs text-destructive">
       <span class="min-w-0 flex-1">{ui.statusMsg}</span>
-      <button class="flex-none rounded-md border border-destructive/40 px-2 py-0.5 font-medium active:bg-destructive/20" onclick={reconnect}>重连</button>
+      <button class="flex-none rounded-md border border-destructive/40 px-2 py-0.5 font-medium active:bg-destructive/20" onclick={reconnect}>{t('重连')}</button>
     </div>
   {/if}
 
   {#if ui.claude}
     <div class="flex h-10 flex-none items-center gap-2 border-b bg-card px-2.5">
       <div class="flex rounded-lg bg-secondary p-0.5 text-[13px]">
-        <button class={cn('h-7 rounded-md px-3', termView === 'chat' ? 'bg-card font-medium shadow-sm' : 'text-muted-foreground')} onclick={() => setView('chat')}>对话</button>
-        <button class={cn('h-7 rounded-md px-3', termView === 'term' ? 'bg-card font-medium shadow-sm' : 'text-muted-foreground')} onclick={() => setView('term')}>终端</button>
+        <button class={cn('h-7 rounded-md px-3', termView === 'chat' ? 'bg-card font-medium shadow-sm' : 'text-muted-foreground')} onclick={() => setView('chat')}>{t('对话')}</button>
+        <button class={cn('h-7 rounded-md px-3', termView === 'term' ? 'bg-card font-medium shadow-sm' : 'text-muted-foreground')} onclick={() => setView('term')}>{t('终端')}</button>
       </div>
       <span class="flex-1"></span>
       {#if cronTasks.length}
-        <button class="relative flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[13px] active:bg-accent" aria-label="定时任务" onclick={() => (cronOpen = true)}>
-          <Clock class="size-3.5 text-muted-foreground" />定时 {cronTasks.length}
+        <button class="relative flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[13px] active:bg-accent" aria-label={t('定时任务')} onclick={() => (cronOpen = true)}>
+          <Clock class="size-3.5 text-muted-foreground" />{t('定时 {n}', { n: cronTasks.length })}
           {#if cronTasks.some((t) => t.last?.running)}<span class="absolute -top-0.5 -right-0.5 size-2 animate-pulse rounded-full bg-primary"></span>{/if}
         </button>
       {/if}
       {#if ui.claude.agent !== 'cursor-agent'}
-        <button class="flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[13px] active:bg-accent" aria-label="分叉当前会话" onclick={() => (claudeOpen = true)}>
-          <GitFork class="size-3.5 text-primary" />分叉
+        <button class="flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[13px] active:bg-accent" aria-label={t('分叉当前会话')} onclick={() => (claudeOpen = true)}>
+          <GitFork class="size-3.5 text-primary" />{t('分叉')}
         </button>
       {/if}
       <button class="flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[13px] active:bg-accent" onclick={() => (claudeOpen = true)}>
-        <Sparkles class="size-3.5 text-primary" />会话
+        <Sparkles class="size-3.5 text-primary" />{t('会话')}
       </button>
     </div>
   {/if}

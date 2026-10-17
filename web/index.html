@@ -46,7 +46,9 @@
       report('stuck2', 'still not mounted after cache-bust retry')
       var box = document.createElement('div')
       box.style.cssText = 'position:fixed;inset:0;display:grid;place-items:center;padding:24px;font:15px -apple-system,sans-serif;text-align:center;background:inherit;color:#888'
-      box.innerHTML = '<div>页面没有加载出来<br><br><button id="r1" style="font:inherit;padding:10px 18px;margin:6px">重新加载</button><button id="r2" style="font:inherit;padding:10px 18px;margin:6px">清除缓存并重新加载</button></div>'
+      var zh = (function () { try { var v = localStorage.getItem('lang'); if (v === 'zh' || v === 'en') return v === 'zh' } catch (e) {} var ls = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || '']; for (var k = 0; k < ls.length; k++) if (/^zh\b/i.test(ls[k])) return true; return false })()
+      var L = zh ? ['页面没有加载出来', '重新加载', '清除缓存并重新加载'] : ['The page failed to load', 'Reload', 'Clear cache and reload']
+      box.innerHTML = '<div>' + L[0] + '<br><br><button id="r1" style="font:inherit;padding:10px 18px;margin:6px">' + L[1] + '</button><button id="r2" style="font:inherit;padding:10px 18px;margin:6px">' + L[2] + '</button></div>'
       document.body.appendChild(box)
       document.getElementById('r1').onclick = function () { location.replace(location.pathname + '?r=' + Date.now()) }
       document.getElementById('r2').onclick = async function () {

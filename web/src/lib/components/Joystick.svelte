@@ -4,6 +4,7 @@
   import { sendRaw } from '$lib/api'
   import { ui } from '$lib/session.svelte'
   import { cn } from '$lib/utils'
+  import { t } from '$lib/i18n'
 
   const ARROWS = { up: '\x1b[A', down: '\x1b[B', left: '\x1b[D', right: '\x1b[C' } as const
   let active = $state(false)
@@ -51,7 +52,7 @@
 
 <button
   type="button"
-  aria-label="方向摇杆：按住拖动"
+  aria-label={t('方向摇杆：按住拖动')}
   class={cn('relative grid h-9 w-11 flex-none touch-none place-items-center rounded-lg border bg-secondary text-muted-foreground select-none', active && 'border-primary bg-primary/15 text-primary')}
   onpointerdown={down}
   onpointermove={move}

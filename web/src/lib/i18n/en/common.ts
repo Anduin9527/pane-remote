@@ -1,0 +1,19 @@
+// 多处共用的短文案
+export default {
+  取消: 'Cancel',
+  确定: 'OK',
+  关闭: 'Close',
+  打开: 'Open',
+  复制: 'Copy',
+  已复制: 'Copied',
+  复制失败: 'Copy failed',
+  发送: 'Send',
+  重试: 'Retry',
+  删除: 'Delete',
+  保存: 'Save',
+  重连: 'Reconnect',
+  已重连: 'Reconnected',
+  终端: 'Terminal',
+  预览: 'Preview',
+  语言: 'Language',
+} as Record<string, string>

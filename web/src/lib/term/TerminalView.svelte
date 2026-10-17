@@ -12,6 +12,7 @@
   import * as session from '$lib/session.svelte'
   import { mouseMods } from '$lib/mods.svelte'
   import { linkAt } from '$lib/links'
+  import { t } from '$lib/i18n'
 
   let { viewportTick = 0, onpreview }: { viewportTick?: number; onpreview?: (url: string) => void } = $props()
 
@@ -143,7 +144,7 @@
   })
   let hinted = false
   $effect(() => {
-    if (mouseMode() && !hinted) { hinted = true; toast('全屏模式：上下滑动滚动，轻点等于鼠标点击', { duration: 2500 }) }
+    if (mouseMode() && !hinted) { hinted = true; toast(t('全屏模式：上下滑动滚动，轻点等于鼠标点击'), { duration: 2500 }) }
     if (!mouseMode()) hinted = false
   })
 
@@ -184,11 +185,11 @@
     const at = lineAt(x, y)
     const url = at && linkAt(session.lines[at.line] || '', at.col)
     navigator.vibrate?.(10)
-    if (!url) { toast('这里没有链接'); return }
+    if (!url) { toast(t('这里没有链接')); return }
     toast(url, {
       duration: 8000,
-      action: { label: '在预览中打开', onClick: () => onpreview?.(url) },
-      cancel: { label: '复制', onClick: () => navigator.clipboard.writeText(url).then(() => toast('已复制链接'), () => toast.error('复制失败')) },
+      action: { label: t('在预览中打开'), onClick: () => onpreview?.(url) },
+      cancel: { label: t('复制'), onClick: () => navigator.clipboard.writeText(url).then(() => toast(t('已复制链接')), () => toast.error(t('复制失败'))) },
     })
   }
 
@@ -263,7 +264,7 @@
   {/if}
   {#if !ui.hasFrame}
     <div class="absolute inset-0 grid place-items-center p-6 text-center text-sm text-[#8a93a6]">
-      {ui.statusMsg || '连接中…'}
+      {ui.statusMsg || t('连接中…')}
     </div>
   {/if}
 </div>
@@ -272,7 +273,7 @@
   <button
     class="fixed right-3.5 z-10 grid size-10 place-items-center rounded-full border bg-card shadow-lg"
     style:bottom="calc(var(--dock-h, 110px) + 12px)"
-    aria-label="回到底部"
+    aria-label={t('回到底部')}
     onclick={() => (scroller.scrollTop = scroller.scrollHeight)}
   >
     <ArrowDown class="size-4" />

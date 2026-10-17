@@ -14,6 +14,7 @@
   import PinOff from '@lucide/svelte/icons/pin-off'
   import { prefs } from '$lib/prefs.svelte'
   import { cn } from '$lib/utils'
+  import { t } from '$lib/i18n'
 
   let { open = $bindable(false) }: { open?: boolean } = $props()
   let list = $state<Key[]>([])
@@ -48,18 +49,18 @@
 <Drawer.Root bind:open>
   <Drawer.Content class="max-h-[90dvh]">
     <Drawer.Header class="flex-row items-center justify-between border-b py-3">
-      <Drawer.Title>快捷键</Drawer.Title>
-      <Button variant="ghost" size="sm" onclick={reset}>恢复默认</Button>
+      <Drawer.Title>{t('快捷键')}</Drawer.Title>
+      <Button variant="ghost" size="sm" onclick={reset}>{t('恢复默认')}</Button>
     </Drawer.Header>
     <form class="grid gap-2 border-b p-3.5" onsubmit={addMacro}>
-      <p class="text-xs text-muted-foreground">图钉亮着的键放在第一行，其余收在「⋯」里。加一个宏：点一下就发出这段文字，比如 /compact、git status</p>
+      <p class="text-xs text-muted-foreground">{t('图钉亮着的键放在第一行，其余收在「⋯」里。加一个宏：点一下就发出这段文字，比如 /compact、git status')}</p>
       <div class="flex gap-2">
-        <Input bind:value={mText} placeholder="要发送的文字" autocapitalize="off" spellcheck={false} class="h-10 flex-1 font-mono" />
-        <Input bind:value={mLabel} placeholder="按钮名" maxlength={12} class="h-10 w-24" />
+        <Input bind:value={mText} placeholder={t('要发送的文字')} autocapitalize="off" spellcheck={false} class="h-10 flex-1 font-mono" />
+        <Input bind:value={mLabel} placeholder={t('按钮名')} maxlength={12} class="h-10 w-24" />
       </div>
       <div class="flex items-center justify-between">
-        <label class="flex items-center gap-2 text-sm"><Switch bind:checked={mEnter} /> 发送后按回车</label>
-        <Button type="submit" size="sm" disabled={!mText}>添加</Button>
+        <label class="flex items-center gap-2 text-sm"><Switch bind:checked={mEnter} /> {t('发送后按回车')}</label>
+        <Button type="submit" size="sm" disabled={!mText}>{t('添加')}</Button>
       </div>
     </form>
     <div data-vaul-no-drag class="overflow-y-auto overscroll-contain px-2 pb-[calc(env(safe-area-inset-bottom)+10px)]">
@@ -67,15 +68,15 @@
         <div class={cn('flex items-center gap-1 rounded-lg px-1.5 py-1', k.hidden && 'opacity-45')}>
           <span class="min-w-14 rounded-md border bg-secondary px-2 py-1 text-center font-mono text-[13px]">{k.label}</span>
           <span class="min-w-0 flex-1 truncate px-1 font-mono text-xs text-muted-foreground">{show(k)}</span>
-          <Button variant="ghost" size="icon" aria-label={isPinned(k) ? '移出第一行' : '放到第一行'} class={isPinned(k) ? 'text-primary' : ''} onclick={() => pin(i)}>
+          <Button variant="ghost" size="icon" aria-label={isPinned(k) ? t('移出第一行') : t('放到第一行')} class={isPinned(k) ? 'text-primary' : ''} onclick={() => pin(i)}>
             {#if isPinned(k)}<Pin />{:else}<PinOff />{/if}
           </Button>
-          <Button variant="ghost" size="icon" aria-label="上移" onclick={() => move(i, -1)} disabled={i === 0}><ArrowUp /></Button>
-          <Button variant="ghost" size="icon" aria-label="下移" onclick={() => move(i, 1)} disabled={i === list.length - 1}><ArrowDown /></Button>
+          <Button variant="ghost" size="icon" aria-label={t('上移')} onclick={() => move(i, -1)} disabled={i === 0}><ArrowUp /></Button>
+          <Button variant="ghost" size="icon" aria-label={t('下移')} onclick={() => move(i, 1)} disabled={i === list.length - 1}><ArrowDown /></Button>
           {#if k.macro}
-            <Button variant="ghost" size="icon" aria-label="删除" class="text-destructive" onclick={() => remove(i)}><Trash2 /></Button>
+            <Button variant="ghost" size="icon" aria-label={t('删除')} class="text-destructive" onclick={() => remove(i)}><Trash2 /></Button>
           {:else}
-            <Button variant="ghost" size="icon" aria-label={k.hidden ? '显示' : '隐藏'} onclick={() => toggle(i)}>
+            <Button variant="ghost" size="icon" aria-label={k.hidden ? t('显示') : t('隐藏')} onclick={() => toggle(i)}>
               {#if k.hidden}<EyeOff />{:else}<Eye />{/if}
             </Button>
           {/if}

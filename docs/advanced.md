@@ -1,5 +1,7 @@
 # 进阶配置
 
+中文 | [English](en/advanced.md)
+
 ## 持久化 pane：WezTerm 窗口关了也能用
 
 默认情况下 pane 活在 WezTerm 窗口里，窗口一关里面的程序就结束了，手机也连不上。

@@ -8,6 +8,7 @@
   import ArrowDown from '@lucide/svelte/icons/arrow-down'
   import { ui, agentName } from '$lib/session.svelte'
   import { cn } from '$lib/utils'
+  import { t as tt, tr, isEn } from '$lib/i18n'
 
   let { onpreview }: { onpreview?: (url: string) => void } = $props()
   type Part = { type: 'text'; text: string } | { type: 'tool'; name: string; summary: string; result: string | null; error: boolean }
@@ -42,10 +43,10 @@
   const toolStats = (ts: ToolPart[]) => {
     const c: Record<string, number> = {}
     for (const t of ts) c[t.name] = (c[t.name] || 0) + 1
-    return Object.entries(c).map(([n, k]) => (k > 1 ? `${n} ×${k}` : n)).join('、')
+    return Object.entries(c).map(([n, k]) => (k > 1 ? `${n} ×${k}` : n)).join(tt('、'))
   }
   const md = (t: string) => DOMPurify.sanitize(marked.parse(t, { gfm: true, breaks: true, async: false }) as string)
-  const time = (ts: string) => { try { return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) } catch { return '' } }
+  const time = (ts: string) => { try { return new Date(ts).toLocaleTimeString(isEn ? 'en-US' : 'zh-CN', { hour: '2-digit', minute: '2-digit' }) } catch { return '' } }
 
   async function load() {
     const pane = ui.current
@@ -103,7 +104,7 @@
       <Wrench class={cn('size-3.5 flex-none', p.error ? 'text-destructive' : 'text-muted-foreground')} />
       <span class="flex-none font-medium">{p.name}</span>
       <span class="min-w-0 truncate font-mono text-muted-foreground">{p.summary}</span>
-      {#if p.result === null}<span class="ml-auto flex-none animate-pulse text-primary">运行中</span>{/if}
+      {#if p.result === null}<span class="ml-auto flex-none animate-pulse text-primary">{tt('运行中')}</span>{/if}
     </summary>
     {#if p.result}<pre class="max-h-72 overflow-auto border-t px-2.5 py-2 font-mono text-[11px] leading-snug whitespace-pre-wrap break-all text-muted-foreground">{p.result}</pre>{/if}
   </details>
@@ -118,9 +119,9 @@
     role="presentation"
   >
     {#if !loaded}
-      <p class="p-6 text-center text-sm text-muted-foreground">{error || '读取对话…'}</p>
+      <p class="p-6 text-center text-sm text-muted-foreground">{tr(error) || tt('读取对话…')}</p>
     {:else if !msgs.length}
-      <p class="p-6 text-center text-sm text-muted-foreground">还没有对话记录</p>
+      <p class="p-6 text-center text-sm text-muted-foreground">{tt('还没有对话记录')}</p>
     {/if}
     <!-- 列宽锁在容器宽度内：网格默认会被不能断行的长内容撑宽，出现整页横向滚动 -->
     <div class="grid grid-cols-[minmax(0,1fr)] gap-3">
@@ -138,10 +139,10 @@
                 <details class="min-w-0 rounded-lg border bg-card text-xs">
                   <summary class="flex cursor-pointer list-none items-center gap-1.5 px-2.5 py-1.5">
                     <Wrench class="size-3.5 flex-none text-muted-foreground" />
-                    <span class="flex-none font-medium">{b.tools.length} 次工具调用</span>
+                    <span class="flex-none font-medium">{tt('{n} 次工具调用', { n: b.tools.length })}</span>
                     <span class="min-w-0 truncate text-muted-foreground">{toolStats(b.tools)}</span>
-                    {#if b.tools.some((t) => t.result === null)}<span class="ml-auto flex-none animate-pulse text-primary">运行中</span>{/if}
-                    {#if b.tools.some((t) => t.error)}<span class="ml-auto flex-none text-destructive">有报错</span>{/if}
+                    {#if b.tools.some((t) => t.result === null)}<span class="ml-auto flex-none animate-pulse text-primary">{tt('运行中')}</span>{/if}
+                    {#if b.tools.some((t) => t.error)}<span class="ml-auto flex-none text-destructive">{tt('有报错')}</span>{/if}
                   </summary>
                   <div class="grid grid-cols-[minmax(0,1fr)] gap-1 border-t p-1.5">
                     {#each b.tools as t, j (j)}{@render tool(t)}{/each}
@@ -153,11 +154,11 @@
           </div>
         {/if}
       {/each}
-      {#if running}<p class="animate-pulse text-sm text-primary">{agentName()} 正在工作…</p>{/if}
+      {#if running}<p class="animate-pulse text-sm text-primary">{tt('{agent} 正在工作…', { agent: agentName() })}</p>{/if}
     </div>
   </div>
   {#if !atBottom}
-    <button class="absolute right-3.5 bottom-3 grid size-10 place-items-center rounded-full border bg-card shadow-lg" aria-label="回到底部" onclick={() => box?.scrollTo({ top: box.scrollHeight, behavior: 'smooth' })}>
+    <button class="absolute right-3.5 bottom-3 grid size-10 place-items-center rounded-full border bg-card shadow-lg" aria-label={tt('回到底部')} onclick={() => box?.scrollTo({ top: box.scrollHeight, behavior: 'smooth' })}>
       <ArrowDown class="size-4" />
     </button>
   {/if}

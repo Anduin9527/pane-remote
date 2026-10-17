@@ -1,5 +1,7 @@
 # Cursor 模块
 
+中文 | [English](en/cursor.md)
+
 手机上查看和操作电脑上的 [Cursor](https://cursor.com) IDE：会话列表、对话消息、发消息 / 停止 / 新建、待办和未读、命令输出、项目文件、改动差异，以及 Cursor 内置浏览器的实时画面。
 
 ```bash

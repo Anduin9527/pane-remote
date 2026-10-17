@@ -3,5 +3,21 @@
 DIR=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 NODE=$DIR/runtime/node/bin/node
 [[ -x "$NODE" ]] || NODE=$(command -v node || true)
-[[ -n "$NODE" ]] || { echo "找不到 Node：在 $DIR 里跑 ./install.sh" >&2; exit 1; }
+if [[ -z "$NODE" ]]; then
+  # 找不到 Node 时只能在这里挑语言（规则同 lib/i18n.mjs：--lang > PANE_REMOTE_LANG > config.json > 系统语言）
+  l=""; prev=""
+  for a in "$@"; do [[ $prev == --lang ]] && l=$a; [[ $a == --lang=* ]] && l=${a#--lang=}; prev=$a; done
+  [[ $l == zh* || $l == en* ]] || l=${PANE_REMOTE_LANG:-}
+  if [[ $l != zh* && $l != en* ]]; then
+    l=$(sed -n 's/.*"lang"[[:space:]]*:[[:space:]]*"\([A-Za-z]*\)".*/\1/p' "${PANE_REMOTE_CONFIG:-$HOME/.config/pane-remote/config.json}" 2>/dev/null | head -n 1)
+  fi
+  if [[ $l != zh* && $l != en* ]]; then
+    loc=${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}
+    if [[ $loc == zh* ]] || defaults read -g AppleLanguages 2>/dev/null | grep -Eq '^[[:space:](,]*"?zh'; then l=zh; else l=en; fi
+  fi
+  if [[ $l == zh* ]]; then echo "找不到 Node：在 $DIR 里跑 ./install.sh" >&2
+  else echo "Node not found: run ./install.sh in $DIR" >&2
+  fi
+  exit 1
+fi
 exec "$NODE" "$DIR/lib/cli.mjs" "$@"

@@ -18,6 +18,7 @@
   import FileDiff from '@lucide/svelte/icons/file-diff'
   import ChangesView from './ChangesView.svelte'
   import Composer from '$lib/components/Composer.svelte'
+  import { t, tr, isEn } from '$lib/i18n'
   import { cur, connectCursor, disconnectCursor, reconnectCursor, selectSession, startDraft, cursorCmd, sessionById, type CMsg } from './cursor.svelte'
 
   let { onpreview }: { onpreview?: (url: string) => void } = $props()
@@ -36,11 +37,11 @@
 
   // Markdown 渲染结果缓存（按消息 id + 长度），长对话来回刷新不重复渲染；最多留 500 条
   const mdCache = new Map<string, string>()
-  function md(id: string, t: string) {
-    const k = `${id}:${t.length}`
+  function md(id: string, text: string) {
+    const k = `${id}:${text.length}`
     let h = mdCache.get(k)
     if (h === undefined) {
-      h = DOMPurify.sanitize(marked.parse(t, { gfm: true, breaks: true, async: false }) as string)
+      h = DOMPurify.sanitize(marked.parse(text, { gfm: true, breaks: true, async: false }) as string)
       mdCache.set(k, h)
       if (mdCache.size > 500) mdCache.delete(mdCache.keys().next().value!)
     }
@@ -62,22 +63,22 @@
   })
   const stepSummary = (items: CMsg[]) => {
     const c: Record<string, number> = {}
-    for (const m of items) { const n = m.role === 'tool' ? m.tool : '思考'; c[n] = (c[n] || 0) + 1 }
-    return Object.entries(c).map(([n, k]) => (k > 1 ? `${n} ×${k}` : n)).join('、')
+    for (const m of items) { const n = m.role === 'tool' ? tr(m.tool) : t('思考'); c[n] = (c[n] || 0) + 1 }
+    return Object.entries(c).map(([n, k]) => (k > 1 ? `${n} ×${k}` : n)).join(t('、'))
   }
   // 正在生成、数据库里还没有的那段文字（Cursor 页面上的实时内容）
   const streaming = $derived(cur.generating && cur.streamText && !cur.list.some((m) => m.id.split('/')[0] === cur.streamId && m.role === 'assistant' && m.text.length >= cur.streamText.length) ? cur.streamText : '')
 
   const current = $derived(sessionById(cur.id))
   const project = $derived(cur.projects.find((p) => p.sessions.some((s) => s.id === cur.id)) || cur.projects.find((p) => p.id === cur.draftProject))
-  const title = $derived(cur.draftProject ? `新会话 · ${project?.label || '不选项目'}` : current?.title || cur.name || (cur.id ? '会话' : '选择一个会话'))
+  const title = $derived(cur.draftProject ? t('新会话 · {project}', { project: project?.label || t('不选项目') }) : current?.title || cur.name || (cur.id ? t('未命名会话') : t('选择一个会话')))
 
   $effect(() => { cur.list.length; streaming; if (atBottom) tick().then(() => box?.scrollTo({ top: box.scrollHeight })) })
 
   // 输入框复用终端那个（草稿按会话存、传文件、展开编辑都一样），发送交给这里
-  async function submit(t: string) {
-    if (cur.draftProject) await cursorCmd('new', { project: cur.draftProject === '__new__' ? '' : cur.draftProject, text: t })
-    else await cursorCmd('send', { id: cur.id, text: t })
+  async function submit(text: string) {
+    if (cur.draftProject) await cursorCmd('new', { project: cur.draftProject === '__new__' ? '' : cur.draftProject, text })
+    else await cursorCmd('send', { id: cur.id, text })
     atBottom = true
   }
   const draftKey = $derived(cur.draftProject ? `cursor-new:${cur.draftProject}` : cur.id ? `cursor:${cur.id}` : null)
@@ -89,9 +90,9 @@
     e.preventDefault()
     if (/^(https?:|file:)/.test(href)) onpreview?.(href)
   }
-  function copy(t: string) { navigator.clipboard.writeText(t).then(() => toast('已复制'), () => toast.error('复制失败')) }
-  async function act(t: string, body: Record<string, unknown> = {}, ok = '') {
-    try { await cursorCmd(t, body); if (ok) toast(ok) } catch (err) { toast.error((err as Error).message) }
+  function copy(text: string) { navigator.clipboard.writeText(text).then(() => toast(t('已复制')), () => toast.error(t('复制失败'))) }
+  async function act(cmd: string, body: Record<string, unknown> = {}, ok = '') {
+    try { await cursorCmd(cmd, body); if (ok) toast(ok) } catch (err) { toast.error((err as Error).message) }
   }
   function restart() {
     if (!confirmRestart) { confirmRestart = true; setTimeout(() => (confirmRestart = false), 4000); return }
@@ -100,12 +101,12 @@
   }
   const statusTone = (s: string) => (/complete/i.test(s) ? 'text-ok' : /error|fail|abort/i.test(s) ? 'text-destructive' : /review|approv|wait|input/i.test(s) ? 'text-warn' : s ? 'text-primary' : 'text-muted-foreground')
   // Cursor 的状态标签（比如「Completed, unread」「In progress」）→ 中文；未读用我们自己的蓝点表示
-  const statusCn = (st: string) => /in progress|generat|running/i.test(st) ? '生成中' : /complete/i.test(st) ? '完成' : /error|fail/i.test(st) ? '出错' : /abort|cancel/i.test(st) ? '已中断' : /approv|review|input|wait|permission/i.test(st) ? '等你' : st.replace(/,\s*unread/i, '')
-  const time = (ts: number) => (ts ? new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '')
+  const statusCn = (st: string) => /in progress|generat|running/i.test(st) ? t('生成中') : /complete/i.test(st) ? t('完成') : /error|fail/i.test(st) ? t('出错') : /abort|cancel/i.test(st) ? t('已中断') : /approv|review|input|wait|permission/i.test(st) ? t('等你') : st.replace(/,\s*unread/i, '')
+  const time = (ts: number) => (ts ? new Date(ts).toLocaleTimeString(isEn ? 'en-US' : 'zh-CN', { hour: '2-digit', minute: '2-digit' }) : '')
 </script>
 
 <div class="flex h-10 flex-none items-center gap-2 border-b bg-card px-2.5">
-  <button class="-ml-1 grid size-7 flex-none place-items-center rounded-lg active:bg-accent" aria-label="重连 Cursor（{cur.msg}）" onclick={() => { reconnectCursor(); toast('重连 Cursor…') }}>
+  <button class="-ml-1 grid size-7 flex-none place-items-center rounded-lg active:bg-accent" aria-label={t('重连 Cursor（{msg}）', { msg: tr(cur.msg) })} onclick={() => { reconnectCursor(); toast(t('重连 Cursor…')) }}>
     <span class={cn('size-2 rounded-full', cur.conn === 'ready' ? 'bg-ok' : cur.conn === 'error' ? 'bg-destructive' : 'bg-muted-foreground', cur.generating && 'animate-pulse bg-primary')}></span>
   </button>
   <button class="flex min-w-0 flex-1 items-center gap-1.5 text-left" onclick={() => (sheetOpen = true)}>
@@ -114,12 +115,12 @@
   </button>
   {#if cur.conn === 'ready'}
     {#if cur.id && cur.path}
-      <button class="grid size-8 place-items-center rounded-lg border active:bg-accent" aria-label="查看项目文件" onclick={() => onpreview?.(cur.path + '/')}><FolderOpen class="size-4" /></button>
+      <button class="grid size-8 place-items-center rounded-lg border active:bg-accent" aria-label={t('查看项目文件')} onclick={() => onpreview?.(cur.path + '/')}><FolderOpen class="size-4" /></button>
     {/if}
     {#if cur.id && cur.changed}
-      <button class="flex h-8 items-center gap-1 rounded-lg border px-2 text-[13px] active:bg-accent" aria-label="查看改动" onclick={() => (changesOpen = true)}><FileDiff class="size-3.5" />{cur.changed}</button>
+      <button class="flex h-8 items-center gap-1 rounded-lg border px-2 text-[13px] active:bg-accent" aria-label={t('查看改动')} onclick={() => (changesOpen = true)}><FileDiff class="size-3.5" />{cur.changed}</button>
     {/if}
-    <button class="flex h-8 items-center gap-1 rounded-lg border px-2.5 text-[13px] active:bg-accent" onclick={() => { startDraft(project?.id || ''); }}><Plus class="size-3.5" />新建</button>
+    <button class="flex h-8 items-center gap-1 rounded-lg border px-2.5 text-[13px] active:bg-accent" onclick={() => { startDraft(project?.id || ''); }}><Plus class="size-3.5" />{t('新建')}</button>
   {/if}
 </div>
 
@@ -127,21 +128,21 @@
   <div class="grid min-h-0 flex-1 place-items-center p-6">
     <div class="grid max-w-sm gap-3 text-center">
       {#if cur.conn === 'not-running'}
-        <p class="text-[15px]">电脑上的 Cursor 没有打开</p>
-        <Button onclick={() => act('launch')} disabled={!!cur.busy}>{cur.busy ? '启动中…' : '启动 Cursor'}</Button>
-        <p class="text-xs text-muted-foreground">新建会话或发消息时也会自动先启动</p>
+        <p class="text-[15px]">{t('电脑上的 Cursor 没有打开')}</p>
+        <Button onclick={() => act('launch')} disabled={!!cur.busy}>{cur.busy ? t('启动中…') : t('启动 Cursor')}</Button>
+        <p class="text-xs text-muted-foreground">{t('新建会话或发消息时也会自动先启动')}</p>
       {:else if cur.conn === 'no-debug'}
-        <p class="text-[15px]">Cursor 开着，但不是用遥控方式启动的</p>
-        <p class="text-xs text-muted-foreground">要接入它得重启一次 Cursor：先正常退出（有没保存的内容 Cursor 会问你），再带调试端口重新打开，窗口会恢复。正在跑的 Agent 会被打断。</p>
-        <Button variant={confirmRestart ? 'destructive' : 'default'} onclick={restart} disabled={!!cur.busy}>{cur.busy === 'restart' ? '重启中…' : confirmRestart ? '再点一次确认重启' : '重启并接入'}</Button>
+        <p class="text-[15px]">{t('Cursor 开着，但不是用遥控方式启动的')}</p>
+        <p class="text-xs text-muted-foreground">{t('要接入它得重启一次 Cursor：先正常退出（有没保存的内容 Cursor 会问你），再带调试端口重新打开，窗口会恢复。正在跑的 Agent 会被打断。')}</p>
+        <Button variant={confirmRestart ? 'destructive' : 'default'} onclick={restart} disabled={!!cur.busy}>{cur.busy === 'restart' ? t('重启中…') : confirmRestart ? t('再点一次确认重启') : t('重启并接入')}</Button>
       {:else if cur.conn === 'launching' || cur.conn === 'connecting'}
         <div class="mx-auto size-6 animate-spin rounded-full border-2 border-primary border-t-transparent"></div>
-        <p class="text-[15px]">{cur.msg || '处理中…'}</p>
+        <p class="text-[15px]">{tr(cur.msg) || t('处理中…')}</p>
         {#if cur.step}<div class="flex justify-center gap-1.5">{#each [1, 2, 3] as s (s)}<span class={cn('h-1.5 w-8 rounded-full', (cur.step ?? 0) >= s ? 'bg-primary' : 'bg-muted')}></span>{/each}</div>{/if}
-        <p class="text-xs text-muted-foreground">启动 Cursor → 等窗口出来 → 接入</p>
+        <p class="text-xs text-muted-foreground">{t('启动 Cursor → 等窗口出来 → 接入')}</p>
       {:else}
-        <p class="text-[15px] text-destructive">{cur.msg || '出错了'}</p>
-        <Button variant="secondary" onclick={() => act('launch')}>重试</Button>
+        <p class="text-[15px] text-destructive">{tr(cur.msg) || t('出错了')}</p>
+        <Button variant="secondary" onclick={() => act('launch')}>{t('重试')}</Button>
       {/if}
     </div>
   </div>
@@ -149,11 +150,11 @@
   <div class="relative min-h-0 flex-1">
     <div bind:this={box} class="absolute inset-0 overflow-x-hidden overflow-y-auto overscroll-contain px-3 py-3" onscroll={() => { if (box) atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60 }} {onclick} role="presentation">
       {#if !cur.id && !cur.draftProject}
-        <p class="p-6 text-center text-sm text-muted-foreground">点上面选一个会话，或者新建</p>
+        <p class="p-6 text-center text-sm text-muted-foreground">{t('点上面选一个会话，或者新建')}</p>
       {:else if cur.draftProject}
-        <p class="p-6 text-center text-sm text-muted-foreground">写下第一条消息，发送后会在 Cursor 里新建 Agent</p>
+        <p class="p-6 text-center text-sm text-muted-foreground">{t('写下第一条消息，发送后会在 Cursor 里新建 Agent')}</p>
       {:else if !cur.loaded}
-        <p class="p-6 text-center text-sm text-muted-foreground">读取会话…</p>
+        <p class="p-6 text-center text-sm text-muted-foreground">{t('读取会话…')}</p>
       {/if}
       <div class="grid grid-cols-[minmax(0,1fr)] gap-3">
         {#each blocks as b, i (b.kind === 'msg' ? b.m.id : 's' + i + (b.items[0]?.id || ''))}
@@ -164,14 +165,14 @@
               <div class="md min-w-0 text-[15px] leading-relaxed">{@html md(b.m.id, b.m.text)}</div>
               <div class="flex items-center gap-2 text-[11px] text-muted-foreground">
                 <span>{time(b.m.ts)}</span>
-                <button class="flex items-center gap-0.5 rounded px-1 py-0.5 active:bg-accent" aria-label="复制这条回复" onclick={() => copy(b.m.role === 'assistant' ? b.m.text : '')}><Copy class="size-3" />复制</button>
+                <button class="flex items-center gap-0.5 rounded px-1 py-0.5 active:bg-accent" aria-label={t('复制这条回复')} onclick={() => copy(b.m.role === 'assistant' ? b.m.text : '')}><Copy class="size-3" />{t('复制')}</button>
               </div>
             </div>
           {:else if b.kind === 'steps'}
             <details class="min-w-0 rounded-lg border bg-card text-xs">
               <summary class="flex cursor-pointer list-none items-center gap-1.5 px-2.5 py-1.5">
                 <Wrench class="size-3.5 flex-none text-muted-foreground" />
-                <span class="flex-none font-medium">{b.items.length} 步</span>
+                <span class="flex-none font-medium">{t('{n} 步', { n: b.items.length })}</span>
                 <span class="min-w-0 truncate text-muted-foreground">{stepSummary(b.items)}</span>
               </summary>
               <div class="grid gap-1 border-t p-1.5">
@@ -181,23 +182,23 @@
                     <details class="min-w-0 rounded-md">
                       <summary class="flex min-w-0 cursor-pointer list-none items-center gap-1.5 px-1.5 py-1">
                         <Wrench class={cn('size-3 flex-none', s.rejected || s.error ? 'text-destructive' : 'text-muted-foreground')} />
-                        <span class="flex-none font-medium">{s.tool}</span>
+                        <span class="flex-none font-medium">{tr(s.tool)}</span>
                         <span class="min-w-0 truncate font-mono text-muted-foreground">{s.detail}</span>
-                        {#if s.rejected}<span class="ml-auto flex-none text-destructive">被拒绝</span>{:else if s.error}<span class="ml-auto flex-none text-destructive">出错</span>{/if}
+                        {#if s.rejected}<span class="ml-auto flex-none text-destructive">{t('被拒绝')}</span>{:else if s.error}<span class="ml-auto flex-none text-destructive">{t('出错')}</span>{/if}
                       </summary>
                       {#if s.cwd}<p class="px-2 font-mono text-[10.5px] text-muted-foreground">{s.cwd}</p>{/if}
-                      <pre class="mx-1.5 mb-1.5 max-h-72 overflow-auto rounded bg-[#1a1b26] px-2 py-1.5 font-mono text-[11px] leading-snug whitespace-pre-wrap break-all text-[#c0caf5]">{s.error || s.output || '（没有输出）'}</pre>
+                      <pre class="mx-1.5 mb-1.5 max-h-72 overflow-auto rounded bg-[#1a1b26] px-2 py-1.5 font-mono text-[11px] leading-snug whitespace-pre-wrap break-all text-[#c0caf5]">{s.error || s.output || t('（没有输出）')}</pre>
                     </details>
                   {:else}
                   <div class="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1">
                     {#if s.role === 'tool'}
                       <Wrench class="size-3 flex-none text-muted-foreground" />
-                      <span class="flex-none font-medium">{s.tool}</span>
+                      <span class="flex-none font-medium">{tr(s.tool)}</span>
                       <span class="min-w-0 truncate font-mono text-muted-foreground">{s.detail}</span>
                       {#if s.decision}<span class="ml-auto flex-none text-muted-foreground">{s.decision}</span>{/if}
                     {:else if s.role === 'thinking'}
                       <Brain class="size-3 flex-none text-muted-foreground" />
-                      <span class="text-muted-foreground">思考了 {s.size > 999 ? (s.size / 1000).toFixed(1) + 'k' : s.size} 字</span>
+                      <span class="text-muted-foreground">{t('思考了 {n} 字', { n: s.size > 999 ? (s.size / 1000).toFixed(1) + 'k' : s.size })}</span>
                     {/if}
                   </div>
                   {/if}
@@ -213,25 +214,25 @@
       </div>
     </div>
     {#if !atBottom}
-      <button class="absolute right-3.5 bottom-3 grid size-10 place-items-center rounded-full border bg-card shadow-lg" aria-label="回到底部" onclick={() => box?.scrollTo({ top: box.scrollHeight, behavior: 'smooth' })}><ArrowDown class="size-4" /></button>
+      <button class="absolute right-3.5 bottom-3 grid size-10 place-items-center rounded-full border bg-card shadow-lg" aria-label={t('回到底部')} onclick={() => box?.scrollTo({ top: box.scrollHeight, behavior: 'smooth' })}><ArrowDown class="size-4" /></button>
     {/if}
   </div>
 
   <div class="border-t bg-card pb-[env(safe-area-inset-bottom)]">
     {#if cur.choices.length}
       <div class="flex flex-wrap gap-1.5 px-2.5 pt-2">
-        <span class="self-center text-xs text-warn">Cursor 在等你：</span>
+        <span class="self-center text-xs text-warn">{t('Cursor 在等你：')}</span>
         {#each cur.choices as c (c)}<button class="h-8 rounded-lg border bg-secondary px-3 text-[13px] active:bg-accent" onclick={() => act('choose', { label: c })}>{c}</button>{/each}
       </div>
     {/if}
     <!-- 跟终端对话模式一样：在跑的时候给一条「正在工作… 停止」 -->
     {#if cur.generating}
       <div class="flex items-center gap-2 border-b px-3 py-1.5 text-sm">
-        <span class="flex-1 animate-pulse text-primary">Cursor 正在工作…</span>
-        <button class="h-7 rounded-md border px-2.5 text-[13px] active:bg-accent" onclick={() => act('stop', {}, '已让 Cursor 停下')}>停止</button>
+        <span class="flex-1 animate-pulse text-primary">{t('Cursor 正在工作…')}</span>
+        <button class="h-7 rounded-md border px-2.5 text-[13px] active:bg-accent" onclick={() => act('stop', {}, t('已让 Cursor 停下'))}>{t('停止')}</button>
       </div>
     {/if}
-    <Composer chat {draftKey} onsubmit={submit} disabled={!cur.id && !cur.draftProject} placeholder={cur.draftProject ? '新会话的第一条消息…' : cur.id ? '发给 Cursor…' : '先选一个会话'} />
+    <Composer chat {draftKey} onsubmit={submit} disabled={!cur.id && !cur.draftProject} placeholder={cur.draftProject ? t('新会话的第一条消息…') : cur.id ? t('发给 Cursor…') : t('先选一个会话')} />
   </div>
 {/if}
 
@@ -241,26 +242,26 @@
 {#if sheetOpen}
   <div class="fixed inset-0 z-50 flex flex-col bg-background pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)]">
     <header class="flex flex-none items-center gap-2 border-b bg-card px-2 py-2">
-      <button class="grid size-9 place-items-center rounded-lg active:bg-accent" aria-label="关闭" onclick={() => (sheetOpen = false)}><X class="size-5" /></button>
-      <strong class="flex-1">Cursor 会话</strong>
-      <Button size="sm" variant="secondary" class="h-9 rounded-full" onclick={() => { startDraft(''); sheetOpen = false }}><Plus />新对话</Button>
+      <button class="grid size-9 place-items-center rounded-lg active:bg-accent" aria-label={t('关闭')} onclick={() => (sheetOpen = false)}><X class="size-5" /></button>
+      <strong class="flex-1">{t('Cursor 会话列表')}</strong>
+      <Button size="sm" variant="secondary" class="h-9 rounded-full" onclick={() => { startDraft(''); sheetOpen = false }}><Plus />{t('新对话')}</Button>
     </header>
     <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 pt-2 pb-[calc(env(safe-area-inset-bottom)+12px)]" data-testid="cursor-sessions">
-      {#if !cur.projects.length}<p class="p-6 text-center text-sm text-muted-foreground">{cur.conn === 'ready' ? '没有会话' : cur.msg || '还没接入 Cursor'}</p>{/if}
+      {#if !cur.projects.length}<p class="p-6 text-center text-sm text-muted-foreground">{cur.conn === 'ready' ? t('没有会话') : tr(cur.msg) || t('还没接入 Cursor')}</p>{/if}
       <div class="grid gap-3">
         {#each cur.projects as p (p.id)}
           {#if p.sessions.length || p.uri}
             <section class="grid gap-0.5">
               <div class="flex items-center justify-between px-2.5 text-xs text-muted-foreground">
-                <span class="truncate">{p.label}</span>
-                {#if p.uri}<button class="flex items-center gap-0.5 rounded px-1.5 py-1 text-primary active:bg-accent" onclick={() => { startDraft(p.id); sheetOpen = false }}><Plus class="size-3" />新 Agent</button>{/if}
+                <span class="truncate">{tr(p.label)}</span>
+                {#if p.uri}<button class="flex items-center gap-0.5 rounded px-1.5 py-1 text-primary active:bg-accent" onclick={() => { startDraft(p.id); sheetOpen = false }}><Plus class="size-3" />{t('新 Agent')}</button>{/if}
               </div>
               {#each p.sessions as s (s.id)}
                 <button class={cn('flex min-w-0 items-center gap-2 rounded-[10px] px-2.5 py-3 text-left active:bg-accent', s.id === cur.id && 'bg-accent')} onclick={() => { selectSession(s.id); sheetOpen = false }}>
-                  <span class={cn('size-2 flex-none rounded-full', s.unread ? 'bg-primary' : 'bg-transparent')} aria-label={s.unread ? '未读' : undefined}></span>
-                  <span class={cn('min-w-0 flex-1 truncate text-[15px]', s.unread && 'font-semibold')}>{s.title || '无标题'}</span>
-                  {#if s.waiting}<span class="flex-none rounded-full bg-warn px-1.5 text-[10px] leading-4 font-semibold text-black">等你</span>{/if}
-                  {#if s.active}<span class="flex-none rounded bg-secondary px-1.5 text-[10px] text-muted-foreground">电脑上开着</span>{/if}
+                  <span class={cn('size-2 flex-none rounded-full', s.unread ? 'bg-primary' : 'bg-transparent')} aria-label={s.unread ? t('未读') : undefined}></span>
+                  <span class={cn('min-w-0 flex-1 truncate text-[15px]', s.unread && 'font-semibold')}>{s.title || t('无标题')}</span>
+                  {#if s.waiting}<span class="flex-none rounded-full bg-warn px-1.5 text-[10px] leading-4 font-semibold text-black">{t('等你')}</span>{/if}
+                  {#if s.active}<span class="flex-none rounded bg-secondary px-1.5 text-[10px] text-muted-foreground">{t('电脑上开着')}</span>{/if}
                   <span class={cn('flex-none text-xs', statusTone(s.status))}>{statusCn(s.status)}</span>
                   <span class="w-8 flex-none text-right text-xs text-muted-foreground">{s.age}</span>
                 </button>

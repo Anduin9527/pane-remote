@@ -2,7 +2,7 @@
 // 网络完全走这台电脑（localhost、内网、系统代理都照用）。由 bridge 的 preview 命令启动，
 // stdin / stdout 是和中转服务器之间的通道，每行一个 JSON。
 //
-// 收（中转 → 这里）：open{url} viewport{w,h,dpr,desktop} tap{x,y} hover{x,y} scroll{x,y,dy} text{s} key{key}
+// 收（中转 → 这里）：open{url} viewport{w,h,dpr,desktop,lang} tap{x,y} hover{x,y} scroll{x,y,dy} text{s} key{key}
 //                   back forward reload ack{seq} tabs switch{id} close{id} new{url}
 // 发（这里 → 中转）：frame{seq,w,h,data(base64 jpeg)} nav{url,title,loading} tabs{list,current} error{msg} ready
 //
@@ -159,6 +159,34 @@ const kindOf = (p) => { const e = extOf(p); for (const [k, list] of Object.entri
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
 const tilde = (p) => (p === HOME ? '~' : p.startsWith(HOME + '/') ? '~' + p.slice(HOME.length) : p)
 const fmtSize = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(2)} GB`
+// 文件浏览器页面的界面语言：手机在 viewport 里带 lang（只认 'en' / 'zh'，默认中文），页面按它出中文或英文
+let uiLang = 'zh'
+const PAGE_EN = {
+  '打不开': 'Cannot open',
+  '上一级': 'Up one level',
+  '显示 {n} 个隐藏项': 'Show {n} hidden',
+  '不显示 {n} 个隐藏项': 'Hide {n} hidden',
+  '{d} 个文件夹 · {f} 个文件': '{d} folders · {f} files',
+  '（只列前 {n} 个）': ' (showing first {n})',
+  '空文件夹': 'Empty folder',
+  '所在文件夹': 'Enclosing folder',
+  '加载中…': 'Loading…',
+  '{n} 页': '{n} pages',
+  '类型': 'Type',
+  '{ext} 文件（预览不了，不是文本）': '{ext} file (no preview, not text)',
+  '大小': 'Size',
+  '修改时间': 'Modified',
+  '位置': 'Location',
+  '文件有 {size}，只显示前 2 MB': 'File is {size}; showing the first 2 MB only',
+  '{n} 行': '{n} rows',
+  '正在打开网页文件…': 'Opening HTML file…',
+  '只能看家目录和 /tmp 里的文件，或者文件不存在': 'Only files in your home folder and /tmp can be viewed, or the file does not exist',
+}
+/** 页面文案：中文原文当 key，英文模式查表；{x} 占位按 vars 填 */
+const L = (zh, vars) => {
+  const s = uiLang === 'en' ? PAGE_EN[zh] ?? zh : zh
+  return vars ? s.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m)) : s
+}
 const fmtTime = (ms) => { const d = new Date(ms); const p = (x) => String(x).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}` }
 
 function resolveSafe(input) {
@@ -214,7 +242,7 @@ function crumbs(p) {
   return `<div class="crumbs">${t.startsWith('~') ? '' : '<span>/</span>'}${shown.join('<span>/</span>')}</div>`
 }
 const htmlPage = (title, p, meta, body, head = '') =>
-  `<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><style>${PAGE_CSS}</style>${head}</head><body><header>${crumbs(p)}<div class="meta">${meta}</div></header>${body}</body></html>`
+  `<!doctype html><html lang="${uiLang === 'en' ? 'en' : 'zh'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><style>${PAGE_CSS}</style>${head}</head><body><header>${crumbs(p)}<div class="meta">${meta}</div></header>${body}</body></html>`
 
 function icon(name, dir) {
   if (dir) return '📁'
@@ -224,7 +252,7 @@ function icon(name, dir) {
 
 function dirPage(p, showHidden) {
   let list = []
-  try { list = fs.readdirSync(p, { withFileTypes: true }) } catch (e) { return htmlPage(path.basename(p), p, '打不开', `<p class="empty">${esc(e.message)}</p>`) }
+  try { list = fs.readdirSync(p, { withFileTypes: true }) } catch (e) { return htmlPage(path.basename(p), p, esc(L('打不开')), `<p class="empty">${esc(e.message)}</p>`) }
   const hidden = list.filter((e) => e.name.startsWith('.')).length
   if (!showHidden) list = list.filter((e) => !e.name.startsWith('.'))
   const rows = list.map((e) => {
@@ -234,16 +262,16 @@ function dirPage(p, showHidden) {
     return { name: e.name, full, dir: !!st?.isDirectory(), size: st?.size ?? 0, mtime: st?.mtimeMs ?? 0 }
   }).sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name, 'zh', { numeric: true }) : a.dir ? -1 : 1))
   const shown = rows.slice(0, 2000)
-  const up = p !== '/' && resolveSafe(path.dirname(p)) ? `<a class="row" href="${esc(viewUrl(path.dirname(p)))}"><span class="ic">⬆️</span><span class="nm"><b>上一级</b></span></a>` : ''
+  const up = p !== '/' && resolveSafe(path.dirname(p)) ? `<a class="row" href="${esc(viewUrl(path.dirname(p)))}"><span class="ic">⬆️</span><span class="nm"><b>${esc(L('上一级'))}</b></span></a>` : ''
   const html = shown.map((r) => {
     const thumb = !r.dir && kindOf(r.name) === 'image' && r.size < 30 * 1048576 ? `<img loading="lazy" src="${esc(rawUrl(r.full))}">` : icon(r.name, r.dir)
     const sub = r.dir ? fmtTime(r.mtime) : `${fmtSize(r.size)} · ${fmtTime(r.mtime)}`
     return `<a class="row" href="${esc(viewUrl(r.full))}"><span class="ic">${thumb}</span><span class="nm"><b>${esc(r.name)}</b><small>${sub}</small></span></a>`
   }).join('')
   const dirs = rows.filter((r) => r.dir).length
-  const toggle = hidden ? ` · <a href="${esc(viewUrl(p) + (showHidden ? '' : '&hidden=1'))}">${showHidden ? '不显示' : '显示'} ${hidden} 个隐藏项</a>` : ''
-  const meta = `${dirs} 个文件夹 · ${rows.length - dirs} 个文件${rows.length > shown.length ? `（只列前 ${shown.length} 个）` : ''}${toggle}`
-  return htmlPage(path.basename(p) || '/', p, meta, up + (html || '<p class="empty">空文件夹</p>'))
+  const toggle = hidden ? ` · <a href="${esc(viewUrl(p) + (showHidden ? '' : '&hidden=1'))}">${esc(L(showHidden ? '不显示 {n} 个隐藏项' : '显示 {n} 个隐藏项', { n: hidden }))}</a>` : ''
+  const meta = `${esc(L('{d} 个文件夹 · {f} 个文件', { d: dirs, f: rows.length - dirs }))}${rows.length > shown.length ? esc(L('（只列前 {n} 个）', { n: shown.length })) : ''}${toggle}`
+  return htmlPage(path.basename(p) || '/', p, meta, up + (html || `<p class="empty">${esc(L('空文件夹'))}</p>`))
 }
 
 function readHead(p, max) {
@@ -269,18 +297,18 @@ function parseCsv(text, sep) {
 function filePage(p) {
   const st = fs.statSync(p)
   const name = path.basename(p), k = kindOf(p), e = extOf(p)
-  const meta = `${fmtSize(st.size)} · ${fmtTime(st.mtimeMs)} · <a href="${esc(viewUrl(path.dirname(p)))}">所在文件夹</a>`
+  const meta = `${fmtSize(st.size)} · ${fmtTime(st.mtimeMs)} · <a href="${esc(viewUrl(path.dirname(p)))}">${esc(L('所在文件夹'))}</a>`
   const raw = esc(rawUrl(p))
   if (k === 'image') return htmlPage(name, p, meta, `<main class="media"><img src="${raw}"></main>`)
   if (k === 'video') return htmlPage(name, p, meta, `<main class="media"><video src="${raw}" controls playsinline preload="metadata"></video></main>`)
   if (k === 'audio') return htmlPage(name, p, meta, `<main><audio src="${raw}" controls preload="metadata" style="width:100%"></audio></main>`)
   if (k === 'pdf') {
-    return htmlPage(name, p, meta + ' · <span id="pg">加载中…</span>', `<main class="pdf" id="pdf"></main>${dataBlock({ raw: rawUrl(p), lib: vendorUrl('pdf.mjs'), worker: vendorUrl('pdf.worker.mjs') })}`, `<script type="module" nonce="${NONCE}">
+    return htmlPage(name, p, meta + ` · <span id="pg">${esc(L('加载中…'))}</span>`, `<main class="pdf" id="pdf"></main>${dataBlock({ raw: rawUrl(p), lib: vendorUrl('pdf.mjs'), worker: vendorUrl('pdf.worker.mjs'), pages: L('{n} 页') })}`, `<script type="module" nonce="${NONCE}">
 const d = JSON.parse(document.getElementById('data').textContent)
 const pdfjs = await import(d.lib)
 pdfjs.GlobalWorkerOptions.workerSrc = d.worker
 const doc = await pdfjs.getDocument(d.raw).promise
-const box = document.getElementById('pdf'); document.getElementById('pg').textContent = doc.numPages + ' 页'
+const box = document.getElementById('pdf'); document.getElementById('pg').textContent = d.pages.replace('{n}', doc.numPages)
 const io = new IntersectionObserver((es) => es.forEach(async (en) => { if (!en.isIntersecting || en.target.dataset.done) return; en.target.dataset.done = 1; io.unobserve(en.target)
   const pg = await doc.getPage(+en.target.dataset.n); const w = box.clientWidth - 24; const v0 = pg.getViewport({ scale: 1 }); const s = w / v0.width; const v = pg.getViewport({ scale: s * devicePixelRatio })
   const c = en.target; c.width = v.width; c.height = v.height; c.style.width = w + 'px'; c.style.height = v.height / devicePixelRatio + 'px'
@@ -293,10 +321,10 @@ box.style.padding = '12px'
   const MAX = 2 * 1048576
   const head = readHead(p, Math.min(st.size, MAX))
   if (!isText(head)) {
-    return htmlPage(name, p, meta, `<div class="card"><b>${esc(name)}</b><dl><dt>类型</dt><dd>${esc(e.toUpperCase())} 文件（预览不了，不是文本）</dd><dt>大小</dt><dd>${fmtSize(st.size)}</dd><dt>修改时间</dt><dd>${fmtTime(st.mtimeMs)}</dd><dt>位置</dt><dd>${esc(tilde(p))}</dd></dl></div>`)
+    return htmlPage(name, p, meta, `<div class="card"><b>${esc(name)}</b><dl><dt>${esc(L('类型'))}</dt><dd>${esc(L('{ext} 文件（预览不了，不是文本）', { ext: e.toUpperCase() }))}</dd><dt>${esc(L('大小'))}</dt><dd>${fmtSize(st.size)}</dd><dt>${esc(L('修改时间'))}</dt><dd>${fmtTime(st.mtimeMs)}</dd><dt>${esc(L('位置'))}</dt><dd>${esc(tilde(p))}</dd></dl></div>`)
   }
   const text = head.toString('utf8')
-  const cut = st.size > MAX ? `<p class="note">文件有 ${fmtSize(st.size)}，只显示前 2 MB</p>` : ''
+  const cut = st.size > MAX ? `<p class="note">${esc(L('文件有 {size}，只显示前 2 MB', { size: fmtSize(st.size) }))}</p>` : ''
   if (k === 'md') {
     // marked 出来的 HTML 先过 DOMPurify（去掉脚本、事件属性、javascript: 链接），再把相对路径的图片 / 链接改成走文件浏览器
     return htmlPage(name, p, meta, `${cut}<article class="md" id="md"></article>${dataBlock({ text, base: path.dirname(p), raw: `${filesBase}/raw?p=`, view: `${filesBase}/view?p=` })}`,
@@ -322,7 +350,7 @@ addEventListener('DOMContentLoaded', () => {
     const rows = parseCsv(text, e === 'tsv' ? '\t' : ',')
     const [h = [], ...body] = rows
     const table = `<table class="csv"><thead><tr>${h.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${body.map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`
-    return htmlPage(name, p, `${meta} · ${body.length}${rows.length >= 2000 ? '+' : ''} 行`, `${cut}<div style="overflow:auto">${table}</div>`)
+    return htmlPage(name, p, `${meta} · ${esc(L('{n} 行', { n: body.length + (rows.length >= 2000 ? '+' : '') }))}`, `${cut}<div style="overflow:auto">${table}</div>`)
   }
   let lang = LANG[e] || LANG[name.toLowerCase()] || ''
   let shown = text
@@ -375,7 +403,7 @@ const fileServer = http.createServer((req, res) => {
     return fs.createReadStream(f).on('error', () => res.end()).pipe(res)
   }
   const p = resolveSafe(u.searchParams.get('p'))
-  if (!p) { res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('只能看家目录和 /tmp 里的文件，或者文件不存在') }
+  if (!p) { res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' }); return res.end(L('只能看家目录和 /tmp 里的文件，或者文件不存在')) }
   try {
     if (route === 'raw') return sendRaw(req, res, p)
     if (route !== 'view') { res.writeHead(404); return res.end() }
@@ -385,7 +413,7 @@ const fileServer = http.createServer((req, res) => {
     if (!isDir && kindOf(p) === 'html') {
       const sid = pages.get(current)?.sessionId
       if (sid) setTimeout(() => cdp('Page.navigate', { url: fileUrl(p) }, sid).catch(() => {}), 0)
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end('<meta charset="utf-8">正在打开网页文件…')
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(`<meta charset="utf-8">${esc(L('正在打开网页文件…'))}`)
     }
     NONCE = crypto.randomBytes(16).toString('base64')
     const html = isDir ? dirPage(p, u.searchParams.has('hidden')) : filePage(p)
@@ -633,6 +661,14 @@ const KEYS = {
   ArrowLeft: { code: 'ArrowLeft', vk: 37 }, ArrowRight: { code: 'ArrowRight', vk: 39 },
 }
 
+// 手机的界面语言变了：当前标签页是文件浏览器的页面就重新加载，换成新语言
+function setUiLang(l) {
+  if (l === uiLang) return
+  uiLang = l
+  const p = pages.get(current)
+  if (p && filesBase && p.url.startsWith(filesBase + '/')) cdp('Page.reload', {}, p.sessionId).catch(() => {})
+}
+
 const INPUTS = new Set(['tap', 'hover', 'scroll', 'text', 'key'])
 async function handle(msg) {
   const p = pages.get(current)
@@ -642,6 +678,7 @@ async function handle(msg) {
     case 'ack': return onAck(msg.seq)
     case 'refresh': inflight = 0; dirty = true; return pump() // 新手机连上：不管之前卡在哪，马上补一帧
     case 'viewport': {
+      if (msg.lang === 'en' || msg.lang === 'zh') setUiLang(msg.lang)
       const next = { w: Math.max(200, Math.min(1600, Math.round(msg.w))), h: Math.max(200, Math.min(2000, Math.round(msg.h))), dpr: Math.max(1, Math.min(3, Number(msg.dpr) || 2)), desktop: CURSOR || !!msg.desktop }
       if (CURSOR) { view = next; if (current) { page = await cursorPage(sid); inflight = 0; dirty = true; pump() } return }
       if (next.w === view.w && next.h === view.h && next.dpr === view.dpr && next.desktop === view.desktop) { inflight = 0; dirty = true; return pump() }

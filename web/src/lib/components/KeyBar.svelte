@@ -10,6 +10,7 @@
   import { ui } from '$lib/session.svelte'
   import { cn } from '$lib/utils'
   import Joystick from './Joystick.svelte'
+  import { t } from '$lib/i18n'
 
   let { ctrl = $bindable(false), onedit }: { ctrl?: boolean; onedit: () => void } = $props()
   const all = $derived((prefs.keys ? withNewDefaults(prefs.keys) : DEFAULT_KEYS).filter((k) => !k.hidden))
@@ -83,7 +84,7 @@
   <!-- 展开 / 收起：和按键区分开（没有边框和底色）；长按打开快捷键编辑 -->
   <button
     type="button"
-    aria-label={open ? '收起更多按键（长按编辑）' : '更多按键（长按编辑）'}
+    aria-label={open ? t('收起更多按键（长按编辑）') : t('更多按键（长按编辑）')}
     aria-expanded={open}
     class={cn('relative grid h-9 w-8 flex-none place-items-center rounded-full text-muted-foreground active:bg-accent', open && 'text-foreground')}
     onpointerdown={moreDown}

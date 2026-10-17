@@ -1,6 +1,7 @@
 // Claude 会话里的定时任务（CronCreate 建的，只活在会话里）：从会话记录还原出来，手机上看状态、一键发提示词管理
 import { sendRaw } from '$lib/api'
 import { ui } from '$lib/session.svelte'
+import { t as tt } from '$lib/i18n'
 
 export type CronLast = { ts: number; count: number; result?: string; running?: boolean; manual?: boolean }
 export type CronTask = {
@@ -81,22 +82,22 @@ export function humanCron(cron: string) {
   if (f.length !== 5) return cron
   const [mi, h, dom, mon, dow] = f
   const everyMin = /^\*\/(\d+)$/.exec(mi)
-  if (everyMin && h === '*' && dom === '*' && mon === '*' && dow === '*') return `每 ${everyMin[1]} 分钟`
+  if (everyMin && h === '*' && dom === '*' && mon === '*' && dow === '*') return tt('每 {n} 分钟', { n: everyMin[1] })
   if (!/^[\d,]+$/.test(mi)) return cron
-  const mins = mi.split(',').map((m) => `:${pad(+m)}`).join('、')
+  const mins = mi.split(',').map((m) => `:${pad(+m)}`).join(tt('、'))
   if (dom === '*' && mon === '*' && dow === '*') {
-    if (h === '*') return `每小时 ${mins}`
+    if (h === '*') return tt('每小时 {m}', { m: mins })
     const step = /^\*\/(\d+)$/.exec(h)
-    if (step) return `每 ${step[1]} 小时 ${mins}`
+    if (step) return tt('每 {n} 小时 {m}', { n: step[1], m: mins })
     if (/^[\d,]+$/.test(h) && !mi.includes(',')) {
       const hs = h.split(',').map(Number)
       const gap = hs[1] - hs[0]
       // 1,5,9,13,17,21 这种等间隔铺满一天的，说成「每 4 小时」
-      if (hs.length > 2 && 24 % gap === 0 && hs.length === 24 / gap && hs.every((x, i) => x === hs[0] + i * gap)) return `每 ${gap} 小时 :${pad(+mi)}`
-      return `每天 ${hs.map((x) => `${pad(x)}:${pad(+mi)}`).join('、')}`
+      if (hs.length > 2 && 24 % gap === 0 && hs.length === 24 / gap && hs.every((x, i) => x === hs[0] + i * gap)) return tt('每 {n} 小时 {m}', { n: gap, m: `:${pad(+mi)}` })
+      return tt('每天 {t}', { t: hs.map((x) => `${pad(x)}:${pad(+mi)}`).join(tt('、')) })
     }
   }
-  if (/^\d+$/.test(h) && /^\d+$/.test(dom) && /^\d+$/.test(mon) && dow === '*' && !mi.includes(',')) return `${mon}月${dom}日 ${pad(+h)}:${pad(+mi)}`
+  if (/^\d+$/.test(h) && /^\d+$/.test(dom) && /^\d+$/.test(mon) && dow === '*' && !mi.includes(',')) return tt('{mon}月{dom}日 {t}', { mon, dom, t: `${pad(+h)}:${pad(+mi)}` })
   return cron
 }
 
@@ -105,15 +106,17 @@ export function clock(ts: number) {
   const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`
   if (d.toDateString() === now.toDateString()) return hm
   const y = new Date(now); y.setDate(now.getDate() - 1)
-  if (d.toDateString() === y.toDateString()) return `昨天 ${hm}`
+  if (d.toDateString() === y.toDateString()) return tt('昨天 {t}', { t: hm })
   const t = new Date(now); t.setDate(now.getDate() + 1)
-  if (d.toDateString() === t.toDateString()) return `明天 ${hm}`
+  if (d.toDateString() === t.toDateString()) return tt('明天 {t}', { t: hm })
   return `${d.getMonth() + 1}/${d.getDate()} ${hm}`
 }
-export function relative(ms: number) {
+/** bare：只要时长，不带「后 / 前」 */
+export function relative(ms: number, bare = false) {
   const m = Math.round(Math.abs(ms) / 60000)
-  const s = m < 1 ? '不到 1 分钟' : m < 60 ? `${m} 分钟` : m < 60 * 36 ? `${Math.floor(m / 60)} 小时${m % 60 ? ` ${m % 60} 分` : ''}` : `${Math.round(m / 1440)} 天`
-  return ms >= 0 ? `${s}后` : `${s}前`
+  const s = m < 1 ? tt('不到 1 分钟') : m < 60 ? tt('{n} 分钟', { n: m }) : m < 60 * 36 ? (m % 60 ? tt('{h} 小时 {m} 分', { h: Math.floor(m / 60), m: m % 60 }) : tt('{h} 小时', { h: Math.floor(m / 60) })) : tt('{n} 天', { n: Math.round(m / 1440) })
+  if (bare) return s
+  return ms >= 0 ? tt('{d}后', { d: s }) : tt('{d}前', { d: s })
 }
 
 // ---------- 管理：都是往会话里发一条提示词，让 Claude 自己用 CronDelete / CronCreate 处理 ----------

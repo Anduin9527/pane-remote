@@ -1,5 +1,7 @@
 # 中转模式（增强版）
 
+中文 | [English](en/relay.md)
+
 > 这部分是脚本加手动步骤，还没在一台全新的服务器上从零完整验证过。照着做遇到问题，`pane-remote doctor` 和服务器上的 `journalctl -u pane-remote` 是第一手线索。
 
 ## 什么时候用

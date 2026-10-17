@@ -1,4 +1,5 @@
 // 快捷键栏的默认键位；用户可以隐藏、调顺序、加宏（存在手机本地）
+import { t } from './i18n'
 const ESC = '\x1b'
 export type Key = { label: string; seq: string; repeat?: boolean; hidden?: boolean; macro?: boolean; enter?: boolean; pinned?: boolean }
 
@@ -14,7 +15,7 @@ export const DEFAULT_KEYS: Key[] = [
   { label: 'Ctrl', seq: 'ctrl' }, { label: '⇧', seq: 'shift' }, { label: '⌥', seq: 'alt' },
   { label: '^C', seq: '\x03' }, { label: '^D', seq: '\x04' }, { label: '^Z', seq: '\x1a' }, { label: '^R', seq: '\x12' }, { label: '^L', seq: '\x0c' },
   { label: 'y', seq: 'y' }, { label: 'n', seq: 'n' }, { label: '1', seq: '1' }, { label: '2', seq: '2' }, { label: '3', seq: '3' },
-  { label: '/', seq: '/' }, { label: '空格', seq: ' ' },
+  { label: '/', seq: '/' }, { label: t('空格'), seq: ' ' },
   { label: 'PgUp', seq: `${ESC}[5~` }, { label: 'PgDn', seq: `${ESC}[6~` },
 ]
 

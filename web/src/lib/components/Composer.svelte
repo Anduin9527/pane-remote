@@ -15,6 +15,7 @@
   import { composer, switchDraft, saveDraft } from '$lib/composer.svelte'
   import { cn } from '$lib/utils'
   import { Button } from '$lib/components/ui/button'
+  import { t as tt, tr } from '$lib/i18n'
 
   // draftKey / onsubmit：给别的发送目标复用（比如 Cursor 页面）：草稿按 draftKey 存，发送交给 onsubmit（失败时文字放回输入框）。
   // 不传时就是终端：草稿跟着 pane，发送 = 往 pane 里打字
@@ -45,18 +46,18 @@
     const files = [...(fileEl.files || [])]
     fileEl.value = ''
     for (const f of files) {
-      if (f.size > 25 << 20) { toast.error(`${f.name} 超过 25MB`); continue }
+      if (f.size > 25 << 20) { toast.error(tt('{name} 超过 25MB', { name: f.name })); continue }
       uploading++
-      const id = toast.loading(`上传 ${f.name}…`)
+      const id = toast.loading(tt('上传 {name}…', { name: f.name }))
       try {
         const r = await fetch(`api/upload?name=${encodeURIComponent(f.name)}`, { method: 'POST', body: f })
         const d = await r.json().catch(() => ({}))
         if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`)
         const t = composer.text
         composer.text = t && !/\s$/.test(t) ? `${t} ${d.path} ` : `${t}${d.path} `
-        toast.success(`已传到电脑：${d.path.split('/').pop()}`, { id })
+        toast.success(tt('已传到电脑：{name}', { name: d.path.split('/').pop() }), { id })
       } catch (e) {
-        toast.error(`上传失败：${(e as Error).message}`, { id })
+        toast.error(tt('上传失败：{msg}', { msg: tr((e as Error).message) }), { id })
       } finally {
         uploading--
       }
@@ -78,7 +79,7 @@
       if (!t || disabled) return
       composer.text = ''
       expanded = false
-      try { await onsubmit(t) } catch (e) { if (!composer.text) composer.text = t; toast.error(`没发出去：${(e as Error).message}`) }
+      try { await onsubmit(t) } catch (e) { if (!composer.text) composer.text = t; toast.error(tt('没发出去：{msg}', { msg: tr((e as Error).message) })) }
       return
     }
     const text = composer.text
@@ -91,7 +92,7 @@
     // Claude Code 的焦点跑到了后台 agent 列表上：字进不了输入框、回车会打开选中的 agent、x 会停掉它。先按键回到输入框再发
     if (ui.agent === 'claude' && detectAgentFocus().kind === 'list' && !(await backToMain())) {
       composer.text = text
-      toast.error('焦点在后台 agent 列表上，没能自动回到输入框，没有发送')
+      toast.error(tt('焦点在后台 agent 列表上，没能自动回到输入框，没有发送'))
       return
     }
     // 接过来编辑的电脑草稿：先把电脑输入框里的旧内容删掉
@@ -118,7 +119,7 @@
       if (!composer.text) return
       navigator.vibrate?.(10)
       send(false)
-      toast('已填进电脑上的输入框，没有提交')
+      toast(tt('已填进电脑上的输入框，没有提交'))
     }, 500)
   }
   function sendUp() {
@@ -136,7 +137,7 @@
       {oninput}
       {onkeydown}
       rows="1"
-      placeholder={ph ?? (chat ? `回复 ${agentName()}…` : '输入文字…')}
+      placeholder={ph ?? (chat ? tt('回复 {agent}…', { agent: agentName() }) : tt('输入文字…'))}
       {disabled}
       enterkeyhint={expanded ? 'enter' : 'send'}
       autocapitalize="off"
@@ -151,7 +152,7 @@
     <button
       type="button"
       class="absolute top-1.5 right-1.5 grid size-6 place-items-center rounded text-muted-foreground active:bg-accent"
-      aria-label={expanded ? '收起编辑区' : '展开成多行编辑'}
+      aria-label={expanded ? tt('收起编辑区') : tt('展开成多行编辑')}
       onpointerdown={(e) => e.preventDefault()}
       onclick={() => { expanded = !expanded; el?.focus() }}
     >{#if expanded}<Minimize2 class="size-3.5" />{:else}<Maximize2 class="size-3.5" />{/if}</button>
@@ -159,21 +160,21 @@
   <div class={cn('flex gap-1.5', expanded ? 'items-center' : 'contents')}>
     <button
       type="button"
-      title="传文件到电脑"
+      title={tt('传文件到电脑')}
       class={cn('order-1 grid size-[38px] flex-none place-items-center rounded-[10px] border text-muted-foreground', uploading && 'animate-pulse text-primary')}
       onclick={() => fileEl.click()}
     ><Paperclip class="size-4" /></button>
-    {#if expanded}<span class="flex-1 text-xs text-muted-foreground">回车换行{chat && !onsubmit ? '，长按发送 = 只填入不提交' : ''}</span>{/if}
+    {#if expanded}<span class="flex-1 text-xs text-muted-foreground">{tt('回车换行')}{chat && !onsubmit ? tt('，长按发送 = 只填入不提交') : ''}</span>{/if}
     {#if !chat && !onsubmit}
       <button
         type="button"
-        title="发送时附带回车"
+        title={tt('发送时附带回车')}
         aria-pressed={prefs.enter}
         class={cn('order-3 grid size-[38px] flex-none place-items-center rounded-[10px] border text-muted-foreground', prefs.enter && 'border-primary text-primary')}
         onpointerdown={(e) => e.preventDefault()}
         onclick={() => (prefs.enter = !prefs.enter)}
       ><CornerDownLeft class="size-4" /></button>
     {/if}
-    <Button type="button" class="order-4 h-[38px] flex-none rounded-[10px] px-3.5 font-semibold select-none" onpointerdown={sendDown} onpointerup={sendUp} onpointercancel={() => clearTimeout(holdTimer)}>发送</Button>
+    <Button type="button" class="order-4 h-[38px] flex-none rounded-[10px] px-3.5 font-semibold select-none" onpointerdown={sendDown} onpointerup={sendUp} onpointercancel={() => clearTimeout(holdTimer)}>{tt('发送')}</Button>
   </div>
 </div>

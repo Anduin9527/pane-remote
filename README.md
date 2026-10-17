@@ -1,5 +1,7 @@
 # pane-remote
 
+中文 | [English](README.en.md)
+
 用手机查看和操作电脑上 WezTerm 里的终端，Claude Code / Codex 会话有专门的对话视图、推送提醒和会话管理。
 不经过任何第三方服务器：手机和电脑之间走你自己的 Tailscale 网络，只有你的账号能打开。
 
@@ -65,6 +67,7 @@ cd ~/pane-remote
 ./install.sh --chrome                    # 没装 Chrome 又想用预览浏览器：用 Homebrew 装 Google Chrome
 ./install.sh --login you@example.com     # 允许访问的 Tailscale 账号（默认是电脑登录的账号；电脑是标签设备时必须指定）
 ./install.sh --no-brew                   # 自己装好 WezTerm、Tailscale，不用 Homebrew
+./install.sh --lang en                   # 命令行用英文（默认按系统语言）
 ```
 
 ## 日常命令
