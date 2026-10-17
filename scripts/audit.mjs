@@ -6,6 +6,7 @@
 //   node scripts/audit.mjs --deny <文件>         再加一份「绝不能出现」的词表（每行一个，# 开头是注释，不分大小写）
 //                                               词表放在仓库外面，别把它提交进来
 //   node scripts/audit.mjs --staged             只扫暂存区（给 pre-commit 用）
+//   node scripts/audit.mjs --allow-email a@b,c@d  这些邮箱允许出现（比如提交作者自己的邮箱），不写进仓库
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -14,6 +15,7 @@ const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 const args = process.argv.slice(2)
 const denyFile = args.includes('--deny') ? args[args.indexOf('--deny') + 1] : process.env.PANE_REMOTE_AUDIT_DENY
 const staged = args.includes('--staged')
+const allowEmails = new Set((args.includes('--allow-email') ? args[args.indexOf('--allow-email') + 1] : process.env.PANE_REMOTE_AUDIT_ALLOW_EMAIL || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean))
 
 const git = (...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', maxBuffer: 64 << 20 })
 const files = staged
@@ -26,7 +28,7 @@ const OK_IP = new Set(['127.0.0.1', '0.0.0.0', '255.255.255.255'])
 const OK_USER_DIR = /^\/(Users|home)\/(<[^>]+>|you|user|me|USERNAME|\$USER|\$\{USER\}|runner|shared)(?=$|[^A-Za-z0-9])/
 
 const RULES = [
-  ['邮箱地址', /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g, (m) => !OK_EMAIL.test(m)],
+  ['邮箱地址', /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g, (m) => !OK_EMAIL.test(m) && !allowEmails.has(m.toLowerCase())],
   ['个人目录路径', /\/(Users|home)\/[^\s/"'`)\]]+/g, (m) => !OK_USER_DIR.test(m)],
   ['IP 地址', /(?<![\d.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?![\d.])/g, (m) => !OK_IP.has(m) && m.split('.').every((x) => +x <= 255)],
   // 任何 *.ts.net 都算（新式 tailnet 名是两个英文词连起来的，不一定带 tail 前缀），示例用的占位名除外
