@@ -144,7 +144,7 @@ export function cursorStream(req, res, url) {
   if (id && snapshot?.id === id) sse(res, 'messages', snapshot)
   updateWatch()
   pushSessions()
-  const ping = setInterval(() => { try { res.write('event: ping\ndata: {}\n\n') } catch {} }, 15000)
+  const ping = setInterval(() => { try { res.write('event: ping\ndata: {}\n\n') } catch {} }, 5000)
   res.on('close', () => { clearInterval(ping); clients.delete(c); markSeen(id); updateWatch() })
 }
 

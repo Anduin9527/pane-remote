@@ -58,12 +58,15 @@ export const sessionById = (id: string) => cur.projects.flatMap((p) => p.session
 
 let es: EventSource | null = null
 let wanted = false
+let lastMsgAt = 0
 export function connectCursor() {
   wanted = true
   es?.close()
   const src = new EventSource(`api/cursor/stream${cur.id ? `?id=${encodeURIComponent(cur.id)}` : ''}`)
   es = src
-  const on = (ev: string, fn: (d: any) => void) => src.addEventListener(ev, (e) => fn(JSON.parse((e as MessageEvent).data)))
+  lastMsgAt = Date.now()
+  const on = (ev: string, fn: (d: any) => void) => src.addEventListener(ev, (e) => { lastMsgAt = Date.now(); fn(JSON.parse((e as MessageEvent).data)) })
+  src.addEventListener('ping', () => { lastMsgAt = Date.now() })
   on('status', (d) => { cur.conn = d.conn; cur.msg = d.msg || ''; cur.step = d.step })
   on('sessions', (d) => {
     cur.projects = d.projects || []
@@ -97,6 +100,10 @@ function apply(d: any) {
 }
 /** 手动重连：重建推送连接，让电脑那边重新报一遍状态 */
 export function reconnectCursor() { if (wanted) connectCursor(); cursorCmd('refresh').catch(() => {}) }
+// 假死检测：服务端每 5 秒发 ping，13 秒没收到就重连（手机换了网络出口后旧连接会悄悄失效）
+setInterval(() => {
+  if (wanted && es && document.visibilityState === 'visible' && Date.now() - lastMsgAt > 13000) connectCursor()
+}, 3000)
 export function disconnectCursor() { wanted = false; es?.close(); es = null }
 document.addEventListener('visibilitychange', () => {
   if (!wanted) return

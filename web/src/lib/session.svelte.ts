@@ -1,6 +1,6 @@
 // 当前 pane 的连接状态和画面数据。画面行数可能有几百行，放普通数组里，用回调通知终端组件重画，
 // 不走 Svelte 的深度响应式。
-import { fetchPanes, label, report, resetSendQueue, type Pane } from './api'
+import { fetchPanes, label, report, resetSendQueue, onSendNetFail, type Pane } from './api'
 import { prefs } from './prefs.svelte'
 import { t, tr } from './i18n'
 
@@ -221,13 +221,17 @@ export function setPaused(v: boolean) {
   else if (ui.current) connect()
 }
 
-// 假死检测：服务端每 15 秒发 ping，40 秒什么都没收到就当连接已经断了（iOS 切网络时常见），主动重连
+// 假死检测：服务端每 5 秒发 ping，13 秒什么都没收到就当连接已经断了（iOS 切网络、家里路由器换了 NAT 端口时常见），主动重连
 setInterval(() => {
-  if (!paused && document.visibilityState === 'visible' && ui.current && es && Date.now() - lastMsgAt > 40000) {
+  if (!paused && document.visibilityState === 'visible' && ui.current && es && Date.now() - lastMsgAt > 13000) {
     setStatus('err', t('连接没有响应，重连中'))
     connect()
   }
-}, 10000)
+}, 3000)
+// 发送碰到网络错误：画面流多半也断了，2 秒内没收到过消息就立刻重连
+onSendNetFail(() => {
+  if (!paused && ui.current && Date.now() - lastMsgAt > 2000) connect()
+})
 
 // 切到后台就断开画面流（服务端据此知道没人在看，才会推送通知），回到前台再连（带上序号，画面没变就不重发）
 document.addEventListener('visibilitychange', () => {

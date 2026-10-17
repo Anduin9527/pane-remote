@@ -142,10 +142,10 @@
     if (!prefs.fit) prefs.fs
     untrack(layout)
   })
-  let hinted = false
+  // 全屏模式的操作提示只在这台手机上提示一次（以前每次打开终端都弹，太吵）
+  let hinted = (() => { try { return localStorage.getItem('hintMouse') === '1' } catch { return false } })()
   $effect(() => {
-    if (mouseMode() && !hinted) { hinted = true; toast(t('全屏模式：上下滑动滚动，轻点等于鼠标点击'), { duration: 2500 }) }
-    if (!mouseMode()) hinted = false
+    if (mouseMode() && !hinted) { hinted = true; try { localStorage.setItem('hintMouse', '1') } catch {} toast(t('全屏模式：上下滑动滚动，轻点等于鼠标点击'), { duration: 2500 }) }
   })
 
   // ---------- 全屏程序：滑动 → SGR 滚轮，轻点 → SGR 鼠标点击 ----------

@@ -5,7 +5,7 @@
 //   GET  /api/panes              pane 列表
 //   GET  /api/stream?pane=N[&since=序号]  SSE：size（列数行数）、full（全部行）、delta（只含变化的行）、resume（手里的画面已是最新）、ping
 //                                每帧带递增序号（SSE id）；重连时带上 since 或 Last-Event-ID，序号对得上就不重发整屏
-//   POST /api/send {pane, data}  把 data 原样发进 pane（方向键、回车等用控制序列）
+//   POST /api/send {pane, data, rid?}  把 data 原样发进 pane（方向键、回车等用控制序列）
 //   POST /api/pane/{spawn|split|kill|title|focus}  管理：新标签页/拆分（可带启动命令）、关闭、改标题、电脑上切过去
 //   GET  /api/push/key、POST /api/push/subscribe|unsubscribe|status|test  推送订阅（见 push.mjs）
 //   GET  /api/states             每个 pane 的状态：waiting / running / idle、等待的问题、有没有未读
@@ -150,6 +150,9 @@ function normalize(frame) {
 }
 
 const watchers = new Map()
+// /api/send 收到过的请求 id（手机重发去重），留 2 分钟
+const sentRids = new Map()
+setInterval(() => { const old = Date.now() - 120000; for (const [k, v] of sentRids) if (v.at < old) sentRids.delete(k) }, 30000)
 function startWatcher(pane) {
   const w = { pane, clients: new Set(), lines: null, seq: 0, proc: null, buf: '', size: null, stopped: false, restartTimer: null }
   const launch = () => {
@@ -571,7 +574,8 @@ const server = http.createServer(async (req, res) => {
       // 重连间隔带点随机，几台设备不会同时砸过来
       res.write(`retry: ${1500 + Math.floor(Math.random() * 1500)}\n\n`)
       // 具名 ping 事件：前端据此判断连接是不是假死（注释行 JS 收不到）
-      const ping = setInterval(() => res.write('event: ping\ndata: {}\n\n'), 15000)
+      // 5 秒一次：手机网络换了出口（路由器 NAT 端口变了）后旧连接会悄悄失效，要尽快发现
+      const ping = setInterval(() => res.write('event: ping\ndata: {}\n\n'), 5000)
       res.on('close', () => clearInterval(ping))
       return watch(pane, res, url.searchParams.get('since') || req.headers['last-event-id'] || null)
     }
@@ -580,9 +584,14 @@ const server = http.createServer(async (req, res) => {
       if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'json only' })
       const origin = req.headers.origin
       if (origin && new URL(origin).host !== req.headers.host) return json(res, 403, { error: 'bad origin' })
-      const { pane, data } = JSON.parse(await readBody(req))
+      const { pane, data, rid } = JSON.parse(await readBody(req))
       if (!/^\d{1,6}$/.test(String(pane)) || typeof data !== 'string' || !data) return json(res, 400, { error: 'bad request' })
-      await bridge(`send ${pane} ${Buffer.from(data, 'utf8').toString('base64')}`)
+      // 手机网络抖动时会带同一个 rid 重发：已经收到过的不再发进 pane，等第一次的结果
+      const key = typeof rid === 'string' && /^[\w-]{8,40}$/.test(rid) ? rid : null
+      if (key && sentRids.has(key)) { await sentRids.get(key).p.catch(() => {}); return json(res, 200, { ok: true, dup: true }) }
+      const p = bridge(`send ${pane} ${Buffer.from(data, 'utf8').toString('base64')}`)
+      if (key) { sentRids.set(key, { p, at: Date.now() }); p.catch(() => sentRids.delete(key)) }
+      await p
       if (/\r|^[0-9yn]$/.test(data)) push.markInput(pane) // 回车或回答提示：清掉「已完成」
       return json(res, 200, { ok: true })
     }
