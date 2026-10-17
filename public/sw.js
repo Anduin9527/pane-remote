@@ -14,18 +14,20 @@ self.addEventListener('push', (e) => {
   try { d = e.data.json() } catch { d = { title: 'Pane Remote', body: e.data && e.data.text() } }
   e.waitUntil(self.registration.showNotification(d.title || 'Pane Remote', {
     body: d.body || '', tag: d.tag || 'pane', renotify: true,
-    icon: 'icon-180.png', badge: 'icon-180.png', data: { pane: d.pane, url: d.url },
+    icon: 'icon-180.png', badge: 'icon-180.png', data: { pane: d.pane, url: d.url, cursor: d.cursor },
   }))
 })
 self.addEventListener('notificationclick', (e) => {
   e.notification.close()
   const pane = e.notification.data && e.notification.data.pane
   const open = e.notification.data && e.notification.data.url // 电脑要打开的网页：进预览页打开
-  const url = new URL(open ? `./?preview=${encodeURIComponent(open)}` : pane != null ? `./?pane=${pane}` : './', self.registration.scope).href
+  const cursor = e.notification.data && e.notification.data.cursor // Cursor 会话：进 Cursor 页打开这个会话
+  const url = new URL(cursor ? `./?cursor=${encodeURIComponent(cursor)}` : open ? `./?preview=${encodeURIComponent(open)}` : pane != null ? `./?pane=${pane}` : './', self.registration.scope).href
   e.waitUntil((async () => {
     const list = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
     for (const c of list) {
-      if (open) c.postMessage({ type: 'open-preview', url: open })
+      if (cursor) c.postMessage({ type: 'open-cursor', id: cursor })
+      else if (open) c.postMessage({ type: 'open-preview', url: open })
       else if (pane != null) c.postMessage({ type: 'open-pane', pane })
       return c.focus()
     }

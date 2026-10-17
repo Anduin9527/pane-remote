@@ -26,6 +26,8 @@
 #   dirs                    以前开过的目录（Claude 各配置目录里的项目），JSON 数组，只含还存在的
 #   preview                 常驻：手机预览用的无界面 Chrome 通道（stdin/stdout 每行一个 JSON，见 preview-agent.mjs）
 #   preview-stop            关掉预览用的 Chrome
+#   preview-cursor          常驻：预览接管 Cursor IDE 的内置浏览器（stdin/stdout 同 preview）
+#   cursor-ide              常驻：Cursor IDE 映射（会话列表、消息、操作，见 cursor-agent.mjs）
 #   awake                   让 Mac 2 分钟内不因空闲睡眠（caffeinate -i），并标记「手机在用」；手机在用时中转每分钟调一次
 # 其他任何输入一律拒绝，不会执行 shell。
 set -u
@@ -248,6 +250,16 @@ for f in glob.glob(f'{home}/.claude*/.claude.json') + [f'{home}/.claude.json']:
         pass
 print(json.dumps([{'dir': d, 't': int(t)} for d, t in sorted(seen.items(), key=lambda x: -x[1])]))
 PY
+    ;;
+  cursor-ide)
+    # 常驻：Cursor IDE 映射（stdin/stdout 每行一个 JSON，见 cursor-agent.mjs）。node:sqlite 还在实验阶段，关掉那条警告
+    [[ -x "$NODE" ]] || fail "找不到 node（$NODE），跑 pane-remote doctor 看看"
+    exec "$NODE" --no-warnings "$HERE/cursor-agent.mjs"
+    ;;
+  preview-cursor)
+    # 常驻：预览接管 Cursor IDE 的内置浏览器（不开自己的 Chrome，见 preview-agent.mjs 的 PREVIEW_SOURCE=cursor）
+    [[ -x "$NODE" ]] || fail "找不到 node（$NODE），跑 pane-remote doctor 看看"
+    PREVIEW_SOURCE=cursor exec "$NODE" "$HERE/preview-agent.mjs"
     ;;
   preview|preview-stop)
     [[ -x "$NODE" ]] || fail "找不到 node（$NODE），跑 pane-remote doctor 看看"

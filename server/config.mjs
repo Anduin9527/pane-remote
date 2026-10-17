@@ -24,6 +24,7 @@ const DEFAULTS = {
   modules: {
     preview: true, // 预览浏览器（要 Chrome）
     openUrl: false, // 电脑上打开网址时，人在用手机就转到手机预览（会接管 open 命令）
+    cursor: false, // Cursor IDE 映射：会话 / 消息 / 改动 / 内置浏览器（Cursor 要带调试端口启动，必要时会重启 Cursor）
   },
   // 新建 pane 时可选的启动命令
   presets: [

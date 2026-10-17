@@ -23,6 +23,8 @@ const PREFS_FILE = path.join(DATA, 'prefs.json')
 let prefs = { stop: true } // stop：Claude / Codex 一轮做完也推送
 try { prefs = { ...prefs, ...JSON.parse(fs.readFileSync(PREFS_FILE, 'utf8')) } } catch {}
 export const getPrefs = () => prefs
+/** 电脑键鼠最近一次空闲秒数（tails 扫描时更新）：人在电脑前就不推 */
+export const macIdle = () => lastIdle
 export function setPrefs(p) {
   if (typeof p?.stop === 'boolean') prefs.stop = p.stop
   fs.writeFileSync(PREFS_FILE, JSON.stringify(prefs), { mode: 0o600 })

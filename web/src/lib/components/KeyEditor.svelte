@@ -62,7 +62,7 @@
         <Button type="submit" size="sm" disabled={!mText}>添加</Button>
       </div>
     </form>
-    <div class="overflow-y-auto overscroll-contain px-2 pb-[calc(env(safe-area-inset-bottom)+10px)]">
+    <div data-vaul-no-drag class="overflow-y-auto overscroll-contain px-2 pb-[calc(env(safe-area-inset-bottom)+10px)]">
       {#each list as k, i (i)}
         <div class={cn('flex items-center gap-1 rounded-lg px-1.5 py-1', k.hidden && 'opacity-45')}>
           <span class="min-w-14 rounded-md border bg-secondary px-2 py-1 text-center font-mono text-[13px]">{k.label}</span>

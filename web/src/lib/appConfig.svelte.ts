@@ -2,7 +2,7 @@
 export type Preset = { label: string; command: string }
 export const appConfig = $state({
   presets: [] as Preset[],
-  modules: { preview: true, openUrl: false } as Record<string, boolean>,
+  modules: { preview: true, openUrl: false, cursor: false } as Record<string, boolean>,
   loaded: false,
 })
 export async function loadAppConfig() {

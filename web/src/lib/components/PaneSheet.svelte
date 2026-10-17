@@ -51,7 +51,7 @@
         </Button>
       </div>
     </Drawer.Header>
-    <div class="overflow-y-auto overscroll-contain px-1.5 pb-[calc(env(safe-area-inset-bottom)+8px)]">
+    <div data-vaul-no-drag class="overflow-y-auto overscroll-contain px-1.5 pb-[calc(env(safe-area-inset-bottom)+8px)]">
       {#if !ui.panes.length}
         <p class="p-6 text-center text-sm text-muted-foreground">{loading ? '读取中…' : '没有 pane'}</p>
       {/if}

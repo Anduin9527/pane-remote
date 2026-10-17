@@ -27,6 +27,7 @@ import path from 'node:path'
 import { execFile, spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import * as push from './push.mjs'
+import { initCursor, cursorStream, cursorCmd, cursorSummary } from './cursor.mjs'
 import { WebSocketServer } from 'ws'
 import zlib from 'node:zlib'
 import { config, APP_DIR, CONFIG_PATH } from './config.mjs'
@@ -422,77 +423,82 @@ let lastApi = 0
 // 同时告诉电脑「手机在用」：电脑上要打开网址时（pane-open），据此改在手机的预览面板里打开
 // 有手机正连着的画面流（保留中、没人看的不算）
 const viewing = () => [...watchers.values()].some((w) => w.clients.size > 0)
-function phoneInUse() { return viewing() || !!preview.client || Date.now() - lastApi < 120000 }
+function phoneInUse() { return viewing() || !!previews.chrome.client || !!previews.cursor.client || Date.now() - lastApi < 120000 }
 setInterval(() => {
   if (phoneInUse()) bridge('awake').catch((e) => console.log(`awake: ${e.message}`))
 }, 60000)
 
 // ---------- 预览 ----------
-// 电脑上一个 preview 代理（常驻的 bridge preview），同一时间只服务一个手机连接，新连接顶掉旧的。
-// 手机断开 60 秒后关掉代理（停推流）；20 分钟没人用就把预览用的 Chrome 也关掉省内存。
+// 每个来源一个 preview 代理（ssh 常驻）：chrome = 电脑上自己的无界面 Chrome；cursor = 接管 Cursor IDE 的内置浏览器。
+// 同一来源同一时间只服务一个手机连接，新连接顶掉旧的。手机断开 60 秒后关掉代理（停推流）；
+// chrome 来源 20 分钟没人用再把预览用的 Chrome 关掉省内存（cursor 来源不关任何东西，那是用户自己的 Cursor）。
 const PREVIEW_IN = new Set(['refresh', 'open', 'viewport', 'tap', 'hover', 'scroll', 'text', 'key', 'back', 'forward', 'reload', 'ack', 'tabs', 'switch', 'close', 'new'])
-const preview = { proc: null, client: null, buf: '', idleTimer: null, gcTimer: null, ready: false, last: {} }
-function previewStart() {
-  if (preview.proc) return
-  const proc = bridgeProc('preview', ['pipe', 'pipe', 'pipe'])
-  preview.proc = proc
-  preview.buf = ''
-  let err = ''
-  proc.stderr.on('data', (d) => { err += d; if (err.length > 4000) err = err.slice(-2000) })
-  proc.stdout.setEncoding('utf8')
-  proc.stdout.on('data', (chunk) => {
-    preview.buf += chunk
-    let i
-    while ((i = preview.buf.indexOf('\n')) >= 0) {
-      const line = preview.buf.slice(0, i)
-      preview.buf = preview.buf.slice(i + 1)
-      let m
-      try { m = JSON.parse(line) } catch { continue }
-      const c = preview.client
-      if (m.t === 'frame') {
-        if (c?.readyState === 1) {
-          c.send(JSON.stringify({ t: 'frame', seq: m.seq, w: m.w, h: m.h, desktop: !!m.desktop }))
-          c.send(Buffer.from(m.data, 'base64'))
-        } else proc.stdin.write(JSON.stringify({ t: 'ack', seq: m.seq }) + '\n') // 没人看也要 ack，免得卡住
-        continue
+function makePreview(source, command) {
+  const pv = { source, proc: null, client: null, buf: '', idleTimer: null, gcTimer: null, last: {} }
+  pv.start = () => {
+    if (pv.proc) return
+    const proc = bridgeProc(command, ['pipe', 'pipe', 'pipe'])
+    pv.proc = proc
+    pv.buf = ''
+    let err = ''
+    proc.stderr.on('data', (d) => { err += d; if (err.length > 4000) err = err.slice(-2000) })
+    proc.stdout.setEncoding('utf8')
+    proc.stdout.on('data', (chunk) => {
+      pv.buf += chunk
+      let i
+      while ((i = pv.buf.indexOf('\n')) >= 0) {
+        const line = pv.buf.slice(0, i)
+        pv.buf = pv.buf.slice(i + 1)
+        let m
+        try { m = JSON.parse(line) } catch { continue }
+        const c = pv.client
+        if (m.t === 'frame') {
+          if (c?.readyState === 1) {
+            c.send(JSON.stringify({ t: 'frame', seq: m.seq, w: m.w, h: m.h, desktop: !!m.desktop }))
+            c.send(Buffer.from(m.data, 'base64'))
+          } else proc.stdin.write(JSON.stringify({ t: 'ack', seq: m.seq }) + '\n') // 没人看也要 ack，免得卡住
+          continue
+        }
+        if (m.t === 'nav' || m.t === 'tabs') pv.last[m.t] = m // 新连上的手机先拿到当前地址和标签页
+        if (c?.readyState === 1) c.send(line)
       }
-      if (m.t === 'nav' || m.t === 'tabs') preview.last[m.t] = m // 新连上的手机先拿到当前地址和标签页
-      if (c?.readyState === 1) c.send(line)
-    }
+    })
+    proc.on('close', (code) => {
+      if (pv.proc === proc) pv.proc = null
+      const msg = err.trim().split('\n').filter((l) => !l.startsWith('[preview]')).pop()
+      if (pv.client?.readyState === 1) pv.client.send(JSON.stringify({ t: 'closed', msg: code ? msg || `预览代理退出（${code}）` : '' }))
+    })
+  }
+  pv.send = (m) => { if (pv.proc) pv.proc.stdin.write(JSON.stringify(m) + '\n') }
+  pv.wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 64 << 10 })
+  pv.wss.on('connection', (ws) => {
+    clearTimeout(pv.idleTimer)
+    clearTimeout(pv.gcTimer)
+    if (pv.client && pv.client !== ws) { try { pv.client.close(4000, '另一台设备打开了预览') } catch {} }
+    pv.client = ws
+    pv.start()
+    for (const m of Object.values(pv.last)) ws.send(JSON.stringify(m))
+    pv.send({ t: 'refresh' }) // 上一个手机可能有一帧没 ack 就断了：让代理马上补一帧给新手机
+    ws.on('message', (data, isBinary) => {
+      if (isBinary) return
+      let m
+      try { m = JSON.parse(String(data)) } catch { return }
+      if (!PREVIEW_IN.has(m?.t)) return
+      lastApi = Date.now()
+      pv.send(m)
+    })
+    ws.on('close', () => {
+      if (pv.client !== ws) return
+      pv.client = null
+      pv.idleTimer = setTimeout(() => { pv.proc?.stdin.end(); pv.last = {} }, 60000)
+      if (source === 'chrome') pv.gcTimer = setTimeout(() => bridge('preview-stop').then((o) => console.log(`preview gc: ${o.trim()}`), () => {}), 20 * 60000)
+    })
   })
-  proc.on('close', (code) => {
-    if (preview.proc === proc) preview.proc = null
-    const msg = err.trim().split('\n').filter((l) => !l.startsWith('[preview]')).pop()
-    if (preview.client?.readyState === 1) preview.client.send(JSON.stringify({ t: 'closed', msg: code ? msg || `预览代理退出（${code}）` : '' }))
-  })
+  return pv
 }
-function previewSend(m) {
-  if (preview.proc) preview.proc.stdin.write(JSON.stringify(m) + '\n')
-}
-const previewWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 64 << 10 })
-previewWss.on('connection', (ws) => {
-  clearTimeout(preview.idleTimer)
-  clearTimeout(preview.gcTimer)
-  if (preview.client && preview.client !== ws) { try { preview.client.close(4000, '另一台设备打开了预览') } catch {} }
-  preview.client = ws
-  previewStart()
-  for (const m of Object.values(preview.last)) ws.send(JSON.stringify(m))
-  previewSend({ t: 'refresh' }) // 上一个手机可能有一帧没 ack 就断了：让代理马上补一帧给新手机
-  ws.on('message', (data, isBinary) => {
-    if (isBinary) return
-    let m
-    try { m = JSON.parse(String(data)) } catch { return }
-    if (!PREVIEW_IN.has(m?.t)) return
-    lastApi = Date.now()
-    previewSend(m)
-  })
-  ws.on('close', () => {
-    if (preview.client !== ws) return
-    preview.client = null
-    preview.idleTimer = setTimeout(() => { preview.proc?.stdin.end(); preview.last = {} }, 60000)
-    preview.gcTimer = setTimeout(() => bridge('preview-stop').then((o) => console.log(`preview gc: ${o.trim()}`), () => {}), 20 * 60000)
-  })
-})
+const previews = { chrome: makePreview('chrome', 'preview'), cursor: makePreview('cursor', 'preview-cursor') }
+const preview = previews.chrome
+const previewSend = preview.send
 
 const gzCache = new Map()
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json', '.woff2': 'font/woff2', '.ico': 'image/x-icon' }
@@ -542,6 +548,16 @@ const server = http.createServer(async (req, res) => {
   // 所有会改东西的请求（非 GET）都必须来自本站页面：挡住别的网页借浏览器里的登录身份发表单 / 跨站请求
   if (req.method !== 'GET' && req.method !== 'HEAD' && !sameOrigin(req)) return json(res, 403, { error: 'bad origin' })
   try {
+    // Cursor 模块（可选，pane-remote enable cursor）：映射 Cursor IDE 的会话
+    if (url.pathname.startsWith('/api/cursor/')) {
+      if (url.pathname === '/api/cursor/summary') return json(res, 200, config.modules.cursor ? cursorSummary() : { conn: 'disabled', waiting: [], unread: 0 })
+      if (!config.modules.cursor) return json(res, 404, { error: 'Cursor 模块没开（pane-remote enable cursor）' })
+      if (url.pathname === '/api/cursor/stream' && req.method === 'GET') return cursorStream(req, res, url)
+      if (url.pathname === '/api/cursor/cmd' && req.method === 'POST') {
+        if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'json only' })
+        return json(res, 200, await cursorCmd(JSON.parse((await readBody(req, 64 << 10)) || '{}')))
+      }
+    }
     if (url.pathname === '/api/config' && req.method === 'GET') {
       return json(res, 200, { presets: config.presets, modules: config.modules })
     }
@@ -681,6 +697,17 @@ function onOpen(url) {
     .then((r) => console.log(`notify(open) ${url} → ${JSON.stringify(r)}`))
 }
 
+// Cursor 模块：电脑上常驻一个 cursor-agent；做完 / 在等你时推送（遵守「一轮做完也推」开关，人在电脑前不推）
+if (config.modules.cursor) initCursor({
+  dataDir: config.dataDir,
+  spawnBridge: (cmd) => bridgeProc(cmd, ['pipe', 'pipe', 'pipe']),
+  notify: (p) => {
+    if (p.kind === 'stop' && !push.getPrefs().stop) return
+    if (push.macIdle() < 120) return
+    push.notify({ title: p.title, body: p.body, tag: p.tag, cursor: p.cursor }).then((r) => console.log(`notify(cursor) ${p.title} → ${JSON.stringify(r)}`))
+  },
+})
+
 push.startMonitor({
   onOpen,
   bridge,
@@ -692,12 +719,13 @@ push.startMonitor({
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, 'http://x')
   const origin = req.headers.origin
-  const okPath = url.pathname === '/api/preview' && config.modules.preview
+  const okPath = url.pathname === '/api/preview' && (url.searchParams.get('source') === 'cursor' ? !!config.modules.cursor : config.modules.preview)
   if (!authorized(req) || !okPath || (origin && new URL(origin).host !== req.headers.host)) {
     socket.end('HTTP/1.1 403 Forbidden\r\n\r\n')
     return
   }
-  previewWss.handleUpgrade(req, socket, head, (ws) => previewWss.emit('connection', ws, req))
+  const pv = url.searchParams.get('source') === 'cursor' ? previews.cursor : previews.chrome
+  pv.wss.handleUpgrade(req, socket, head, (ws) => pv.wss.emit('connection', ws, req))
 })
 
 if (!ALLOWED.size) console.log('警告：allowedLogins 是空的，所有请求都会被拒绝（跑 pane-remote init 配置）')

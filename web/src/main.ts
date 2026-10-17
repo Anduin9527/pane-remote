@@ -4,7 +4,7 @@ import App from './App.svelte'
 import { report } from '$lib/api'
 import { update } from '$lib/update.svelte'
 
-// 报错发回服务端，方便排查手机上的问题（journalctl -u pane-relay | grep client）
+// 报错发回服务端，方便排查手机上的问题（pane-remote logs 里搜 client）
 addEventListener('error', (e) => report('error', `${e.message} @ ${e.filename}:${e.lineno}:${e.colno} ${e.error?.stack || ''}`))
 addEventListener('unhandledrejection', (e) => report('rejection', e.reason?.stack || e.reason?.message || e.reason))
 const build = (document.querySelector('script[src*="assets/index-"]') as HTMLScriptElement | null)?.src.split('/').pop() || 'dev'

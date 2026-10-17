@@ -73,7 +73,7 @@
         <RotateCw class={cn('size-4', refreshing && 'animate-spin')} />
       </button>
     </Drawer.Header>
-    <div class="grid gap-2.5 overflow-y-auto overscroll-contain p-2.5 pb-[calc(env(safe-area-inset-bottom)+12px)]">
+    <div data-vaul-no-drag class="grid gap-2.5 overflow-y-auto overscroll-contain p-2.5 pb-[calc(env(safe-area-inset-bottom)+12px)]">
       {#if !data}
         <p class="p-6 text-center text-sm text-muted-foreground">读取中…</p>
       {:else if !tasks.length}

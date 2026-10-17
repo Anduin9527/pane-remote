@@ -10,7 +10,7 @@
 // （最小尺寸、最低画质），真正的帧用 captureScreenshot 按手机像素密度截。
 // 流控：同一时间只有一帧在路上，手机画完 ack 了才截下一张；中间画面变了多少次都合并成一张最新的，
 // 帧率自动跟着手机那头的网速走，网络慢不会积压。
-// 电脑模式（viewport.desktop）：UA / client hints 换成 Mac 上的 Chrome，按 DESKTOP_W 宽的桌面窗口渲染（高度按手机画面比例），
+// 电脑模式（viewport.desktop）：UA / client hints 换成桌面版 Chrome，按 DESKTOP_W 宽的桌面窗口渲染（高度按手机画面比例），
 // 关掉触屏模拟，轻点发鼠标点击；手机那头缩放显示。帧里的 w / h 都是页面的 CSS 尺寸，手机按它换算坐标。
 //
 // node preview-agent.mjs --stop  关掉预览用的 Chrome
@@ -22,6 +22,11 @@ import os from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline'
 
+// PREVIEW_SOURCE=cursor：不开自己的 Chrome，而是接管 Cursor IDE 内置浏览器（Cursor 调试端口里 type=webview 的目标）。
+// 那是用户在电脑上也看着的面板：绝不改它的尺寸 / UA / 触摸模拟，不新开、不关闭标签，--stop 什么都不做
+const CURSOR = process.env.PREVIEW_SOURCE === 'cursor'
+const CURSOR_PORT = Number(process.env.CURSOR_DEBUG_PORT || 9333)
+const TARGET_TYPE = CURSOR ? 'webview' : 'page'
 const DIR = process.env.PREVIEW_DIR || path.join(os.homedir(), '.local/share/pane-remote/preview') // PREVIEW_DIR：测试用的独立目录
 const PROFILE = path.join(DIR, 'profile')
 const PIDFILE = path.join(DIR, 'chrome.pid')
@@ -49,6 +54,7 @@ function stopChrome() {
   return pid
 }
 
+if (process.argv.includes('--stop') && CURSOR) { console.log('cursor source: nothing to stop'); process.exit(0) }
 if (process.argv.includes('--stop')) {
   const pid = stopChrome()
   console.log(pid ? `stopped ${pid}` : 'not running')
@@ -57,6 +63,10 @@ if (process.argv.includes('--stop')) {
 
 // Chrome 退出后 DevToolsActivePort 可能还留着，所以先确认进程在
 async function browserWsUrl() {
+  if (CURSOR) {
+    try { return (await (await fetch(`http://127.0.0.1:${CURSOR_PORT}/json/version`, { signal: AbortSignal.timeout(1500) })).json()).webSocketDebuggerUrl }
+    catch { throw new Error('Cursor 没有接入（没开调试端口）：先在手机的 Cursor 页面启动 / 重启接入') }
+  }
   fs.mkdirSync(PROFILE, { recursive: true })
   const portFile = path.join(PROFILE, 'DevToolsActivePort')
   if (!chromePid()) {
@@ -102,7 +112,7 @@ ws.onmessage = (e) => {
     else p?.resolve(m.result)
   } else handlers.get(m.method)?.(m.params, m.sessionId)
 }
-ws.onclose = () => { out({ t: 'error', msg: '和 Chrome 的连接断了' }); process.exit(1) }
+ws.onclose = () => { out({ t: 'error', msg: CURSOR ? '和 Cursor 的连接断了（Cursor 关了或重启了）' : '和 Chrome 的连接断了' }); process.exit(1) }
 
 // ---------- 文件浏览器：给预览里的 Chrome 看电脑上的文件夹和各种文件 ----------
 // 只监听 127.0.0.1，路径前面带随机令牌：别的网页猜不到地址，读不到文件。只允许家目录和 /tmp。
@@ -446,7 +456,7 @@ async function attach(targetId) {
   const info = { sessionId, url: '', title: '', loading: false }
   pages.set(targetId, info)
   await cdp('Page.enable', {}, sessionId)
-  await applyUA(sessionId)
+  if (!CURSOR) await applyUA(sessionId)
   return info
 }
 
@@ -460,7 +470,17 @@ function computePage() {
   return { w, h, dpr }
 }
 
+// Cursor 的内置浏览器：尺寸由 Cursor 的面板决定，只读不改；截图按手机屏幕需要的像素缩小
+let cursorDpr = 0
+async function cursorPage(sessionId) {
+  const lm = await cdp('Page.getLayoutMetrics', {}, sessionId).catch(() => null)
+  const w = lm?.cssLayoutViewport?.clientWidth || 1000, h = lm?.cssLayoutViewport?.clientHeight || 800
+  if (!cursorDpr) cursorDpr = (await cdp('Runtime.evaluate', { expression: 'devicePixelRatio', returnByValue: true }, sessionId).catch(() => null))?.result?.value || 2
+  const want = view.w * view.dpr * 1.15 // 手机上需要的像素宽度
+  return { w, h, dpr: cursorDpr, scale: Math.max(0.3, Math.min(1, want / (w * cursorDpr))) }
+}
 async function applyView(sessionId) {
+  if (CURSOR) { page = await cursorPage(sessionId); return }
   page = computePage()
   await cdp('Emulation.setDeviceMetricsOverride', { width: page.w, height: page.h, deviceScaleFactor: page.dpr, mobile: !view.desktop }, sessionId)
   await cdp('Emulation.setTouchEmulationEnabled', view.desktop ? { enabled: false } : { enabled: true, maxTouchPoints: 5 }, sessionId)
@@ -481,7 +501,8 @@ async function focus(targetId) {
   }
   current = targetId
   inflight = 0
-  await cdp('Target.activateTarget', { targetId }).catch(() => {})
+  // Cursor 那边不激活：会把 Cursor 窗口拉到电脑屏幕最前面，抢走用户正在用的窗口
+  if (!CURSOR) await cdp('Target.activateTarget', { targetId }).catch(() => {})
   await startCast(targetId)
   sendTabs()
   sendNav()
@@ -509,7 +530,9 @@ async function pump() {
     // clip 的坐标是相对整个页面的，要加上当前滚动位置，不然页面一滚动就截到上面看不见的地方（一片空白）
     const lm = await cdp('Page.getLayoutMetrics', {}, p.sessionId).catch(() => null)
     const vv = lm?.cssVisualViewport
-    const clip = { x: vv?.pageX || 0, y: vv?.pageY || 0, width: page.w, height: page.h, scale: fast ? 0.55 : 1 }
+    // Cursor 的面板可能被用户在电脑上拖大拖小：每帧按当前尺寸截
+    if (CURSOR && lm?.cssLayoutViewport) { page.w = lm.cssLayoutViewport.clientWidth; page.h = lm.cssLayoutViewport.clientHeight }
+    const clip = { x: vv?.pageX || 0, y: vv?.pageY || 0, width: page.w, height: page.h, scale: (fast ? 0.55 : 1) * (page.scale || 1) }
     const shot = await Promise.race([
       cdp('Page.captureScreenshot', { format: 'jpeg', quality: fast ? 45 : QUALITY, optimizeForSpeed: true, clip }, p.sessionId),
       sleep(2000).then(() => { throw new Error('capture timeout') }),
@@ -543,7 +566,9 @@ handlers.set('Target.targetInfoChanged', ({ targetInfo }) => {
   sendTabs()
 })
 handlers.set('Target.targetCreated', async ({ targetInfo }) => {
-  if (targetInfo.type !== 'page' || pages.has(targetInfo.targetId)) return
+  if (targetInfo.type !== TARGET_TYPE || pages.has(targetInfo.targetId)) return
+  // Cursor 里新打开了网页：接过来并切过去
+  if (CURSOR) { try { await attach(targetInfo.targetId); await focus(targetInfo.targetId); out({ t: 'notice', msg: 'Cursor 的浏览器打开了网页' }) } catch (e) { log('attach', e.message) } return }
   // 页面里 window.open / target=_blank 打开的新标签：直接切过去
   if (targetInfo.openerId) {
     try { await attach(targetInfo.targetId); await focus(targetInfo.targetId) } catch (e) { log('attach', e.message) }
@@ -554,6 +579,7 @@ handlers.set('Target.targetDestroyed', async ({ targetId }) => {
   if (targetId === current) {
     const next = [...pages.keys()].pop()
     if (next) await focus(next)
+    else if (CURSOR) { current = null; out({ t: 'nav', url: '', title: '', loading: false }); out({ t: 'error', msg: 'Cursor 的浏览器关掉了；在 Cursor 里再打开网页，这里会自动接上' }) }
     else await newTab(HOME_URL)
   }
   sendTabs()
@@ -565,6 +591,7 @@ function setLoading(sessionId, v) {
 }
 
 async function newTab(url) {
+  if (CURSOR) throw new Error('Cursor 的浏览器不能从手机新开标签，请在 Cursor 的 Browser 面板里打开')
   const { targetId } = await cdp('Target.createTarget', { url: 'about:blank' })
   await attach(targetId)
   await focus(targetId)
@@ -615,7 +642,8 @@ async function handle(msg) {
     case 'ack': return onAck(msg.seq)
     case 'refresh': inflight = 0; dirty = true; return pump() // 新手机连上：不管之前卡在哪，马上补一帧
     case 'viewport': {
-      const next = { w: Math.max(200, Math.min(1600, Math.round(msg.w))), h: Math.max(200, Math.min(2000, Math.round(msg.h))), dpr: Math.max(1, Math.min(3, Number(msg.dpr) || 2)), desktop: !!msg.desktop }
+      const next = { w: Math.max(200, Math.min(1600, Math.round(msg.w))), h: Math.max(200, Math.min(2000, Math.round(msg.h))), dpr: Math.max(1, Math.min(3, Number(msg.dpr) || 2)), desktop: CURSOR || !!msg.desktop }
+      if (CURSOR) { view = next; if (current) { page = await cursorPage(sid); inflight = 0; dirty = true; pump() } return }
       if (next.w === view.w && next.h === view.h && next.dpr === view.dpr && next.desktop === view.desktop) { inflight = 0; dirty = true; return pump() }
       const switched = next.desktop !== view.desktop
       view = next
@@ -662,19 +690,30 @@ async function handle(msg) {
     }
     case 'tabs': return sendTabs()
     case 'switch': if (pages.has(msg.id)) await focus(msg.id); return
-    case 'close': if (pages.has(msg.id)) await cdp('Target.closeTarget', { targetId: msg.id }); return
+    case 'close': if (CURSOR) throw new Error('Cursor 的浏览器标签请在 Cursor 里关'); if (pages.has(msg.id)) await cdp('Target.closeTarget', { targetId: msg.id }); return
   }
 }
 
 // ---------- 启动：接管已有标签页（上次留下的），没有就新开 ----------
 await cdp('Target.setDiscoverTargets', { discover: true })
 const { targetInfos } = await cdp('Target.getTargets')
-for (const t of targetInfos.filter((t) => t.type === 'page')) {
+for (const t of targetInfos.filter((t) => t.type === TARGET_TYPE)) {
   try { const p = await attach(t.targetId); p.url = t.url; p.title = t.title } catch (e) { log('attach', e.message) }
 }
 if (pages.size) await focus([...pages.keys()].pop())
+else if (CURSOR) out({ t: 'error', msg: 'Cursor 的浏览器现在没打开网页：在 Cursor 里打开 Browser 面板访问一个网址，这里会自动接上' })
 else await newTab(HOME_URL)
-out({ t: 'ready' })
+if (CURSOR) view.desktop = true // 点击一律走鼠标事件
+// Cursor 新打开浏览器时不一定发 targetCreated：没接上页面时每 2 秒查一次目标列表兜底
+if (CURSOR) setInterval(async () => {
+  if (current) return
+  try {
+    const { targetInfos: list } = await cdp('Target.getTargets')
+    const t = list.find((x) => x.type === 'webview' && !pages.has(x.targetId))
+    if (t) { const p = await attach(t.targetId); p.url = t.url; p.title = t.title; await focus(t.targetId); out({ t: 'notice', msg: 'Cursor 的浏览器打开了网页' }) }
+  } catch (e) { log('poll', e.message) }
+}, 2000)
+out({ t: 'ready', source: CURSOR ? 'cursor' : 'chrome' })
 
 const rl = readline.createInterface({ input: process.stdin })
 rl.on('line', (line) => {

@@ -16,7 +16,12 @@
   import { cn } from '$lib/utils'
   import { Button } from '$lib/components/ui/button'
 
-  let { ctrl = $bindable(false), chat = false, onresize }: { ctrl?: boolean; chat?: boolean; onresize?: () => void } = $props()
+  // draftKey / onsubmit：给别的发送目标复用（比如 Cursor 页面）：草稿按 draftKey 存，发送交给 onsubmit（失败时文字放回输入框）。
+  // 不传时就是终端：草稿跟着 pane，发送 = 往 pane 里打字
+  let { ctrl = $bindable(false), chat = false, onresize, draftKey, onsubmit, placeholder: ph, disabled = false }: {
+    ctrl?: boolean; chat?: boolean; onresize?: () => void
+    draftKey?: string | null; onsubmit?: (text: string) => Promise<unknown>; placeholder?: string; disabled?: boolean
+  } = $props()
   let el: HTMLTextAreaElement
   let fileEl: HTMLInputElement
   let uploading = $state(0)
@@ -31,7 +36,7 @@
   }
   $effect(() => { composer.text; expanded; queueMicrotask(autosize) })
   // 草稿跟着 pane 走
-  $effect(() => { switchDraft(ui.current) })
+  $effect(() => { switchDraft(draftKey === undefined ? ui.current : draftKey) })
   $effect(() => { composer.text; saveDraft() })
   $effect(() => { if (composer.focusTick) queueMicrotask(() => el?.focus()) })
 
@@ -60,7 +65,7 @@
 
   function oninput() {
     // Ctrl 模式：输入一个字母就发对应的控制字符
-    if (ctrl && /^[a-zA-Z@[\\\]^_]$/.test(composer.text)) {
+    if (!onsubmit && ctrl && /^[a-zA-Z@[\\\]^_]$/.test(composer.text)) {
       sendRaw(ui.current, String.fromCharCode(composer.text.toUpperCase().charCodeAt(0) & 0x1f))
       composer.text = ''
       ctrl = false
@@ -68,6 +73,14 @@
   }
 
   async function send(submit: boolean) {
+    if (onsubmit) {
+      const t = composer.text.trim()
+      if (!t || disabled) return
+      composer.text = ''
+      expanded = false
+      try { await onsubmit(t) } catch (e) { if (!composer.text) composer.text = t; toast.error(`没发出去：${(e as Error).message}`) }
+      return
+    }
     const text = composer.text
     if (!text && !submit) return
     const erase = composer.eraseFirst
@@ -99,7 +112,7 @@
   function sendDown(e: PointerEvent) {
     e.preventDefault() // 不抢输入框焦点，键盘不收起
     held = false
-    if (!chat) return
+    if (!chat || onsubmit) return
     holdTimer = setTimeout(() => {
       held = true
       if (!composer.text) return
@@ -123,7 +136,8 @@
       {oninput}
       {onkeydown}
       rows="1"
-      placeholder={chat ? `回复 ${agentName()}…` : '输入文字…'}
+      placeholder={ph ?? (chat ? `回复 ${agentName()}…` : '输入文字…')}
+      {disabled}
       enterkeyhint={expanded ? 'enter' : 'send'}
       autocapitalize="off"
       {...{ autocorrect: 'off' }}
@@ -149,8 +163,8 @@
       class={cn('order-1 grid size-[38px] flex-none place-items-center rounded-[10px] border text-muted-foreground', uploading && 'animate-pulse text-primary')}
       onclick={() => fileEl.click()}
     ><Paperclip class="size-4" /></button>
-    {#if expanded}<span class="flex-1 text-xs text-muted-foreground">回车换行{chat ? '，长按发送 = 只填入不提交' : ''}</span>{/if}
-    {#if !chat}
+    {#if expanded}<span class="flex-1 text-xs text-muted-foreground">回车换行{chat && !onsubmit ? '，长按发送 = 只填入不提交' : ''}</span>{/if}
+    {#if !chat && !onsubmit}
       <button
         type="button"
         title="发送时附带回车"

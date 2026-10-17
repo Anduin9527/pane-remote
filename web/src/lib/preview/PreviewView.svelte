@@ -1,5 +1,5 @@
 <script lang="ts">
-  // 预览：看电脑上无界面 Chrome 的实时画面（网络是电脑那边的：localhost、内网、代理都照用）。
+  // 预览：看电脑上无界面 Chrome（或 Cursor 内置浏览器） 的实时画面（网络是电脑那边的：localhost、内网、代理都照用）。
   // 轻点 = 点击，拖动 = 滚动，双指 = 缩放 / 平移画面，底栏打字 = 输入到页面里当前聚焦的输入框。
   // 电脑模式：电脑那边按桌面浏览器（Mac Chrome 的 UA、1280 宽）渲染，这里等比缩放显示；长按 = 鼠标悬停。
   import { onMount } from 'svelte'
@@ -17,6 +17,9 @@
   import Maximize from '@lucide/svelte/icons/maximize'
   import Minimize from '@lucide/svelte/icons/minimize'
   import Keyboard from '@lucide/svelte/icons/keyboard'
+  import Globe from '@lucide/svelte/icons/globe'
+  import CursorIcon from '$lib/cursor/CursorIcon.svelte'
+  import { appConfig } from '$lib/appConfig.svelte'
   import * as Drawer from '$lib/components/ui/drawer'
   import { Button } from '$lib/components/ui/button'
   import { cn } from '$lib/utils'
@@ -31,6 +34,12 @@
   let typed = $state('')
   let tabsOpen = $state(false)
   let fps = $state(0)
+  // 来源：chrome = 电脑上的无界面 Chrome；cursor = Cursor IDE 的内置浏览器（固定按电脑尺寸显示，不能新开标签）
+  let source = $state<'chrome' | 'cursor'>((() => { try { return localStorage.getItem('previewSource') === 'cursor' ? 'cursor' : 'chrome' } catch { return 'chrome' } })())
+  let note = $state('') // Cursor 浏览器没打开网页之类的提示，显示在画面区
+  const isCursor = $derived(source === 'cursor' && !!appConfig.modules.cursor)
+  // 没开 Cursor 模块（或服务端配置还没拿到时选了 cursor）：按 Chrome 来源连
+  $effect(() => { if (appConfig.loaded && !appConfig.modules.cursor && source === 'cursor') { source = 'chrome'; connect() } })
 
   let stage: HTMLDivElement
   let canvas: HTMLCanvasElement
@@ -74,6 +83,17 @@
     if (matchMedia('(orientation: landscape)').matches) setImmersive(v) // 已经横着拿：直接进 / 出全屏（会触发尺寸变化，自动重发 viewport）
     sendViewport()
     toast(v ? '电脑模式：桌面版 Chrome 的 UA，按 1280 宽渲染，已重新加载' : '手机模式：iPhone Safari 的 UA，已重新加载', { description: v ? '双指缩放看细节，长按 = 鼠标悬停；横过手机自动全屏' : undefined })
+  }
+  function setSource(v: 'chrome' | 'cursor') {
+    if (v === source) return
+    source = v
+    try { localStorage.setItem('previewSource', v) } catch {}
+    note = ''
+    nav = { url: '', title: '', loading: false }
+    tabs = { list: [], current: null }
+    resetZoom()
+    connect()
+    toast(v === 'cursor' ? '预览切到 Cursor 的内置浏览器' : '预览切到电脑上的 Chrome')
   }
   function setImmersive(v: boolean) {
     previewUi.immersive = v
@@ -140,7 +160,7 @@
     pan = clampPan(pan)
     if (view.w < 50 || view.h < 50) return
     // 像素密度最多 2：3 倍图的流量多一倍多，手机上看差别不大
-    send({ t: 'viewport', w: view.w, h: view.h, dpr: Math.min(2, devicePixelRatio || 2), desktop })
+    send({ t: 'viewport', w: view.w, h: view.h, dpr: Math.min(2, devicePixelRatio || 2), desktop: desktop || source === 'cursor' })
   }
 
   let retry = 0
@@ -150,6 +170,7 @@
     ws?.close()
     status = 'connecting'
     const url = new URL('api/preview', location.href)
+    if (source === 'cursor' && appConfig.modules.cursor !== false) url.searchParams.set('source', 'cursor')
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
     const sock = new WebSocket(url)
     sock.binaryType = 'blob'
@@ -167,6 +188,7 @@
           if (m.w !== frame.w || m.h !== frame.h) { frame = { w: m.w, h: m.h }; resetZoom() }
           bmp.close()
           status = 'live'
+          note = ''
           const now = performance.now()
           frameTimes = [...frameTimes.filter((t) => now - t < 2000), now]
           fps = Math.round(frameTimes.length / 2)
@@ -179,7 +201,8 @@
       if (m.t === 'frame') meta = m
       else if (m.t === 'nav') { nav = m; if (!editing) address = m.url === 'about:blank' ? '' : m.url }
       else if (m.t === 'tabs') tabs = m
-      else if (m.t === 'error') toast.error(m.msg)
+      else if (m.t === 'error') { if (source === 'cursor' && /没打开网页|关掉了|没有接入/.test(m.msg)) note = m.msg; else toast.error(m.msg) }
+      else if (m.t === 'notice') { note = ''; toast(m.msg) }
       else if (m.t === 'opened') toast('电脑上要打开的网页，已在这里打开', { description: m.url })
       else if (m.t === 'closed') { status = 'closed'; if (m.msg) toast.error(m.msg) }
     }
@@ -254,7 +277,7 @@
     gesture = 'one'
     const t = e.touches[0]
     sx = lx = t.clientX; sy = ly = t.clientY; st = performance.now(); moved = false; held = false
-    if (desktop) holdTimer = setTimeout(() => { held = true; send({ t: 'hover', ...toPage(sx, sy) }) }, 500)
+    if (desktop || isCursor) holdTimer = setTimeout(() => { held = true; send({ t: 'hover', ...toPage(sx, sy) }) }, 500)
   }
   function onMove(e: TouchEvent) {
     e.preventDefault()
@@ -306,6 +329,11 @@
 
 {#if !previewUi.immersive}
 <div class="flex items-center gap-1 border-b bg-card px-1.5 py-1.5">
+  {#if appConfig.modules.cursor}
+  <button class={cn(iconBtn, isCursor && 'bg-accent text-foreground')} aria-label={isCursor ? '来源：Cursor 浏览器（点一下换成电脑 Chrome）' : '来源：电脑 Chrome（点一下换成 Cursor 浏览器）'} onclick={() => setSource(isCursor ? 'chrome' : 'cursor')}>
+    {#if isCursor}<CursorIcon class="size-4" />{:else}<Globe class="size-4" />{/if}
+  </button>
+  {/if}
   <button class={iconBtn} aria-label="后退" onclick={() => send({ t: 'back' })}><ArrowLeft class="size-4" /></button>
   <button class={iconBtn} aria-label="前进" onclick={() => send({ t: 'forward' })}><ArrowRight class="size-4" /></button>
   <form class="relative min-w-0 flex-1" onsubmit={go}>
@@ -329,9 +357,11 @@
     <Layers class="size-4" />
     {#if tabs.list.length > 1}<span class="absolute top-0.5 right-0.5 rounded-full bg-primary px-1 text-[10px] leading-4 text-primary-foreground">{tabs.list.length}</span>{/if}
   </button>
+  {#if !isCursor}
   <button class={cn(iconBtn, desktop && 'bg-accent text-foreground')} aria-label={desktop ? '电脑模式（点一下换回手机模式）' : '手机模式（点一下换成电脑模式）'} aria-pressed={desktop} onclick={() => setDesktop(!desktop)}>
     {#if desktop}<Monitor class="size-4" />{:else}<Smartphone class="size-4" />{/if}
   </button>
+  {/if}
 </div>
 {/if}
 
@@ -360,7 +390,7 @@
   </div>
 {/if}
 
-<div bind:this={stage} class={cn('relative min-h-0 flex-1 touch-none overflow-hidden', desktop ? 'bg-neutral-800' : 'bg-white')}>
+<div bind:this={stage} class={cn('relative min-h-0 flex-1 touch-none overflow-hidden', desktop || isCursor ? 'bg-neutral-800' : 'bg-white')}>
   <canvas
     bind:this={canvas}
     class="absolute top-0 left-0 origin-top-left bg-white"
@@ -368,9 +398,10 @@
     style:height="{(frame.h || stageSize.h) * base.s}px"
     style:transform="translate({base.x + pan.x}px, {base.y + pan.y}px) scale({zoom})"
   ></canvas>
-  {#if status !== 'live'}
+  {#if status !== 'live' || note}
     <div class="absolute inset-0 grid place-items-center bg-background/80 p-6 text-center text-sm text-muted-foreground">
-      {#if status === 'connecting'}正在连接电脑上的浏览器…{:else}
+      {#if note}<div class="grid max-w-xs gap-2"><CursorIcon class="mx-auto size-6" />{note}</div>
+      {:else if status === 'connecting'}{isCursor ? '正在连接 Cursor 的浏览器…' : '正在连接电脑上的浏览器…'}{:else}
         <div class="grid gap-3">预览已断开<Button size="sm" onclick={connect}>重新连接</Button></div>
       {/if}
     </div>
@@ -393,9 +424,11 @@
       <button class={floatBtn} aria-label="后退" onclick={() => send({ t: 'back' })}><ArrowLeft class="size-4" /></button>
       <button class={floatBtn} aria-label="刷新" onclick={() => send({ t: 'reload' })}><RotateCw class="size-4" /></button>
       <button class={cn(floatBtn, kbOpen && 'bg-primary')} aria-label="输入" onclick={() => (kbOpen = !kbOpen)}><Keyboard class="size-4" /></button>
+      {#if !isCursor}
       <button class={floatBtn} aria-label={desktop ? '换成手机模式' : '换成电脑模式'} onclick={() => setDesktop(!desktop)}>
         {#if desktop}<Smartphone class="size-4" />{:else}<Monitor class="size-4" />{/if}
       </button>
+      {/if}
     {/if}
     <button class={floatBtn} aria-label={previewUi.immersive ? '退出全屏' : '全屏'} onclick={() => setImmersive(!previewUi.immersive)}>
       {#if previewUi.immersive}<Minimize class="size-4" />{:else}<Maximize class="size-4" />{/if}
@@ -423,7 +456,7 @@
   <Drawer.Content>
     <Drawer.Header class="flex-row items-center justify-between border-b py-3">
       <Drawer.Title>标签页</Drawer.Title>
-      <Button size="sm" class="rounded-full" onclick={() => { send({ t: 'new' }); tabsOpen = false }}><Plus /> 新标签</Button>
+      {#if !isCursor}<Button size="sm" class="rounded-full" onclick={() => { send({ t: 'new' }); tabsOpen = false }}><Plus /> 新标签</Button>{:else}<span class="text-xs text-muted-foreground">Cursor 浏览器的标签在 Cursor 里开关</span>{/if}
     </Drawer.Header>
     <div class="grid px-1.5 pb-[calc(env(safe-area-inset-bottom)+8px)]">
       {#each tabs.list as t (t.id)}

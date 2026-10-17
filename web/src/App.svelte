@@ -17,6 +17,9 @@
   import PromptBar from '$lib/components/PromptBar.svelte'
   import KeyEditor from '$lib/components/KeyEditor.svelte'
   import PreviewView from '$lib/preview/PreviewView.svelte'
+  import CursorView from '$lib/cursor/CursorView.svelte'
+  import CursorIcon from '$lib/cursor/CursorIcon.svelte'
+  import { selectSession as selectCursorSession, cursorSummary } from '$lib/cursor/cursor.svelte'
   import Inbox from '$lib/components/Inbox.svelte'
   import Reader from '$lib/components/Reader.svelte'
   import FileText from '@lucide/svelte/icons/file-text'
@@ -60,12 +63,17 @@
   const setView = (v: 'term' | 'chat') => { if (ui.current) termViews[ui.current] = v }
   const chatMode = $derived(!!ui.claude && termView === 'chat')
   let readerOpen = $state(false)
-  const waitingAll = () => Object.values(ui.states).filter((s) => s.state === 'waiting').length
+  // 待办：等你操作的 pane + 等你操作的 Cursor 会话（开了 Cursor 模块时）
+  const cursorWaiting = () => (appConfig.modules.cursor ? cursorSummary.waiting.length : 0)
+  const waitingAll = () => Object.values(ui.states).filter((s) => s.state === 'waiting').length + cursorWaiting()
+  const waitingOthers = () => waitingElsewhere() + cursorWaiting()
   // 终端 / 预览 两个视图，记住上次停在哪个
-  let mode = $state<'term' | 'preview'>((() => { try { return localStorage.getItem('mode') === 'preview' ? 'preview' : 'term' } catch { return 'term' } })())
+  let mode = $state<'term' | 'preview' | 'cursor'>((() => { try { const m = localStorage.getItem('mode'); return m === 'preview' || m === 'cursor' ? m : 'term' } catch { return 'term' } })())
   $effect(() => { try { localStorage.setItem('mode', mode) } catch {} })
   // 在预览页时断开终端画面流：服务端据此知道你没在看那个 pane，该推的通知照推
-  $effect(() => { setPaused(mode === 'preview') })
+  $effect(() => { setPaused(mode !== 'term') })
+  // 服务端没开 Cursor 模块：不显示 Cursor 入口
+  $effect(() => { if (appConfig.loaded && !appConfig.modules.cursor && mode === 'cursor') mode = 'term' })
   // 服务端没开预览模块：不显示预览入口
   $effect(() => { if (appConfig.loaded && !appConfig.modules.preview && mode === 'preview') mode = 'term' })
   let pushOn = $state(false)
@@ -91,6 +99,11 @@
   onOpenUrl((url) => {
     toast('电脑要打开一个网页', { description: url, duration: 10000, action: { label: '在预览中打开', onClick: () => previewUrl(url) } })
   })
+  // 从 Cursor 的通知点进来会带 ?cursor=会话
+  {
+    const c = new URLSearchParams(location.search).get('cursor')
+    if (c && /^[0-9a-f-]{8,64}$/i.test(c)) { selectCursorSession(c); mode = 'cursor'; history.replaceState(null, '', location.pathname) }
+  }
   // 从「电脑要打开网页」的通知点进来会带 ?preview=…。这个地址谁都能构造（别的网页可以链接过来），
   // 所以不直接打开，要你点一下确认：预览浏览器跑在电脑上，能访问电脑的本机服务和内网
   {
@@ -117,6 +130,7 @@
     window.addEventListener('resize', fitViewport)
     const onSw = (e: MessageEvent) => {
       if (e.data?.type === 'open-preview') return previewUrl(e.data.url)
+      if (e.data?.type === 'open-cursor') { selectCursorSession(e.data.id); mode = 'cursor'; return }
       if (e.data?.type === 'open-pane') loadPanes().catch(() => {}).finally(() => select(e.data.pane))
     }
     navigator.serviceWorker?.addEventListener('message', onSw)
@@ -164,6 +178,9 @@
     {#if appConfig.modules.preview}
       <button class={cn('grid h-7 w-8 place-items-center rounded-md text-muted-foreground', mode === 'preview' && 'bg-card text-foreground shadow-sm')} aria-label="预览" aria-pressed={mode === 'preview'} onclick={() => (mode = 'preview')}><Globe class="size-4" /></button>
     {/if}
+    {#if appConfig.modules.cursor}
+      <button class={cn('grid h-7 w-8 place-items-center rounded-md text-muted-foreground', mode === 'cursor' && 'bg-card text-foreground shadow-sm')} aria-label="Cursor" aria-pressed={mode === 'cursor'} onclick={() => (mode = 'cursor')}><span class="relative"><CursorIcon class="size-4" />{#if mode !== 'cursor' && (cursorSummary.waiting.length || cursorSummary.unread)}<span class={cn('absolute -top-1 -right-1.5 size-2 rounded-full ring-2 ring-secondary', cursorSummary.waiting.length ? 'bg-warn' : 'bg-primary')}></span>{/if}</span></button>
+    {/if}
   </div>
   {#if update.available}
     <button class="flex-none rounded-full bg-primary px-2.5 text-[12px] leading-6 font-semibold text-primary-foreground active:opacity-80" onclick={() => location.reload()}>更新</button>
@@ -176,8 +193,8 @@
       <span class="min-w-0 truncate font-semibold">{paneName()}</span>
       <ChevronDown class="size-4 flex-none text-muted-foreground" />
     </button>
-    {#if waitingElsewhere()}
-      <button class="flex-none rounded-full bg-warn px-2 text-[11px] leading-5 font-semibold text-black" title="别的 pane 在等你操作" onclick={() => (inboxOpen = true)}>{waitingElsewhere()} 待办</button>
+    {#if waitingOthers()}
+      <button class="flex-none rounded-full bg-warn px-2 text-[11px] leading-5 font-semibold text-black" title="别的 pane / Cursor 会话在等你操作" onclick={() => (inboxOpen = true)}>{waitingOthers()} 待办</button>
     {/if}
     <div class="flex gap-0.5">
       <button class={iconBtn} aria-label="阅读模式（复制、搜索、打开链接）" onclick={() => (readerOpen = true)}><FileText class="size-4" /></button>
@@ -191,7 +208,7 @@
       </button>
     </div>
   {:else}
-    <span class="min-w-0 flex-1 truncate font-semibold">预览 · 电脑上的浏览器</span>
+    <span class="min-w-0 flex-1 truncate font-semibold">{mode === 'cursor' ? 'Cursor · 电脑上的 IDE' : '预览 · 电脑上的浏览器'}</span>
     {#if waitingAll()}
       <button class="flex-none rounded-full bg-warn px-2 text-[11px] leading-5 font-semibold text-black" onclick={() => (inboxOpen = true)}>{waitingAll()} 待办</button>
     {/if}
@@ -244,6 +261,8 @@
     {#if !chatMode}<KeyBar bind:ctrl onedit={() => (keysOpen = true)} />{/if}
     <Composer bind:ctrl chat={chatMode} onresize={fitViewport} />
   </div>
+{:else if mode === 'cursor'}
+  <CursorView onpreview={previewUrl} />
 {:else}
   <PreviewView />
 {/if}
@@ -260,7 +279,7 @@
 <RenameSheet bind:open={renameOpen} pane={actPane} />
 <NotifySheet bind:open={notifOpen} bind:on={pushOn} />
 <KeyEditor bind:open={keysOpen} />
-<Inbox bind:open={inboxOpen} />
+<Inbox bind:open={inboxOpen} oncursor={(id) => { selectCursorSession(id); mode = 'cursor' }} />
 <ClaudeSheet bind:open={claudeOpen} />
 <CronSheet bind:open={cronOpen} />
 <Reader bind:open={readerOpen} onpreview={() => (mode = 'preview')} />
