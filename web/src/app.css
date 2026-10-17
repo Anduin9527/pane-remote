@@ -93,6 +93,10 @@
     /* iOS 键盘弹出时可视高度变小，整页跟着缩，底栏被顶上来 */
     height: var(--vvh, 100dvh);
     overflow: hidden;
+    /* 横屏时 iPhone 的刘海 / 圆角在左边或右边：整个界面让开（上下由顶栏、底栏各自处理） */
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+    box-sizing: border-box;
   }
   #app { height: 100%; display: flex; flex-direction: column; }
   /* 不让页面整体滚动、回弹、双击放大（iOS 上这些都会把布局弄乱） */

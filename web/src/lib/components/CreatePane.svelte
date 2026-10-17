@@ -109,7 +109,7 @@
 </script>
 
 {#if open}
-  <div class="fixed inset-x-0 top-0 z-50 flex flex-col bg-background" style:height="var(--vvh, 100dvh)">
+  <div class="fixed inset-x-0 top-0 z-50 flex flex-col bg-background pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]" style:height="var(--vvh, 100dvh)">
     <header class="flex flex-none items-center gap-2 border-b bg-card px-2 pt-[calc(env(safe-area-inset-top)+6px)] pb-2">
       <button class="grid size-9 place-items-center rounded-lg active:bg-accent" aria-label="取消" onclick={() => (open = false)}><X class="size-5" /></button>
       <strong class="flex-1 text-center">{target.split ? '拆分 pane' : '新建标签页'}</strong>

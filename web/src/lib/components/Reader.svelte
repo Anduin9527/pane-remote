@@ -63,7 +63,7 @@
 </script>
 
 {#if open}
-  <div class="fixed inset-0 z-40 flex flex-col bg-background pt-[env(safe-area-inset-top)]">
+  <div class="fixed inset-0 z-40 flex flex-col bg-background pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]">
     <div class="flex items-center gap-1.5 border-b bg-card px-2 py-1.5">
       <input
         bind:value={query}
