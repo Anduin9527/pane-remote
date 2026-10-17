@@ -2,7 +2,7 @@
 
 中文 | [English](en/cursor.md)
 
-手机上查看和操作电脑上的 [Cursor](https://cursor.com) IDE：会话列表、对话消息、发消息 / 停止 / 新建、待办和未读、命令输出、项目文件、改动差异，以及 Cursor 内置浏览器的实时画面。
+手机上查看和操作电脑上的 [Cursor](https://cursor.com) IDE：会话列表、对话消息、发消息 / 停止 / 新建 / 分叉 / 置顶 / 归档、待办和未读、命令输出、项目文件、改动差异，以及 Cursor 内置浏览器的实时画面。
 
 ```bash
 pane-remote enable cursor
@@ -17,6 +17,7 @@ Cursor 是 Electron 应用。用 `--remote-debugging-port=9333` 启动它以后�
 - **会话列表、实时状态**：往页面里注入一段只读的观察脚本，读侧边栏和当前会话（会话 id、标题、状态、正在生成的文字、可选按钮）
 - **完整历史**：只读打开 Cursor 自己的本地数据库（`~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`），按会话读消息；只做主键查询，不复制、不全表扫
 - **操作**：在 Cursor 页面里聚焦对应会话的输入框写入文字、点按钮；输入框里已经有字（你在电脑上打了一半）时不会写入
+- **会话操作**：分叉（整段，或者从某一轮回复分叉）、置顶 / 取消置顶、归档，都是点 Cursor 自己的按钮；分叉后手机自动切到新会话
 - **改动**：用 Cursor 记录的「改之前的原文」对比磁盘上现在的文件，生成差异（只读）
 - **内置浏览器**：Cursor 的 Browser 面板打开网页后是一个独立的网页视图，预览页切到「Cursor 浏览器」来源就能看和操作
 

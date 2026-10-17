@@ -148,7 +148,7 @@ export function cursorStream(req, res, url) {
   res.on('close', () => { clearInterval(ping); clients.delete(c); markSeen(id); updateWatch() })
 }
 
-const CMDS = new Set(['launch', 'restart', 'open', 'send', 'stop', 'new', 'choose', 'refresh', 'changes'])
+const CMDS = new Set(['launch', 'restart', 'open', 'send', 'stop', 'new', 'choose', 'refresh', 'changes', 'pin', 'archive', 'fork'])
 export function cursorCmd(body) {
   if (!CMDS.has(body?.t)) return Promise.resolve({ ok: false, error: 'unknown command' })
   if (body.id && !/^[0-9a-f-]{8,64}$/i.test(String(body.id))) return Promise.resolve({ ok: false, error: 'bad id' })
@@ -159,9 +159,11 @@ export function cursorCmd(body) {
   if (typeof body.text === 'string') m.text = body.text.slice(0, 20000)
   if (typeof body.project === 'string') m.project = body.project.slice(0, 500)
   if (typeof body.label === 'string') m.label = body.label.slice(0, 60)
+  if (typeof body.on === 'boolean') m.on = body.on
+  if (body.bubble) { if (!/^[0-9a-f-]{8,64}$/i.test(String(body.bubble))) return Promise.resolve({ ok: false, error: 'bad bubble' }); m.bubble = String(body.bubble) }
   return new Promise((resolve) => {
     // 启动 / 重启要等 Cursor 起来，最多 90 秒；其它 20 秒
-    const timer = setTimeout(() => { waiters.delete(req); resolve({ ok: false, error: '电脑那边没有回应' }) }, /launch|restart|new|send/.test(body.t) ? 90000 : 20000)
+    const timer = setTimeout(() => { waiters.delete(req); resolve({ ok: false, error: '电脑那边没有回应' }) }, /launch|restart|new|send|fork/.test(body.t) ? 90000 : 20000)
     waiters.set(req, { resolve, timer })
     send(m)
   })

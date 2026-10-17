@@ -1,6 +1,10 @@
 // 服务端 / 电脑这边发给手机的提示（tr() 用）
 // 来源：server/*.mjs、agent/bridge、agent/cursor-agent.mjs、agent/pane-transcript。带 {占位} 的条目按模板匹配
 export default {
+  'Cursor 里没找到这个操作按钮（Cursor 可能改版了）': "Couldn't find that button in Cursor (Cursor may have changed)",
+  '在 Cursor 里没找到这一轮的分叉按钮（这一轮可能还没结束）': "Couldn't find the fork button for this turn in Cursor (the turn may not be finished)",
+  '在 Cursor 里没找到分叉按钮（会话可能还在生成）': "Couldn't find the fork button in Cursor (the chat may still be generating)",
+  '点了分叉，但 Cursor 没有切到新会话': "Clicked fork, but Cursor didn't switch to a new chat",
   // ---- 通用：bridge 报错带 error: 前缀（有的路径没去掉） ----
   'error: {msg}': 'Error: {msg}',
 

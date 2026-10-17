@@ -471,6 +471,49 @@ async function typeAndSend(text, id) {
   for (const type of ['rawKeyDown', 'char', 'keyUp']) await cdp('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, ...(type === 'char' ? { text: '\r' } : {}) })
 }
 
+// 会话行上的操作按钮（Pin / Unpin / Archive）：平时藏着、悬停才显示，但一直在 DOM 里，直接 click 就行
+async function rowAction(id, labels) {
+  const r = await evaluate(`(() => {
+    const it = document.querySelector('[data-sidebar-item-key="row:' + ${js(id)} + '"]')
+    if (!it) return 'no-row'
+    const b = [...it.querySelectorAll('button[aria-label]')].find((x) => ${js(labels)}.includes(x.getAttribute('aria-label')))
+    if (!b) return 'no-button'
+    b.click(); return b.getAttribute('aria-label')
+  })()`)
+  if (r === 'no-row') throw new Error('侧边栏里没找到这个会话（可能被归档或折叠了）')
+  if (r === 'no-button') throw new Error('Cursor 里没找到这个操作按钮（Cursor 可能改版了）')
+  return r
+}
+// 分叉：Cursor 在每一轮回复后面有「Fork chat」，挂在 turn-actions:human:<这一轮用户消息的 id> 那一行。
+// 对话是虚拟滚动的，太早的轮次不在 DOM 里：先滚到底找，找不到就一屏一屏往上滚
+async function forkAt(id, bubble) {
+  if (id !== activeId) { await openSession(id); await sleep(800) }
+  const find = `(() => {
+    const bubble = ${js(bubble || '')}
+    const rows = [...document.querySelectorAll('[data-react-transcript-row-kind="turnActions"]')].filter((r) => r.closest('[data-glass-agent-id]')?.getAttribute('data-glass-agent-id') === ${js(id)} || !r.closest('[data-glass-agent-id]'))
+    const row = bubble ? rows.find((r) => (r.getAttribute('data-react-transcript-row-key') || '').startsWith('turn-actions:human:' + bubble.slice(0, 20))) : rows.at(-1)
+    const b = row && [...row.querySelectorAll('button[aria-label="Fork chat"]')][0]
+    if (b) { b.click(); return 'clicked' }
+    const sc = rows[0]?.closest('[data-virtualization-owner]') || document.querySelector('[data-glass-agent-id=' + JSON.stringify(${js(id)}) + '] [data-virtualization-owner]')
+    if (!sc) return 'no-scroller'
+    if (!bubble) { if (sc.scrollTop + sc.clientHeight < sc.scrollHeight - 4) { sc.scrollTop = sc.scrollHeight; return 'scrolled' } return 'not-found' }
+    if (sc.scrollTop <= 0) return 'not-found'
+    sc.scrollTop = Math.max(0, sc.scrollTop - sc.clientHeight * 0.8); return 'scrolled'
+  })()`
+  const before = activeId
+  for (let i = 0; i < 60; i++) {
+    const r = await evaluate(find)
+    if (r === 'clicked') break
+    if (r === 'not-found' || r === 'no-scroller' || i === 59) throw new Error(bubble ? '在 Cursor 里没找到这一轮的分叉按钮（这一轮可能还没结束）' : '在 Cursor 里没找到分叉按钮（会话可能还在生成）')
+    await sleep(r === 'scrolled' ? 250 : 150)
+  }
+  // 分叉后 Cursor 切到新会话：等侧边栏报出新的当前会话
+  for (let i = 0; i < 40 && activeId === before; i++) await sleep(150)
+  if (activeId === before) throw new Error('点了分叉，但 Cursor 没有切到新会话')
+  schedule(300)
+  return { id: activeId }
+}
+
 async function handle(m) {
   switch (m.t) {
     case 'watch': watching = m.id || ''; pump.sent = ''; if (watching) { if (attached) await evaluate('window.__paneRemote?.flush(true)').catch(() => {}); schedule(0) } return
@@ -508,6 +551,24 @@ async function handle(m) {
       if (!ok) await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }).then(() => cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }))
       return
     }
+    case 'pin': {
+      await needReady()
+      await rowAction(String(m.id || ''), m.on === false ? ['Unpin'] : ['Pin'])
+      schedule(300)
+      return
+    }
+    case 'archive': {
+      await needReady()
+      const id = String(m.id || '')
+      await rowAction(id, ['Archive'])
+      for (let i = 0; i < 20; i++) { if (!(await evaluate(`!!document.querySelector('[data-sidebar-item-key="row:' + ${js(id)} + '"]')`))) break; await sleep(150) }
+      schedule(300)
+      return
+    }
+    case 'fork': {
+      await needReady()
+      return forkAt(String(m.id || ''), m.bubble ? String(m.bubble) : '')
+    }
     case 'choose': {
       await needReady()
       if (m.id && m.id !== activeId) { await openSession(m.id); await sleep(800) }
@@ -534,7 +595,7 @@ const rl = readline.createInterface({ input: process.stdin })
 rl.on('line', (line) => {
   let m
   try { m = JSON.parse(line) } catch { return }
-  handle(m).then((data) => m.req && out({ t: 'result', req: m.req, ok: true, ...(data && typeof data === 'object' && m.t === 'changes' ? { data } : {}) }), (e) => m.req && out({ t: 'result', req: m.req, ok: false, error: e.message }))
+  handle(m).then((data) => m.req && out({ t: 'result', req: m.req, ok: true, ...(data && typeof data === 'object' ? { data } : {}) }), (e) => m.req && out({ t: 'result', req: m.req, ok: false, error: e.message }))
 })
 rl.on('close', () => { ws?.close(); try { db?.close() } catch {} process.exit(0) })
 setInterval(check, 5000)

@@ -1,5 +1,21 @@
 // lib/cursor 和 lib/preview 界面里的文案
 export default {
+  从这里分叉: 'Fork from here',
+  从这一轮分叉出新会话: 'Fork a new chat from this turn',
+  已从这一轮分叉出新会话: 'Forked a new chat from this turn',
+  '已分叉出新会话（带着全部上下文）': 'Forked a new chat (with the full context)',
+  '分叉失败：{msg}': 'Fork failed: {msg}',
+  '已归档（在 Cursor 里能找回）': 'Archived (you can restore it in Cursor)',
+  '归档失败：{msg}': 'Archive failed: {msg}',
+  '会话操作：分叉、置顶、归档': 'Chat actions: fork, pin, archive',
+  分叉: 'Fork',
+  带全部上下文开新会话: 'new chat with full context',
+  已取消置顶: 'Unpinned',
+  已置顶: 'Pinned',
+  取消置顶: 'Unpin',
+  置顶会话: 'Pin',
+  再点一次归档: 'Tap again to archive',
+  归档: 'Archive',
   'Cursor 会话列表': 'Cursor sessions',
   // cursor.svelte.ts
   失败: 'Failed',

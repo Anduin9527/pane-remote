@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MsgMeta from '$lib/components/MsgMeta.svelte'
   // 对话视图：直接读 Claude 的会话记录，按手机宽度排版（和 pane 有多宽无关）。
   // 回复按 Markdown 渲染，工具调用折叠成一行（点开看结果），链接点了在预览里打开。每 2 秒刷新一次。
   import { onMount, tick } from 'svelte'
@@ -150,7 +151,7 @@
                 </details>
               {/if}
             {/each}
-            <span class="text-[11px] text-muted-foreground">{time(m.ts)}</span>
+            <MsgMeta time={time(m.ts)} text={m.parts.map((p) => (p.type === 'text' ? p.text : '')).filter(Boolean).join('\n\n')} />
           </div>
         {/if}
       {/each}

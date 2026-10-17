@@ -11,9 +11,15 @@
   import Brain from '@lucide/svelte/icons/brain'
   import ArrowDown from '@lucide/svelte/icons/arrow-down'
   import X from '@lucide/svelte/icons/x'
+  import Ellipsis from '@lucide/svelte/icons/ellipsis'
+  import GitFork from '@lucide/svelte/icons/git-fork'
+  import Pin from '@lucide/svelte/icons/pin'
+  import PinOff from '@lucide/svelte/icons/pin-off'
+  import Archive from '@lucide/svelte/icons/archive'
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
+  import MsgMeta from '$lib/components/MsgMeta.svelte'
   import { Button } from '$lib/components/ui/button'
   import { cn } from '$lib/utils'
-  import Copy from '@lucide/svelte/icons/copy'
   import FolderOpen from '@lucide/svelte/icons/folder-open'
   import FileDiff from '@lucide/svelte/icons/file-diff'
   import ChangesView from './ChangesView.svelte'
@@ -90,10 +96,36 @@
     e.preventDefault()
     if (/^(https?:|file:)/.test(href)) onpreview?.(href)
   }
-  function copy(text: string) { navigator.clipboard.writeText(text).then(() => toast(t('已复制')), () => toast.error(t('复制失败'))) }
   async function act(cmd: string, body: Record<string, unknown> = {}, ok = '') {
     try { await cursorCmd(cmd, body); if (ok) toast(ok) } catch (err) { toast.error((err as Error).message) }
   }
+  // 会话操作：分叉（整段 / 从某一轮）、置顶、归档。分叉成功后切到新会话
+  const pinned = $derived(!!cur.projects.find((p) => p.id === '__pinned_agents__')?.sessions.some((s) => s.id === cur.id))
+  async function fork(bubble = '') {
+    const id = cur.id
+    try {
+      const r = await cursorCmd('fork', { id, ...(bubble ? { bubble } : {}) })
+      if (r.data?.id) { selectSession(r.data.id); toast(bubble ? t('已从这一轮分叉出新会话') : t('已分叉出新会话（带着全部上下文）')) }
+    } catch (err) { toast.error(t('分叉失败：{msg}', { msg: (err as Error).message })) }
+  }
+  let archiveArmed = $state(false)
+  async function archive() {
+    const id = cur.id
+    archiveArmed = false
+    try { await cursorCmd('archive', { id }); toast(t('已归档（在 Cursor 里能找回）')); cur.id = ''; sheetOpen = true } catch (err) { toast.error(t('归档失败：{msg}', { msg: (err as Error).message })) }
+  }
+  // 每一轮的最后一条回复 → 这一轮的用户消息 id（Cursor 的分叉按钮按它定位；同一轮只在最后一条回复下给分叉）
+  const turnOf = $derived.by(() => {
+    const m = new Map<string, string>()
+    let user = '', lastReply = ''
+    const close = () => { if (user && lastReply) m.set(lastReply, user) }
+    for (const x of cur.list) {
+      if (x.role === 'user') { close(); user = x.id; lastReply = '' }
+      else if (x.role === 'assistant') lastReply = x.id
+    }
+    close()
+    return m
+  })
   function restart() {
     if (!confirmRestart) { confirmRestart = true; setTimeout(() => (confirmRestart = false), 4000); return }
     confirmRestart = false
@@ -121,6 +153,17 @@
       <button class="flex h-8 items-center gap-1 rounded-lg border px-2 text-[13px] active:bg-accent" aria-label={t('查看改动')} onclick={() => (changesOpen = true)}><FileDiff class="size-3.5" />{cur.changed}</button>
     {/if}
     <button class="flex h-8 items-center gap-1 rounded-lg border px-2.5 text-[13px] active:bg-accent" onclick={() => { startDraft(project?.id || ''); }}><Plus class="size-3.5" />{t('新建')}</button>
+    {#if cur.id}
+      <DropdownMenu.Root onOpenChange={(o) => { if (!o) archiveArmed = false }}>
+        <DropdownMenu.Trigger class="grid size-8 place-items-center rounded-lg border active:bg-accent" aria-label={t('会话操作：分叉、置顶、归档')}><Ellipsis class="size-4" /></DropdownMenu.Trigger>
+        <DropdownMenu.Content align="end" class="w-64">
+          <DropdownMenu.Item onSelect={() => fork()} disabled={cur.generating}><GitFork />{t('分叉')}<span class="ml-auto text-xs text-muted-foreground">{t('带全部上下文开新会话')}</span></DropdownMenu.Item>
+          <DropdownMenu.Item onSelect={() => act('pin', { id: cur.id, on: !pinned }, pinned ? t('已取消置顶') : t('已置顶'))}>{#if pinned}<PinOff />{t('取消置顶')}{:else}<Pin />{t('置顶会话')}{/if}</DropdownMenu.Item>
+          <DropdownMenu.Separator />
+          <DropdownMenu.Item variant="destructive" onSelect={(e) => { if (!archiveArmed) { e.preventDefault(); archiveArmed = true; return } archive() }}><Archive />{archiveArmed ? t('再点一次归档') : t('归档')}</DropdownMenu.Item>
+        </DropdownMenu.Content>
+      </DropdownMenu.Root>
+    {/if}
   {/if}
 </div>
 
@@ -163,10 +206,7 @@
           {:else if b.kind === 'msg' && b.m.role === 'assistant'}
             <div class="grid min-w-0 gap-1">
               <div class="md min-w-0 text-[15px] leading-relaxed">{@html md(b.m.id, b.m.text)}</div>
-              <div class="flex items-center gap-2 text-[11px] text-muted-foreground">
-                <span>{time(b.m.ts)}</span>
-                <button class="flex items-center gap-0.5 rounded px-1 py-0.5 active:bg-accent" aria-label={t('复制这条回复')} onclick={() => copy(b.m.role === 'assistant' ? b.m.text : '')}><Copy class="size-3" />{t('复制')}</button>
-              </div>
+              <MsgMeta time={time(b.m.ts)} text={b.m.text} onfork={turnOf.get(b.m.id) && !cur.generating ? () => fork(turnOf.get(b.m.id)) : undefined} />
             </div>
           {:else if b.kind === 'steps'}
             <details class="min-w-0 rounded-lg border bg-card text-xs">

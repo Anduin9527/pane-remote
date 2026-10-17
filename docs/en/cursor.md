@@ -2,7 +2,7 @@
 
 [中文](../cursor.md) | English
 
-View and drive the [Cursor](https://cursor.com) IDE on your Mac from your phone: session list, messages, send / stop / new, to-do and unread, command output, project files, change diffs, and a live view of Cursor's built-in browser.
+View and drive the [Cursor](https://cursor.com) IDE on your Mac from your phone: session list, messages, send / stop / new / fork / pin / archive, to-do and unread, command output, project files, change diffs, and a live view of Cursor's built-in browser.
 
 ```bash
 pane-remote enable cursor
@@ -17,6 +17,7 @@ Cursor is an Electron app. When it is started with `--remote-debugging-port=9333
 - **Session list and live status**: injects a read-only observer script that reads the sidebar and the current session (session id, title, status, text being generated, available buttons)
 - **Full history**: opens Cursor's local database (`~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`) read-only and reads messages per session; only primary-key lookups, no copying, no full scans
 - **Actions**: focuses the matching session's input box in Cursor's page, types the text and clicks buttons; if the input box already has text (you were typing on the Mac), it refuses to write
+- **Chat actions**: fork (the whole chat, or from a specific turn), pin / unpin and archive, all by clicking Cursor's own buttons; after a fork the phone switches to the new chat
 - **Changes**: diffs the "original text before edits" that Cursor records against the current files on disk (read-only)
 - **Built-in browser**: a page opened in Cursor's Browser panel is a separate web view; switch the preview source to 「Cursor 浏览器」 (Cursor browser) to view and control it
 
