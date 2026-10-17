@@ -1,0 +1,133 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@xterm/xterm/css/xterm.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* shadcn 的语义色。跟随系统深浅色；终端区域永远是 Tokyo Night 深色，和 WezTerm 一致 */
+:root {
+  --radius: 0.625rem;
+  --background: oklch(0.985 0 0);
+  --foreground: oklch(0.21 0.006 285.885);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.006 285.885);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.006 285.885);
+  --primary: oklch(0.55 0.17 262);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.955 0.003 286);
+  --secondary-foreground: oklch(0.21 0.006 285.885);
+  --muted: oklch(0.955 0.003 286);
+  --muted-foreground: oklch(0.552 0.016 285.938);
+  --accent: oklch(0.955 0.003 286);
+  --accent-foreground: oklch(0.21 0.006 285.885);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.92 0.004 286.32);
+  --input: oklch(0.92 0.004 286.32);
+  --ring: oklch(0.55 0.17 262);
+  --ok: oklch(0.62 0.13 175);
+  --warn: oklch(0.7 0.13 75);
+  --mono: ui-monospace, "SF Mono", Menlo, "JetBrains Mono", "Noto Sans Mono CJK SC", monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: oklch(0.17 0.008 265);
+    --foreground: oklch(0.92 0.012 260);
+    --card: oklch(0.205 0.01 265);
+    --card-foreground: oklch(0.92 0.012 260);
+    --popover: oklch(0.205 0.01 265);
+    --popover-foreground: oklch(0.92 0.012 260);
+    --primary: oklch(0.72 0.13 262);
+    --primary-foreground: oklch(0.17 0.008 265);
+    --secondary: oklch(0.25 0.012 265);
+    --secondary-foreground: oklch(0.92 0.012 260);
+    --muted: oklch(0.25 0.012 265);
+    --muted-foreground: oklch(0.66 0.02 260);
+    --accent: oklch(0.27 0.014 265);
+    --accent-foreground: oklch(0.92 0.012 260);
+    --destructive: oklch(0.7 0.17 15);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 14%);
+    --ring: oklch(0.72 0.13 262);
+    --ok: oklch(0.8 0.1 180);
+    --warn: oklch(0.8 0.11 75);
+    color-scheme: dark;
+  }
+}
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --font-mono: var(--mono);
+}
+
+@layer base {
+  * { @apply border-border outline-ring/50; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    @apply bg-background text-foreground;
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", system-ui, sans-serif;
+    /* iOS 键盘弹出时可视高度变小，整页跟着缩，底栏被顶上来 */
+    height: var(--vvh, 100dvh);
+    overflow: hidden;
+  }
+  #app { height: 100%; display: flex; flex-direction: column; }
+  /* 不让页面整体滚动、回弹、双击放大（iOS 上这些都会把布局弄乱） */
+  html, body { overscroll-behavior: none; touch-action: manipulation; -webkit-text-size-adjust: 100%; }
+  /* iOS 聚焦字号小于 16px 的输入框会自动放大页面：触屏设备上输入控件一律不小于 16px */
+  @media (pointer: coarse) {
+    input, textarea, select { font-size: max(16px, 1em) !important; }
+  }
+}
+
+/* 终端画面：xterm 只负责按格子画字，滚动交给外层容器 */
+.term-screen { padding: 6px 6px 16px; width: max-content; min-width: 100%; }
+.term-screen .xterm { padding: 0; }
+.term-screen .xterm-viewport { overflow: hidden !important; background: transparent !important; }
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* 对话视图里 Claude 回复的 Markdown 排版（按手机宽度，代码块和表格横向滚动） */
+.md { overflow-wrap: anywhere; min-width: 0; max-width: 100%; }
+.md pre, .md table { max-width: 100%; }
+.md img { max-width: 100%; height: auto; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p, .md ul, .md ol, .md pre, .md table, .md blockquote { margin: 0.5em 0; }
+.md ul { list-style: disc; padding-left: 1.3em; }
+.md ol { list-style: decimal; padding-left: 1.4em; }
+.md li { margin: 0.15em 0; }
+.md h1, .md h2, .md h3, .md h4 { font-weight: 650; margin: 0.8em 0 0.35em; line-height: 1.35; }
+.md h1 { font-size: 1.2em; } .md h2 { font-size: 1.1em; } .md h3, .md h4 { font-size: 1em; }
+.md a { color: var(--primary); text-decoration: underline; text-underline-offset: 2px; word-break: break-all; }
+.md code { font-family: var(--mono); font-size: 0.86em; background: var(--muted); padding: 0.1em 0.35em; border-radius: 4px; word-break: break-word; }
+.md pre { background: #1a1b26; color: #c0caf5; padding: 0.7em 0.8em; border-radius: 8px; overflow-x: auto; font-size: 12.5px; line-height: 1.45; }
+.md pre code { background: none; padding: 0; font-size: inherit; word-break: normal; }
+.md table { display: block; overflow-x: auto; border-collapse: collapse; font-size: 0.9em; }
+.md th, .md td { border: 1px solid var(--border); padding: 0.3em 0.6em; text-align: left; white-space: nowrap; }
+.md blockquote { border-left: 3px solid var(--border); padding-left: 0.8em; color: var(--muted-foreground); }
+.md hr { border: 0; border-top: 1px solid var(--border); margin: 0.8em 0; }
+.md strong { font-weight: 650; }

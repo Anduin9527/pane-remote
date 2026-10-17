@@ -1,0 +1,272 @@
+#!/bin/bash
+# pane-remote 桥接：服务端操作 WezTerm 和读会话记录的唯一入口。
+# local 模式由服务端直接执行；relay 模式作为 authorized_keys 里的 forced command 运行。
+# 两种情况都只认 SSH_ORIGINAL_COMMAND 里的这几种指令：
+#   list                    列出所有 pane（JSON）
+#   text <pane> [行数]      读取 pane 的文字（含最近若干行回滚，默认 200 行）
+#   ansi <pane> [行数]      同 text，但带颜色/样式转义序列
+#   send <pane> <base64>    把解码后的字节原样发进 pane（不走粘贴模式，方向键、回车等控制字符生效）
+#   cursor <pane>           光标位置和可见区大小（JSON）
+#   watch <pane> [行数]     常驻：本机轮询 ansi 画面，有变化才输出一帧（帧以 \x1d 结尾，\x1f 是心跳）。
+#                           刚变过化时每 0.1s 查一次，闲下来逐步放慢到 0.5s
+#   fg <pane>               pane 前台进程名（判断是不是 shell，手机端据此决定能不能发鼠标滚轮）
+#   tails                   第一行 idle <秒>，然后 pane 列表 JSON，后面跟每个 pane 可见区最后 25 行（每段以 \x1e<pane_id> 开头），给通知检测用
+#   spawn <窗口id|new> <base64路径>          新标签页（new = 新窗口），在该目录启动默认 shell，输出新 pane id
+#   split <pane> <right|bottom|left|top> <base64路径>  拆分 pane，输出新 pane id
+#   kill <pane>             关闭 pane
+#   title <pane> <base64>   改 pane 所在标签页的标题（空字符串 = 恢复默认）
+#   focus <pane>            在电脑上切到这个 pane
+#   mode                    当前连的是 mux 还是 gui
+#   put <base64文件名>      从 stdin 收一个文件（最大 25MB），存到 ~/Downloads/pane-remote/，输出绝对路径
+#   events <字节偏移>       hook（pane-event）记下的事件里，从这个偏移往后的部分；第一行是新的偏移（文件被截短过就从 0 重读）
+#   session <pane>          这个 pane 里 Claude / Codex 会话的信息（JSON，pane-event 记下的）
+#   crons <pane>         这个 pane 里 Claude 会话的定时任务（JSON）
+#   transcript <pane> [条数] [base64 已知标识]  这个 pane 里 Claude 会话最近的对话消息（JSON）；标识没变时只回 unchanged
+#   ls <base64路径>         列出目录里的文件和子目录（JSON），给手机预览地址栏的路径提示；只允许家目录和 /tmp 下
+#   dirs                    以前开过的目录（Claude 各配置目录里的项目），JSON 数组，只含还存在的
+#   preview                 常驻：手机预览用的无界面 Chrome 通道（stdin/stdout 每行一个 JSON，见 preview-agent.mjs）
+#   preview-stop            关掉预览用的 Chrome
+#   awake                   让 Mac 2 分钟内不因空闲睡眠（caffeinate -i），并标记「手机在用」；手机在用时中转每分钟调一次
+# 其他任何输入一律拒绝，不会执行 shell。
+set -u
+export PATH=/usr/bin:/bin
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# 路径配置（pane-remote init 写的）：每行 键=值，只认下面几个键，按文本解析，不当脚本执行
+WEZTERM=/opt/homebrew/bin/wezterm
+NODE=""
+CHROME=""
+MUX_SOCK=""
+ENV_FILE=${PANE_REMOTE_BRIDGE_ENV:-$HOME/.config/pane-remote/bridge.env}
+if [[ -f "$ENV_FILE" ]]; then
+  while IFS='=' read -r k v; do
+    case "$k" in
+      WEZTERM) WEZTERM=$v ;;
+      NODE) NODE=$v ;;
+      CHROME) CHROME=$v ;;
+      MUX_SOCK) MUX_SOCK=$v ;;
+    esac
+  done < "$ENV_FILE"
+fi
+[[ -x "$WEZTERM" ]] || { echo "error: 找不到 wezterm（$WEZTERM），跑 pane-remote doctor 看看" >&2; exit 2; }
+# 持久化模式（可选）：pane 都在后台的 WezTerm mux server 里时直接连它，电脑上 WezTerm 窗口关了也能用。
+# 没配或连不上就连 WezTerm 窗口（GUI）。--no-auto-start：连不上就失败，绝不顺手拉起一个空 server。
+if [[ -n "$MUX_SOCK" && -S "$MUX_SOCK" ]] && WEZTERM_UNIX_SOCKET=$MUX_SOCK "$WEZTERM" cli --no-auto-start list >/dev/null 2>&1; then
+  export WEZTERM_UNIX_SOCKET=$MUX_SOCK
+  CLI=("$WEZTERM" cli --no-auto-start)
+else
+  unset WEZTERM_UNIX_SOCKET
+  CLI=("$WEZTERM" cli)
+fi
+read -r cmd pane arg extra <<<"${SSH_ORIGINAL_COMMAND:-}"
+
+fail() { echo "error: $1" >&2; exit 2; }
+check_pane() { [[ "$pane" =~ ^[0-9]{1,6}$ ]] || fail "bad pane id"; }
+b64() { [[ -n "$1" && ${#1} -le 4096 && "$1" =~ ^[A-Za-z0-9+/=]+$ ]] || fail "bad base64"; printf '%s' "$1" | base64 -D; }
+check_dir() {
+  [[ "$1" == /* && "$1" != *$'\n'* && -d "$1" ]] || fail "目录不存在"
+}
+
+case "$cmd" in
+  list)
+    exec "${CLI[@]}" list --format json
+    ;;
+  text|ansi)
+    check_pane
+    lines="${arg:-200}"
+    [[ "$lines" =~ ^[0-9]{1,5}$ ]] || fail "bad line count"
+    if [[ "$cmd" == ansi ]]; then
+      exec "${CLI[@]}" get-text --pane-id "$pane" --start-line "-$lines" --escapes
+    fi
+    exec "${CLI[@]}" get-text --pane-id "$pane" --start-line "-$lines"
+    ;;
+  watch)
+    check_pane
+    lines="${arg:-200}"
+    [[ "$lines" =~ ^[0-9]{1,5}$ ]] || fail "bad line count"
+    prev=""; idle=0
+    while :; do
+      cur=$("${CLI[@]}" get-text --pane-id "$pane" --start-line "-$lines" --escapes 2>/dev/null) || { echo "error: pane gone" >&2; exit 3; }
+      if [[ "$cur" != "$prev" ]]; then
+        printf '%s\035' "$cur" || exit 0
+        prev=$cur; idle=0
+      elif (( idle % 20 == 19 )); then
+        printf '\037' || exit 0  # 心跳：连接断了写失败就退出，不留孤儿进程
+      fi
+      idle=$((idle + 1))
+      if (( idle < 20 )); then sleep 0.1; elif (( idle < 60 )); then sleep 0.25; else sleep 0.5; fi
+    done
+    ;;
+  send)
+    check_pane
+    # macOS 的 bash 正则重复次数上限 255，长度单独判断
+    [[ -n "${arg:-}" && ${#arg} -le 65536 && "$arg" =~ ^[A-Za-z0-9+/=]+$ ]] || fail "bad payload"
+    printf '%s' "$arg" | base64 -D | "${CLI[@]}" send-text --pane-id "$pane" --no-paste
+    ;;
+  tails)
+    json=$("${CLI[@]}" list --format json) || exit 1
+    # 第一行：MacBook 键鼠空闲秒数（人在电脑前就不用推送）
+    /usr/sbin/ioreg -c IOHIDSystem | awk '/HIDIdleTime/ { print "idle " int($NF / 1000000000); exit }'
+    printf '%s\n' "$json"
+    for id in $(printf '%s' "$json" | grep -o '"pane_id": *[0-9]*' | grep -o '[0-9]*$'); do
+      printf '\036%s\n' "$id"
+      "${CLI[@]}" get-text --pane-id "$id" 2>/dev/null | tail -n 25
+    done
+    ;;
+  fg)
+    check_pane
+    tty=$("${CLI[@]}" list --format json | awk -v want="$pane" '
+      /[{]/ { depth++ } /[}]/ { if (depth == 1 && id == want) print tty; if (depth == 1) { id = ""; tty = "" } depth-- }
+      depth == 1 && /"pane_id":/ { gsub(/[^0-9]/, ""); id = $0 }
+      depth == 1 && /"tty_name":/ { sub(/.*"tty_name": *"/, ""); sub(/".*/, ""); tty = $0 }')
+    [[ "$tty" =~ ^/dev/ttys[0-9]+$ ]] || fail "no tty"
+    # 前台进程组的组长（pid == tpgid），比如 Claude Code 是 node、shell 空闲时是 zsh/bash
+    ps -o pid=,tpgid=,comm= -t "${tty#/dev/}" | awk '$1 == $2 { n = split($3, a, "/"); sub(/^-/, "", a[n]); print a[n]; exit }'
+    ;;
+  spawn)
+    dir=$(b64 "${arg:-}") || exit 2
+    check_dir "$dir"
+    if [[ "$pane" == new ]]; then
+      exec "${CLI[@]}" spawn --new-window --cwd "$dir"
+    fi
+    [[ "$pane" =~ ^[0-9]{1,6}$ ]] || fail "bad window id"
+    exec "${CLI[@]}" spawn --window-id "$pane" --cwd "$dir"
+    ;;
+  split)
+    check_pane
+    [[ "${arg:-}" =~ ^(right|bottom|left|top)$ ]] || fail "bad direction"
+    dir=$(b64 "${extra:-}") || exit 2
+    check_dir "$dir"
+    exec "${CLI[@]}" split-pane --pane-id "$pane" "--$arg" --cwd "$dir"
+    ;;
+  kill)
+    check_pane
+    exec "${CLI[@]}" kill-pane --pane-id "$pane"
+    ;;
+  title)
+    check_pane
+    t=""
+    [[ -n "${arg:-}" ]] && { t=$(b64 "$arg") || exit 2; }
+    [[ ${#t} -le 80 && "$t" != *$'\n'* ]] || fail "title too long"
+    exec "${CLI[@]}" set-tab-title --pane-id "$pane" "$t"
+    ;;
+  focus)
+    check_pane
+    exec "${CLI[@]}" activate-pane --pane-id "$pane"
+    ;;
+  cursor)
+    check_pane
+    exec "${CLI[@]}" list --format json
+    ;;
+  mode)
+    [[ -n "${WEZTERM_UNIX_SOCKET:-}" ]] && echo mux || echo gui
+    ;;
+  put)
+    name=$(b64 "${pane:-}") || exit 2
+    name=${name##*/}
+    # 文件名只留字母数字、中文和 ._-（给 Claude 等程序当路径用，空格和符号换成 _），前面加时间避免重名
+    ext=""; [[ "$name" == *.* ]] && ext=".${name##*.}"; stem=${name%.*}
+    stem=$(printf '%s' "$stem" | /usr/bin/perl -CS -pe 's/[^\w.\-]/_/g; $_ = substr($_, 0, 60)')
+    ext=$(printf '%s' "$ext" | LC_ALL=C tr -c 'A-Za-z0-9.' '_' | cut -c1-12)
+    dir=$HOME/Downloads/pane-remote
+    mkdir -p "$dir" || fail "mkdir"
+    out="$dir/$(date +%Y%m%d-%H%M%S)-${stem:-file}${ext}"
+    max=$((25 * 1024 * 1024))
+    head -c $((max + 1)) > "$out.part" || fail "write"
+    size=$(stat -f %z "$out.part")
+    if (( size > max )); then rm -f "$out.part"; fail "文件超过 25MB"; fi
+    (( size > 0 )) || { rm -f "$out.part"; fail "空文件"; }
+    mv "$out.part" "$out"
+    printf '%s\n' "$out"
+    ;;
+  events)
+    [[ "${pane:-}" =~ ^[0-9]{1,9}$ ]] || fail "bad offset"
+    f=$HOME/.local/state/pane-remote/events.jsonl
+    [[ -f "$f" ]] || { echo 0; exit 0; }
+    size=$(stat -f %z "$f")
+    off=$pane; (( off > size )) && off=0
+    echo "$size"
+    (( size > off )) && tail -c +$((off + 1)) "$f" | head -c $((size - off))
+    exit 0
+    ;;
+  session)
+    check_pane
+    exec "$HERE/pane-transcript" session "$pane"
+    ;;
+  crons)
+    check_pane
+    exec "$HERE/pane-transcript" crons "$pane"
+    ;;
+  transcript)
+    check_pane
+    n="${arg:-60}"; [[ "$n" =~ ^[0-9]{1,3}$ ]] || fail "bad count"
+    known=""; [[ -n "${extra:-}" ]] && { known=$(b64 "$extra") || exit 2; }
+    exec "$HERE/pane-transcript" messages "$pane" "$n" "$known"
+    ;;
+  ls)
+    target=$(b64 "${pane:-}") || exit 2
+    TARGET="$target" exec /usr/bin/python3 - <<'PY'
+import json, os
+home = os.path.expanduser('~')
+t = os.environ['TARGET']
+t = home + t[1:] if t == '~' or t.startswith('~/') else t
+t = os.path.realpath(t)
+if not (t == home or t.startswith(home + '/') or t in ('/tmp', '/private/tmp') or t.startswith(('/tmp/', '/private/tmp/'))):
+    print('[]'); raise SystemExit
+out = []
+try:
+    with os.scandir(t) as it:
+        for e in it:
+            if e.name.startswith('.'):
+                continue
+            try:
+                if e.is_dir():
+                    out.append({'name': e.name, 'dir': True, 't': e.stat().st_mtime})
+                else:  # 预览里有文件浏览器，什么文件都能打开
+                    out.append({'name': e.name, 'dir': False, 't': e.stat().st_mtime})
+            except OSError:
+                pass
+except OSError:
+    pass
+out.sort(key=lambda x: (not x['dir'], x['name'].lower()))
+print(json.dumps(out[:300], ensure_ascii=False))
+PY
+    ;;
+  dirs)
+    exec /usr/bin/python3 - <<'PY'
+import glob, json, os
+home = os.path.expanduser('~')
+seen = {}
+def add(d, t):
+    if isinstance(d, str) and d.startswith('/') and os.path.isdir(d):
+        seen[d] = max(seen.get(d, 0), t)
+for f in glob.glob(f'{home}/.claude*/.claude.json') + [f'{home}/.claude.json']:
+    try:
+        t = os.path.getmtime(f)  # 项目列表没有逐项时间，用文件的修改时间
+        for d in json.load(open(f)).get('projects', {}):
+            add(d, t)
+    except Exception:
+        pass
+print(json.dumps([{'dir': d, 't': int(t)} for d, t in sorted(seen.items(), key=lambda x: -x[1])]))
+PY
+    ;;
+  preview|preview-stop)
+    [[ -x "$NODE" ]] || fail "找不到 node（$NODE），跑 pane-remote doctor 看看"
+    [[ "$cmd" == preview-stop ]] && exec "$NODE" "$HERE/preview-agent.mjs" --stop
+    [[ -n "$CHROME" ]] && export PREVIEW_CHROME=$CHROME
+    exec "$NODE" "$HERE/preview-agent.mjs"
+    ;;
+  awake)
+    pidf=$HOME/.cache/pane-remote-caffeinate.pid
+    mkdir -p "$HOME/.cache"
+    touch "$HOME/.cache/pane-remote-active"  # pane-open 据此判断你此刻在用手机
+    # 上一个 caffeinate 还在就续一个新的再结束旧的，保证中间不断档
+    old=$(cat "$pidf" 2>/dev/null)
+    nohup /usr/bin/caffeinate -i -t 150 </dev/null >/dev/null 2>&1 &
+    echo $! > "$pidf"
+    if [[ "$old" =~ ^[0-9]+$ ]] && [[ "$(ps -o comm= -p "$old" 2>/dev/null)" == */caffeinate ]]; then kill "$old" 2>/dev/null; fi
+    echo ok
+    ;;
+  *)
+    fail "unsupported command"
+    ;;
+esac

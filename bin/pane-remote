@@ -1,0 +1,7 @@
+#!/bin/bash
+# pane-remote 命令入口：优先用 install.sh 下载的 Node（runtime/node），没有就用电脑上的 node（要 20 以上）
+DIR=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+NODE=$DIR/runtime/node/bin/node
+[[ -x "$NODE" ]] || NODE=$(command -v node || true)
+[[ -n "$NODE" ]] || { echo "找不到 Node：在 $DIR 里跑 ./install.sh" >&2; exit 1; }
+exec "$NODE" "$DIR/lib/cli.mjs" "$@"

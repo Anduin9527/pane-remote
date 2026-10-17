@@ -1,0 +1,176 @@
+<script lang="ts">
+  // 新建标签页 / 拆分：全屏页面（不是底部抽屉），高度跟着键盘走，目录建议列表占满键盘上方的剩余空间。
+  // 正在填目录时，位置和启动命令两栏先收起来，给建议列表腾地方。
+  import { untrack } from 'svelte'
+  import X from '@lucide/svelte/icons/x'
+  import Folder from '@lucide/svelte/icons/folder'
+  import { Button } from '$lib/components/ui/button'
+  import { manage, type CreateTarget } from '$lib/api'
+  import { prefs } from '$lib/prefs.svelte'
+  import { ui, loadPanes, select } from '$lib/session.svelte'
+  import { cn } from '$lib/utils'
+  import { paneSession, canFork, forkPane } from '$lib/claude/fork'
+  import { appConfig } from '$lib/appConfig.svelte'
+
+  let { open = $bindable(false), target, ondone }: { open?: boolean; target: CreateTarget; ondone: () => void } = $props()
+
+  // 启动命令：服务端配置里的（init 时按本机装了哪些 agent 生成），前后加上「只开 shell」和「自定义」
+  const PRESETS = $derived([
+    { v: '', label: '只开 shell' },
+    ...appConfig.presets.map((p) => ({ v: p.command, label: p.label })),
+    { v: '__custom', label: '自定义…' },
+  ])
+  let known = $state<{ dir: string; t: number }[]>([])
+  let where = $state('')
+  let dir = $state('')
+  let cmd = $state('')
+  let custom = $state('')
+  let err = $state('')
+  let busy = $state(false)
+  let dirFocus = $state(false)
+  // 拆分的那个 pane 里有会话时，多一个「分叉这个会话」：不用填目录，新 pane 跟原会话在同一目录
+  let forkable = $state(false)
+  const presets = $derived(forkable ? [{ v: '__fork', label: '分叉这个会话' }, ...PRESETS] : PRESETS)
+  const isFork = $derived(cmd === '__fork' && forkable && !!target.split)
+
+  const windows = $derived([...new Set(ui.panes.map((p) => p.window))])
+  const home = $derived((ui.panes.find((p) => p.dir && p.cwd.startsWith('~'))?.dir || '').replace(/^(\/Users\/[^/]+).*/, '$1'))
+  const dirs = $derived.by(() => {
+    const d = [...new Set([target.dir, ...ui.panes.map((p) => p.dir), ...known.map((k) => k.dir)].filter(Boolean) as string[])]
+    if (home && !d.includes(home)) d.push(home)
+    return d
+  })
+  const short = (d: string) => (home && d.startsWith(home) ? '~' + d.slice(home.length) : d)
+  const full = (d: string) => (home && (d === '~' || d.startsWith('~/')) ? home + d.slice(1) : d.trim())
+  const matches = $derived.by(() => {
+    const q = dir.trim().toLowerCase().replace(/^~/, '')
+    const exact = dirs.some((d) => short(d).toLowerCase() === dir.trim().toLowerCase())
+    return (q && !exact ? dirs.filter((d) => d.toLowerCase().includes(q) || short(d).toLowerCase().includes(q)) : dirs).slice(0, 60)
+  })
+
+  // 每次打开按目标重置表单（只跟 open 走：目录列表、pane 列表后到时不能冲掉正在填的内容）
+  $effect(() => { if (open) untrack(reset) })
+  function reset() {
+    fetch('api/dirs', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : [])).then((d) => (known = d), () => {})
+    where = target.split ? 'split' : target.window != null ? `w${target.window}` : windows[0] != null ? `w${windows[0]}` : 'new'
+    dir = short(target.dir || dirs[0] || '')
+    const last = prefs.lastCmd
+    const preset = PRESETS.some((p) => p.v === last && p.v !== '__custom')
+    cmd = preset ? last : last ? '__custom' : ''
+    custom = preset ? '' : last
+    err = ''
+    dirFocus = false
+    forkable = false
+    const split = target.split?.pane
+    if (split != null) paneSession(split).then((s) => { if (target.split?.pane === split) forkable = canFork(s) })
+  }
+
+  async function go() {
+    if (isFork) {
+      busy = true
+      try {
+        const { pane } = await forkPane(target.split!.pane, target.direction === 'bottom' ? 'bottom' : 'right')
+        open = false
+        ondone()
+        await loadPanes()
+        select(pane)
+      } catch (e) { err = `分叉失败：${(e as Error).message}` } finally { busy = false }
+      return
+    }
+    const command = cmd === '__custom' ? custom.trim() : cmd
+    const body: Record<string, unknown> = { dir: full(dir), command }
+    let action: 'spawn' | 'split' = 'spawn'
+    if (where === 'split' && target.split) { action = 'split'; body.pane = target.split.pane; body.direction = target.direction }
+    else body.window = where === 'new' ? 'new' : Number(where.slice(1))
+    busy = true
+    try {
+      const { pane } = await manage<{ pane: number }>(action, body)
+      prefs.lastCmd = command
+      open = false
+      ondone()
+      await loadPanes()
+      select(pane)
+    } catch (e) {
+      err = `创建失败：${(e as Error).message}`
+    } finally {
+      busy = false
+    }
+  }
+  function pick(d: string) {
+    dir = short(d)
+    dirFocus = false
+    ;(document.activeElement as HTMLElement)?.blur()
+  }
+
+  const chip = (on: boolean) => cn('h-9 rounded-full border px-3.5 text-sm', on ? 'border-primary bg-primary text-primary-foreground' : 'bg-background text-foreground active:bg-accent')
+  const places = $derived(target.split
+    ? [{ v: 'split', label: `拆分 #${target.split.pane}（${target.direction === 'right' ? '右侧' : '下方'}）` }]
+    : [...windows.map((w) => ({ v: `w${w}`, label: `窗口 ${w} 新标签` })), { v: 'new', label: '新窗口' }])
+</script>
+
+{#if open}
+  <div class="fixed inset-x-0 top-0 z-50 flex flex-col bg-background" style:height="var(--vvh, 100dvh)">
+    <header class="flex flex-none items-center gap-2 border-b bg-card px-2 pt-[calc(env(safe-area-inset-top)+6px)] pb-2">
+      <button class="grid size-9 place-items-center rounded-lg active:bg-accent" aria-label="取消" onclick={() => (open = false)}><X class="size-5" /></button>
+      <strong class="flex-1 text-center">{target.split ? '拆分 pane' : '新建标签页'}</strong>
+      <Button size="sm" class="h-9 px-4" disabled={busy || (!isFork && !dir.trim())} onclick={go}>{busy ? '创建中…' : isFork ? '分叉' : '创建'}</Button>
+    </header>
+
+    <div class="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden p-3.5">
+      {#if !dirFocus}
+        <section class="grid gap-2">
+          <span class="text-xs text-muted-foreground">位置</span>
+          <div class="flex flex-wrap gap-1.5">
+            {#each places as p (p.v)}<button class={chip(where === p.v)} onclick={() => (where = p.v)}>{p.label}</button>{/each}
+          </div>
+        </section>
+        <section class="grid gap-2">
+          <span class="text-xs text-muted-foreground">启动</span>
+          <div class="flex flex-wrap gap-1.5">
+            {#each presets as p (p.v)}<button class={chip(cmd === p.v)} onclick={() => (cmd = p.v)}>{p.label}</button>{/each}
+          </div>
+          {#if cmd === '__custom'}
+            <input bind:value={custom} placeholder="例如 cursor-agent、grok、npm run dev" autocapitalize="off" spellcheck="false" class="h-10 rounded-[10px] border bg-background px-3 font-mono outline-none focus:ring-2 focus:ring-ring" />
+          {/if}
+        </section>
+      {/if}
+
+      {#if isFork}
+        <p class="rounded-[10px] bg-secondary px-3 py-2.5 text-sm text-muted-foreground">新 pane 会在 #{target.split?.pane} 的会话目录里，带着它现在的全部上下文开一个新会话；原会话不受影响。</p>
+      {:else}
+      <section class="flex min-h-0 flex-1 flex-col gap-2">
+        <span class="text-xs text-muted-foreground">目录</span>
+        <div class="flex gap-2">
+          <input
+            bind:value={dir}
+            onfocus={() => (dirFocus = true)}
+            placeholder="搜索，或直接输入路径（~/ 开头也行）"
+            autocapitalize="off"
+            spellcheck="false"
+            enterkeyhint="done"
+            onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); (e.currentTarget as HTMLInputElement).blur(); dirFocus = false } }}
+            class="h-10 min-w-0 flex-1 rounded-[10px] border bg-background px-3 font-mono outline-none focus:ring-2 focus:ring-ring"
+          />
+          {#if dirFocus}<Button variant="secondary" class="h-10" onclick={() => { dirFocus = false; (document.activeElement as HTMLElement)?.blur() }}>完成</Button>{/if}
+        </div>
+        <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-[10px] border bg-card">
+          {#each matches as d (d)}
+            <button
+              class={cn('flex w-full items-center gap-2 border-b px-3 py-2.5 text-left last:border-b-0 active:bg-accent', short(d) === dir.trim() && 'bg-accent')}
+              onpointerdown={(e) => e.preventDefault()}
+              onclick={() => pick(d)}
+            >
+              <Folder class="size-4 flex-none text-muted-foreground" />
+              <span class="min-w-0 truncate font-mono text-[13px]">{short(d)}</span>
+            </button>
+          {:else}
+            <p class="p-4 text-center text-sm text-muted-foreground">没有匹配的目录，直接用输入的路径</p>
+          {/each}
+        </div>
+        {#if err}<p class="text-sm text-destructive">{err}</p>{/if}
+      </section>
+      {/if}
+      {#if isFork && err}<p class="text-sm text-destructive">{err}</p>{/if}
+    </div>
+  </div>
+{/if}

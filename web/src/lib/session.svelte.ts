@@ -1,0 +1,256 @@
+// 当前 pane 的连接状态和画面数据。画面行数可能有几百行，放普通数组里，用回调通知终端组件重画，
+// 不走 Svelte 的深度响应式。
+import { fetchPanes, label, report, resetSendQueue, type Pane } from './api'
+import { prefs } from './prefs.svelte'
+
+const SHELLS = new Set(['zsh', 'bash', 'sh', 'fish', 'dash', 'ksh', 'tcsh', 'nu', 'login', '-zsh', '-bash'])
+
+export type ClaudeInfo = { agent: 'claude' | 'codex' | 'grok' | 'cursor-agent' | string; status?: string; session: string; transcript: string; configDir: string; cwd: string; t: number }
+export type Choice = { label: string; send: string[]; selected?: boolean }
+export type PaneState = { state: 'waiting' | 'running' | 'done' | 'idle'; prompt: string; choices: Choice[]; unread: boolean }
+
+export const ui = $state({
+  panes: [] as Pane[],
+  current: null as string | null,
+  status: 'idle' as 'idle' | 'live' | 'err',
+  statusMsg: '',
+  cols: 80,
+  rows: 24,
+  fg: '',
+  title: '',
+  // 没有回滚内容（行数不超过可见行数）= 全屏程序（Claude Code fullscreen、vim、less 等）
+  alt: false,
+  hasFrame: false,
+  /** 所有 pane 的状态（服务端每 3 秒扫一次）：waiting / running / idle，unread = 手机上还没看过最新内容 */
+  states: {} as Record<string, PaneState>,
+  /** 当前 pane 里登记到的 Claude 会话（pane-event hook 记下的），没有就是 null */
+  claude: null as ClaudeInfo | null,
+  /** 前台是哪个 agent（claude / codex / cursor-agent），没有会话记录时也有：输入框同步按它的格式读 */
+  agent: '' as string,
+})
+
+/** 别的 pane 里有几个在等你操作 */
+export const waitingElsewhere = () => Object.entries(ui.states).filter(([id, s]) => id !== ui.current && s.state === 'waiting').length
+
+// 切 pane 时的缓存：每个 pane 上次的画面（带帧序号）和 Claude 会话信息，切回来立刻显示，再在后台更新
+type FrameCache = { lines: string[]; seq: string; cols: number; rows: number; fg: string; title: string; alt: boolean }
+const frames = new Map<string, FrameCache>()
+const claudeCache = new Map<string, ClaudeInfo | null>()
+const agentCache = new Map<string, string>()
+
+export async function refreshClaude() {
+  const pane = ui.current
+  if (!pane) { ui.claude = null; return }
+  try {
+    const r = await fetch(`api/claude?pane=${pane}`, { cache: 'no-store' })
+    const d = r.ok ? await r.json() : {}
+    const info = d?.session && d.transcript ? d : null // Claude / Codex / cursor-agent 都行
+    claudeCache.set(pane, info)
+    agentCache.set(pane, d?.agent || '')
+    if (ui.current === pane) { ui.claude = info; ui.agent = d?.agent || '' }
+  } catch {}
+}
+setInterval(() => { if (document.visibilityState === 'visible') refreshClaude() }, 15000)
+
+export async function pollStates() {
+  if (document.visibilityState !== 'visible') return
+  try {
+    const r = await fetch('api/states', { cache: 'no-store' })
+    if (r.ok) ui.states = await r.json()
+  } catch {}
+}
+setInterval(pollStates, 4000)
+document.addEventListener('visibilitychange', pollStates)
+
+/** 全屏程序且前台不是 shell：滑动转滚轮、轻点转鼠标点击（shell 收到鼠标序列会当成输入） */
+export const mouseMode = () => ui.alt && !!ui.fg && !SHELLS.has(ui.fg)
+
+export const currentPane = () => ui.panes.find((p) => String(p.pane) === ui.current)
+export const paneName = () => {
+  const p = currentPane()
+  if (ui.title) return `#${ui.current} ${ui.title}`
+  return p ? `#${p.pane} ${label(p)}` : ui.current ? `#${ui.current}` : '选择 pane'
+}
+
+export let lines: string[] = []
+type FrameListener = (changed: number[] | null) => void // null = 整屏重画
+const listeners = new Set<FrameListener>()
+export function onFrame(fn: FrameListener) {
+  listeners.add(fn)
+  return () => listeners.delete(fn)
+}
+const emit = (changed: number[] | null) => { for (const fn of listeners) fn(changed) }
+
+function updateAlt() {
+  // 全屏程序没有回滚内容，get-text 正常会多出一行；WezTerm 窗口和 mux 的尺寸不同步时还会再多一两行
+  // （pane 1 出过 38 行 / 报 36 行，结果没认成全屏，滑动不转滚轮）。有回滚的终端动辄几百行，放宽到 +3 不会误判
+  ui.alt = lines.length <= ui.rows + 3
+}
+
+export async function loadPanes() {
+  ui.panes = await fetchPanes()
+  return ui.panes
+}
+
+export function setStatus(kind: typeof ui.status, msg = '') {
+  ui.status = kind
+  ui.statusMsg = msg
+}
+
+let es: EventSource | null = null
+let seq = '' // 手里这份画面对应的帧序号；重连时带给服务端，对得上就不重发整屏
+let lastMsgAt = 0
+let retryTimer: ReturnType<typeof setTimeout> | undefined
+let retries = 0
+
+export function select(pane: string | number) {
+  const id = String(pane)
+  const prev = ui.current
+  if (prev && prev !== id && ui.hasFrame) frames.set(prev, { lines, seq, cols: ui.cols, rows: ui.rows, fg: ui.fg, title: ui.title, alt: ui.alt })
+  ui.current = id
+  prefs.pane = id
+  const p = currentPane()
+  const cached = frames.get(id)
+  if (cached) {
+    // 先显示上次的画面；重连时带上帧序号，服务端那边画面没变（通道还保留着）就不重发整屏
+    lines = cached.lines; seq = cached.seq
+    ui.cols = cached.cols; ui.rows = cached.rows; ui.fg = cached.fg; ui.title = cached.title; ui.alt = cached.alt
+    ui.hasFrame = true
+  } else {
+    if (p) { ui.cols = p.cols; ui.rows = p.rows }
+    ui.title = ''; ui.fg = ''; ui.alt = false; ui.hasFrame = false
+    lines = []; seq = ''
+  }
+  emit(null)
+  document.title = p ? `${label(p)} · Panes` : 'Pane Remote'
+  ui.claude = claudeCache.get(id) ?? null
+  ui.agent = agentCache.get(id) ?? ''
+  refreshClaude()
+  if (!paused) connect()
+}
+
+function connect() {
+  es?.close()
+  clearTimeout(retryTimer)
+  if (!ui.current) return
+  if (!ui.hasFrame) setStatus('idle', '连接中…')
+  const since = ui.hasFrame && seq ? `&since=${seq}` : ''
+  const src = new EventSource(`api/stream?pane=${encodeURIComponent(ui.current)}${since}`)
+  es = src
+  lastMsgAt = Date.now()
+  const alive = (e: Event) => {
+    lastMsgAt = Date.now()
+    retries = 0
+    const id = (e as MessageEvent).lastEventId
+    if (id) seq = id
+  }
+  src.addEventListener('ping', alive)
+  src.addEventListener('resume', (e) => { alive(e); setStatus('live', '已连接') })
+  src.addEventListener('size', (e) => {
+    alive(e)
+    const d = JSON.parse((e as MessageEvent).data)
+    ui.cols = d.cols
+    ui.rows = d.rows
+    ui.fg = d.fg || ''
+    if (d.title) ui.title = d.title
+    updateAlt()
+  })
+  src.addEventListener('full', (e) => {
+    alive(e)
+    setStatus('live', '已连接')
+    lines = JSON.parse((e as MessageEvent).data).lines
+    ui.hasFrame = true
+    updateAlt()
+    emit(null)
+  })
+  src.addEventListener('delta', (e) => {
+    alive(e)
+    if (ui.status !== 'live') setStatus('live', '已连接')
+    const d = JSON.parse((e as MessageEvent).data)
+    const grew = d.total !== lines.length
+    lines.length = d.total
+    for (const [i, l] of Object.entries(d.set)) lines[Number(i)] = l as string
+    if (grew) { updateAlt(); emit(null) } else emit(Object.keys(d.set).map(Number))
+  })
+  src.addEventListener('openurl', (e) => openHandler(JSON.parse((e as MessageEvent).data).url))
+  src.addEventListener('fail', (e) => setStatus('err', JSON.parse((e as MessageEvent).data).message))
+  src.onerror = () => {
+    setStatus('err', '连接断开，自动重连中')
+    // 浏览器自己会按 retry 重连；只有彻底关掉（比如服务端返回错误码）时才手动重连，退避 + 随机抖动
+    if (src.readyState === EventSource.CLOSED && es === src) {
+      const wait = Math.min(16000, 1000 * 2 ** retries++) * (0.7 + Math.random() * 0.6)
+      retryTimer = setTimeout(connect, wait)
+    }
+  }
+}
+
+/** 手动重连（自动重连之外的兜底）：清空卡住的发送队列，让服务端重建这个 pane 的画面通道，再拿一份完整画面 */
+export async function reconnectPane() {
+  const pane = ui.current
+  if (!pane) return { dropped: 0, mac: '' }
+  const dropped = resetSendQueue()
+  setStatus('idle', '重连中…')
+  es?.close(); es = null
+  clearTimeout(retryTimer); retries = 0
+  frames.delete(pane)
+  seq = '' // 不带帧序号：服务端一定发整屏
+  let mac = ''
+  try {
+    const r = await fetch('api/reconnect', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pane: Number(pane) }), signal: AbortSignal.timeout(15000) })
+    mac = (await r.json().catch(() => ({}))).mac || ''
+  } catch (e) { mac = (e as Error).message }
+  if (ui.current !== pane) return { dropped, mac }
+  loadPanes().catch(() => {})
+  refreshClaude()
+  pollStates()
+  if (!paused) connect()
+  return { dropped, mac }
+}
+
+// 电脑要打开网页（pane-open）时，服务端经画面流发来的 open 事件
+let openHandler: (url: string) => void = () => {}
+export function onOpenUrl(fn: (url: string) => void) { openHandler = fn }
+
+let paused = false
+/** 暂停 / 恢复画面流（切到预览页时暂停） */
+export function setPaused(v: boolean) {
+  if (paused === v) return
+  paused = v
+  if (v) { es?.close(); es = null; clearTimeout(retryTimer) }
+  else if (ui.current) connect()
+}
+
+// 假死检测：服务端每 15 秒发 ping，40 秒什么都没收到就当连接已经断了（iOS 切网络时常见），主动重连
+setInterval(() => {
+  if (!paused && document.visibilityState === 'visible' && ui.current && es && Date.now() - lastMsgAt > 40000) {
+    setStatus('err', '连接没有响应，重连中')
+    connect()
+  }
+}, 10000)
+
+// 切到后台就断开画面流（服务端据此知道没人在看，才会推送通知），回到前台再连（带上序号，画面没变就不重发）
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { es?.close(); es = null }
+  else if (!paused && ui.current && (!es || es.readyState === EventSource.CLOSED)) connect()
+})
+window.addEventListener('online', () => { if (!paused && ui.current && document.visibilityState === 'visible') connect() })
+window.addEventListener('pageshow', (e) => { if (!paused && e.persisted && ui.current) connect() })
+
+export async function boot() {
+  // 从通知点进来会带 ?pane=N
+  const urlPane = new URLSearchParams(location.search).get('pane')
+  const want = urlPane && /^\d+$/.test(urlPane) ? urlPane : prefs.pane
+  try {
+    const list = await loadPanes()
+    if (!list.length) { setStatus('err', '没有 pane'); return }
+    const keep = list.find((p) => String(p.pane) === String(want))
+    select((keep || list.find((p) => p.active) || list[0]).pane)
+  } catch (e) {
+    setStatus('err', `读取失败：${(e as Error).message}`)
+    report('boot-panes', (e as Error).message)
+  }
+}
+
+/** 界面上显示的 agent 名字 */
+export const AGENT_NAMES: Record<string, string> = { claude: 'Claude', codex: 'Codex', grok: 'Grok', 'cursor-agent': 'Cursor' }
+export const agentName = () => AGENT_NAMES[ui.claude?.agent || ui.agent || ''] ?? 'Agent'

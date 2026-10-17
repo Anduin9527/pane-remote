@@ -1,0 +1,658 @@
+#!/usr/bin/python3
+"""pane-remote：读某个 pane 里 Claude Code 会话的记录文件，整理成对话消息（JSON），给手机端「对话视图」用。
+  pane-transcript session <pane>          这个 pane 的会话信息（pane-event 记下的），没有就输出 {}
+  pane-transcript messages <pane> [条数] [已知大小]   {size, messages:[{id, role, ts, parts:[…]}]}；
+                                          记录文件大小等于「已知大小」时只回 {size, unchanged: true}（中转据此用缓存，不重新解析）
+  pane-transcript crons <pane>            Claude 会话里的定时任务（CronCreate 建的，只活在会话里）：还在的、最近停掉的，
+                                          每个任务上次什么时候跑、跑完说了什么、是不是正在跑
+只读最后约 2MB；子代理（sidechain）、系统提示、思考过程不显示。
+"""
+import glob, json, os, re, subprocess, sys, time
+
+PANES = os.path.expanduser("~/.local/state/pane-remote/panes.json")
+TAILS = (2 << 20, 8 << 20, 32 << 20)  # 不够条数就往前多读（截图之类的工具结果一行就有好几 MB）
+BIG_LINE = 256 * 1024
+
+
+WEZTERM = "/Applications/WezTerm.app/Contents/MacOS/wezterm"
+
+
+def fg_procs(pane):
+    """pane 前台进程组里的所有进程：[(pid, args)]"""
+    panes = json.loads(subprocess.run([WEZTERM, "cli", "--no-auto-start", "list", "--format", "json"], capture_output=True, text=True, timeout=5).stdout)
+    p = next(p for p in panes if str(p["pane_id"]) == str(pane))
+    tty = p["tty_name"].replace("/dev/", "")
+    out = []
+    for l in subprocess.run(["/bin/ps", "-o", "pid=,tpgid=,pgid=,args=", "-t", tty], capture_output=True, text=True).stdout.splitlines():
+        parts = l.split(None, 3)
+        if len(parts) == 4 and parts[1] == parts[2]:  # 在前台进程组里
+            out.append((parts[0], parts[3]))
+    cwd = (p.get("cwd") or "").replace("file://", "")
+    cwd = re.sub(r"^[^/]*", "", cwd) if not cwd.startswith("/") else cwd
+    from urllib.parse import unquote
+    return out, unquote(cwd)
+
+
+def agent_of(procs):
+    for _, args in procs:
+        a = args.lower()
+        # Grok 暂不启用（解析代码 grok_session / parse_grok 留着），要启用时加回 "grok"
+        for name in ("cursor-agent", "claude", "codex"):
+            if name in a:
+                return name
+    return ""
+
+
+def from_process(pane):
+    try:
+        procs, cwd = fg_procs(pane)
+    except Exception:
+        return None
+    agent = agent_of(procs)
+    try:
+        if agent == "claude":
+            return claude_session(procs)
+        if agent == "grok":
+            return grok_session(procs)
+        if agent == "codex":
+            return codex_session(procs, pane, cwd)
+        if agent == "cursor-agent":
+            return cursor_session(cwd)
+    except Exception:
+        pass
+    return None
+
+
+def grok_session(procs):
+    pids = {int(p) for p, _ in procs}
+    for s in json.load(open(os.path.expanduser("~/.grok/active_sessions.json"))):
+        if s.get("pid") in pids:
+            from urllib.parse import quote
+            d = os.path.expanduser(f"~/.grok/sessions/{quote(s['cwd'], safe='')}/{s['session_id']}")
+            return {"agent": "grok", "session": s["session_id"], "transcript": os.path.join(d, "chat_history.jsonl"), "configDir": "", "cwd": s["cwd"], "t": 0}
+    return None
+
+
+def codex_session(procs, pane, cwd):
+    # 正在写的 rollout 文件：codex 运行时一直开着它
+    for pid, _ in procs:
+        out = subprocess.run(["/usr/sbin/lsof", "-p", pid, "-Fn"], capture_output=True, text=True).stdout
+        m = re.search(r"^n(.*/\.codex/sessions/.*rollout-.*\.jsonl)$", out, re.M)
+        if m:
+            sid = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$", m.group(1))
+            return {"agent": "codex", "session": sid.group(1) if sid else "", "transcript": m.group(1), "configDir": "", "cwd": cwd, "t": 0}
+    try:
+        info = json.load(open(PANES)).get(str(pane)) or {}
+        if info.get("agent") == "codex":
+            return info
+    except Exception:
+        pass
+    return None
+
+
+def cursor_session(cwd):
+    best = None
+    for meta in glob.glob(os.path.expanduser("~/.cursor/chats/*/*/meta.json")):
+        try:
+            m = json.load(open(meta))
+        except Exception:
+            continue
+        db = os.path.join(os.path.dirname(meta), "store.db")
+        if m.get("cwd") == cwd and os.path.exists(db):
+            t = os.path.getmtime(db)
+            if not best or t > best[0]:
+                best = (t, os.path.basename(os.path.dirname(meta)), db)
+    if best:
+        return {"agent": "cursor-agent", "session": best[1], "transcript": best[2], "configDir": "", "cwd": cwd, "t": best[0]}
+    return None
+
+
+def claude_session(procs):
+    """直接从正在运行的 Claude 进程找会话：pane → tty → 前台进程 → ~/.claude*/sessions/<pid>.json（Claude 自己写的，
+    带会话 ID、目录、忙/闲）。不依赖 hook，已经开着、一直没动过的会话也能找到；同一个 pane 换了新会话也会跟着变。"""
+    if True:
+        for pid, _ in procs:
+            for f in glob.glob(os.path.expanduser(f"~/.claude*/sessions/{pid}.json")):
+                info = json.load(open(f))
+                sid = info.get("sessionId") or ""
+                conf = os.path.dirname(os.path.dirname(f))
+                transcripts = glob.glob(os.path.join(conf, "projects", "*", f"{sid}.jsonl")) if sid else []
+                if transcripts:
+                    return {"agent": "claude", "session": sid, "transcript": transcripts[0], "configDir": conf,
+                            "cwd": info.get("cwd") or "", "status": info.get("status") or "", "t": (info.get("updatedAt") or 0) / 1000}
+    return None
+
+
+def session(pane):
+    found = from_process(pane)
+    if found:
+        return found
+    try:
+        hooked = json.load(open(PANES)).get(str(pane)) or {}  # hook 记下的（Codex 等）
+    except Exception:
+        hooked = {}
+    if hooked:
+        return hooked
+    # 还没有会话记录（比如 Codex 发第一条消息前），也告诉前端前台是哪个 agent：输入框同步要按它的格式读
+    try:
+        agent = agent_of(fg_procs(pane)[0])
+    except Exception:
+        agent = ""
+    return {"agent": agent} if agent else {}
+
+
+def queued_prompt(d):
+    """排队插进当前这轮的用户消息（attachment queued_command，origin 是 human），不是就返回空"""
+    a = d.get("attachment") if d.get("type") == "attachment" else None
+    if not isinstance(a, dict) or a.get("type") != "queued_command":
+        return ""
+    if (a.get("origin") or {}).get("kind", "human") != "human" or a.get("commandMode", "prompt") != "prompt":
+        return ""
+    p = a.get("prompt")
+    text = p if isinstance(p, str) else result_text(p) if isinstance(p, list) else ""
+    return clean_user(text)
+
+
+def clean_user(text):
+    text = re.sub(r"<system-reminder>.*?</system-reminder>", "", text, flags=re.S)
+    m = re.search(r"<command-name>(.*?)</command-name>", text, flags=re.S)
+    if m:
+        args = re.search(r"<command-args>(.*?)</command-args>", text, flags=re.S)
+        return (m.group(1).strip() + " " + (args.group(1).strip() if args else "")).strip()
+    text = re.sub(r"<local-command-stdout>(.*?)</local-command-stdout>", r"\1", text, flags=re.S)
+    text = re.sub(r"<(local-command-caveat|command-message|command-args)>.*?</\1>", "", text, flags=re.S)
+    return text.strip()
+
+
+def summarize(name, inp):
+    if not isinstance(inp, dict):
+        return ""
+    for k in ("command", "file_path", "path", "pattern", "url", "query", "description", "prompt", "skill"):
+        v = inp.get(k)
+        if isinstance(v, str) and v:
+            return v.replace("\n", " ")[:200]
+    return json.dumps(inp, ensure_ascii=False)[:200]
+
+
+def result_text(c):
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return "\n".join(x.get("text", "") for x in c if isinstance(x, dict) and x.get("type") in ("text", "input_text", "output_text"))
+    return ""
+
+
+def messages(pane, limit):
+    info = session(pane)
+    path = info.get("transcript")
+    if not path or not os.path.isfile(path):
+        return []
+    agent = info.get("agent", "claude")
+    if agent == "cursor-agent":
+        return parse_cursor(path)[-limit:]
+    size = os.path.getsize(path)
+    if agent in ("codex", "grok"):
+        out = []
+        for tail in TAILS:
+            out = (parse_codex if agent == "codex" else parse_grok)(path, size, tail)
+            if len(out) >= min(limit, 20) or tail >= size:
+                break
+        return out[-limit:]
+    out = []
+    for tail in TAILS:
+        out = parse(path, size, tail)
+        if len(out) >= min(limit, 20) or tail >= size:
+            break
+    return out[-limit:]
+
+
+def parse(path, size, tail):
+    with open(path, "rb") as f:
+        f.seek(max(0, size - tail))
+        raw = f.read().split(b"\n")
+    if size > tail:
+        raw = raw[1:]  # 第一行可能被截断
+    out, tools = [], {}
+    for bline in raw:
+        if len(bline) > BIG_LINE:
+            # 超大行（多半是截图等工具结果）：不完整解析，只把对应的工具调用标成「大输出」
+            m = re.search(rb'"tool_use_id":"([^"]+)"', bline[:4096])
+            if m and m.group(1).decode() in tools:
+                tools[m.group(1).decode()]["result"] = "（大输出，已省略）"
+            continue
+        try:
+            d = json.loads(bline)
+        except Exception:
+            continue
+        if d.get("isSidechain"):
+            continue
+        q = queued_prompt(d)
+        if q:  # Claude 忙的时候发的消息：不是单独一行用户消息，而是在这一轮中途插进去的附件
+            out.append({"id": d.get("uuid", ""), "role": "user", "ts": d.get("timestamp", ""), "parts": [{"type": "text", "text": q}]})
+            continue
+        if d.get("type") not in ("user", "assistant"):
+            continue
+        msg = d.get("message") or {}
+        content = msg.get("content")
+        ts = d.get("timestamp", "")
+        if d["type"] == "user":
+            if d.get("isMeta"):
+                continue
+            if isinstance(content, list) and any(isinstance(x, dict) and x.get("type") == "tool_result" for x in content):
+                for x in content:
+                    if isinstance(x, dict) and x.get("type") == "tool_result" and x.get("tool_use_id") in tools:
+                        part = tools[x["tool_use_id"]]
+                        part["result"] = result_text(x.get("content"))[:1500]
+                        part["error"] = bool(x.get("is_error"))
+                continue
+            text = content if isinstance(content, str) else "\n".join(x.get("text", "") for x in content or [] if isinstance(x, dict) and x.get("type") == "text")
+            text = clean_user(text)
+            if text and not text.startswith("<task-notification>"):  # 后台任务的完成通知不是用户说的话
+                out.append({"id": d.get("uuid", ""), "role": "user", "ts": ts, "parts": [{"type": "text", "text": text}]})
+            continue
+        # assistant：同一条回复的多个内容块会分成多行写，合并成一条消息
+        parts = []
+        for x in content if isinstance(content, list) else [{"type": "text", "text": content or ""}]:
+            if not isinstance(x, dict):
+                continue
+            if x.get("type") == "text" and x.get("text", "").strip():
+                parts.append({"type": "text", "text": x["text"]})
+            elif x.get("type") == "tool_use":
+                part = {"type": "tool", "name": x.get("name", ""), "summary": summarize(x.get("name"), x.get("input")), "result": None, "error": False}
+                tools[x.get("id")] = part
+                parts.append(part)
+        if not parts:
+            continue
+        mid = msg.get("id") or d.get("uuid", "")
+        if out and out[-1]["role"] == "assistant":  # 同一轮里连续的回复和工具调用合成一个气泡
+            out[-1]["parts"].extend(parts)
+        else:
+            out.append({"id": d.get("uuid", ""), "_mid": mid, "role": "assistant", "ts": ts, "parts": parts})
+    for m in out:
+        m.pop("_mid", None)
+    return out
+
+
+# ---------- 其他 agent 的记录格式 ----------
+def read_tail(path, size, tail):
+    with open(path, "rb") as f:
+        f.seek(max(0, size - tail))
+        raw = f.read().split(b"\n")
+    return raw[1:] if size > tail else raw
+
+
+def user_text(text):
+    """去掉 agent 注入的上下文，只留用户真正说的话（Codex / Grok / Cursor 会把 <user_query> 包起来）"""
+    m = re.search(r"<user_query>\s*(.*?)\s*</user_query>", text, flags=re.S)
+    if m:
+        return m.group(1).strip()
+    if re.match(r"\s*(#\s*AGENTS\.md|<environment_context>|<user_info>|<system-reminder>|<rules>|<permissions|<timestamp>)", text):
+        return ""
+    return clean_user(text)
+
+
+def push_assistant(out, parts, ts=""):
+    if not parts:
+        return
+    # 同一段文字连着出现两次（流式中间态和最终结果都记了）只留一次
+    prev = out[-1]["parts"][-1] if out and out[-1]["role"] == "assistant" and out[-1]["parts"] else None
+    if prev and prev.get("type") == "text" and parts[0].get("type") == "text" and prev["text"].strip() == parts[0]["text"].strip():
+        parts = parts[1:]
+        if not parts:
+            return
+    if out and out[-1]["role"] == "assistant":
+        out[-1]["parts"].extend(parts)
+    else:
+        out.append({"id": f"a{len(out)}", "role": "assistant", "ts": ts, "parts": parts})
+
+
+def tool_part(name, inp):
+    if isinstance(inp, str):
+        try:
+            inp = json.loads(inp)
+        except Exception:
+            inp = {"input": inp}
+    return {"type": "tool", "name": name or "tool", "summary": summarize(name, inp), "result": None, "error": False}
+
+
+def parse_codex(path, size, tail):
+    out, tools = [], {}
+    for bline in read_tail(path, size, tail):
+        if len(bline) > BIG_LINE:
+            continue
+        try:
+            d = json.loads(bline)
+        except Exception:
+            continue
+        p = d.get("payload") or {}
+        ts = d.get("timestamp", "")
+        # 用户真正输入的内容单独记成事件（发给模型的那条用户消息混着 AGENTS.md、环境信息，不用它）
+        if d.get("type") == "event_msg":
+            item = p.get("item") or {}
+            text = ""
+            if p.get("type") == "item_completed" and item.get("type") == "UserMessage":
+                text = "\n".join(x.get("text", "") if x.get("type") in ("Text", "text") else "[图片]" for x in item.get("content") or [] if isinstance(x, dict))
+            elif p.get("type") == "user_message":
+                text = p.get("message") or ""
+            if text.strip():
+                out.append({"id": item.get("id") or f"u{len(out)}", "role": "user", "ts": ts, "parts": [{"type": "text", "text": text.strip()}]})
+            continue
+        if d.get("type") != "response_item":
+            continue
+        t = p.get("type")
+        if t == "message":
+            texts = [c.get("text", "") for c in p.get("content") or [] if isinstance(c, dict) and c.get("type") in ("input_text", "output_text", "text")]
+            text = "\n".join(texts)
+            if p.get("role") == "assistant" and text.strip():
+                push_assistant(out, [{"type": "text", "text": text}], ts)
+        elif t in ("function_call", "custom_tool_call", "local_shell_call"):
+            part = tool_part(p.get("name") or t, p.get("arguments") or p.get("input") or p.get("action"))
+            tools[p.get("call_id")] = part
+            push_assistant(out, [part], ts)
+        elif t in ("function_call_output", "custom_tool_call_output", "local_shell_call_output"):
+            part = tools.get(p.get("call_id"))
+            if part is not None:
+                o = p.get("output")
+                part["result"] = (o if isinstance(o, str) else result_text(o) or json.dumps(o, ensure_ascii=False))[:1500]
+    return out
+
+
+def parse_grok(path, size, tail):
+    out, tools = [], {}
+    for bline in read_tail(path, size, tail):
+        if len(bline) > BIG_LINE:
+            continue
+        try:
+            d = json.loads(bline)
+        except Exception:
+            continue
+        t = d.get("type")
+        c = d.get("content")
+        if t == "user":
+            text = c if isinstance(c, str) else "\n".join(x.get("text", "") for x in c or [] if isinstance(x, dict) and x.get("type") == "text")
+            if any(isinstance(x, dict) and x.get("type") == "tool_result" for x in (c if isinstance(c, list) else [])):
+                for x in c:
+                    if isinstance(x, dict) and x.get("type") == "tool_result" and x.get("tool_use_id") in tools:
+                        tools[x["tool_use_id"]]["result"] = result_text(x.get("content"))[:1500]
+                continue
+            text = user_text(text)
+            if text:
+                out.append({"id": f"u{len(out)}", "role": "user", "ts": d.get("timestamp", ""), "parts": [{"type": "text", "text": text}]})
+        elif t == "assistant":
+            parts = []
+            if isinstance(c, str) and c.strip():
+                parts.append({"type": "text", "text": c})
+            elif isinstance(c, list):
+                for x in c:
+                    if isinstance(x, dict) and x.get("type") == "text" and x.get("text", "").strip():
+                        parts.append({"type": "text", "text": x["text"]})
+                    elif isinstance(x, dict) and x.get("type") == "tool_use":
+                        part = tool_part(x.get("name"), x.get("input"))
+                        tools[x.get("id")] = part
+                        parts.append(part)
+            for tc in d.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                part = tool_part(fn.get("name") or tc.get("name"), fn.get("arguments") or tc.get("arguments"))
+                tools[tc.get("id")] = part
+                parts.append(part)
+            push_assistant(out, parts, d.get("timestamp", ""))
+        elif t in ("tool", "tool_result", "function_call_output"):
+            part = tools.get(d.get("tool_call_id") or d.get("call_id") or d.get("id"))
+            if part is not None:
+                part["result"] = (c if isinstance(c, str) else result_text(c) or json.dumps(c, ensure_ascii=False))[:1500]
+    return out
+
+
+def proto_ids(buf):
+    """根节点（protobuf）里按顺序排的 32 字节消息 ID：字段 1、长度 32"""
+    ids, i = [], 0
+    while i < len(buf):
+        key = buf[i]; i += 1
+        if key & 7 != 2:
+            break
+        n, shift = 0, 0
+        while True:
+            b = buf[i]; i += 1
+            n |= (b & 0x7f) << shift; shift += 7
+            if b < 0x80:
+                break
+        if key >> 3 == 1 and n == 32:
+            ids.append(buf[i:i + 32].hex())
+        i += n
+    return ids
+
+
+def parse_cursor(db):
+    import sqlite3
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        meta = json.loads(bytes.fromhex(con.execute("select value from meta where key='0'").fetchone()[0]))
+        root = con.execute("select data from blobs where id=?", (meta["latestRootBlobId"],)).fetchone()
+        ids = proto_ids(root[0]) if root else []
+        out, tools = [], {}
+        for bid in ids:
+            row = con.execute("select data from blobs where id=?", (bid,)).fetchone()
+            if not row or row[0][:1] != b"{":
+                continue
+            try:
+                d = json.loads(row[0])
+            except Exception:
+                continue
+            role, c = d.get("role"), d.get("content")
+            if role == "user":
+                text = c if isinstance(c, str) else "\n".join(x.get("text", "") for x in c or [] if isinstance(x, dict) and x.get("type") == "text")
+                text = user_text(text)
+                if text:
+                    out.append({"id": bid[:12], "role": "user", "ts": "", "parts": [{"type": "text", "text": text}]})
+            elif role == "assistant":
+                parts = []
+                for x in c if isinstance(c, list) else [{"type": "text", "text": c or ""}]:
+                    if isinstance(x, dict) and x.get("type") == "text" and x.get("text", "").strip():
+                        parts.append({"type": "text", "text": x["text"]})
+                    elif isinstance(x, dict) and x.get("type") in ("tool-call", "tool_use"):
+                        part = tool_part(x.get("toolName") or x.get("name"), x.get("args") or x.get("input"))
+                        tools[x.get("toolCallId") or x.get("id")] = part
+                        parts.append(part)
+                push_assistant(out, parts)
+            elif role == "tool":
+                for x in c if isinstance(c, list) else []:
+                    part = tools.get(x.get("toolCallId") or x.get("tool_use_id"))
+                    if part is not None:
+                        r = x.get("result") if "result" in x else x.get("content")
+                        part["result"] = (r if isinstance(r, str) else json.dumps(r, ensure_ascii=False))[:1500]
+        return out
+    finally:
+        con.close()
+
+
+# 只解析含这些字样的行（记录文件可能上百 MB）；工具结果那一行没有工具名，靠结果文字认
+CRON_KEYS = (b'"CronCreate"', b'"CronDelete"', b'scheduled_task_fire', b'session_cron_carry', b'"jobs"', b'job ', b'Scheduled ', "[手机面板] 立即执行".encode())
+WEEK = 7 * 86400
+
+
+def iso_ts(s):
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0
+
+
+def cron_name(prompt):
+    """任务名：提示词开头方括号里第一个逗号 / 冒号 / 括号之前的部分，比如「巡检 1/3」"""
+    m = re.match(r"\s*\[([^\]]*)\]", prompt)
+    return re.split(r"[：，（(,:]", m.group(1))[0].strip() if m else prompt[:30]
+
+
+def turn_result(path, offset):
+    """从某次触发开始往后读，找这一轮最后一段回复；读到回合结束（turn_duration）就算跑完了"""
+    text, done = "", False
+    with open(path, "rb") as f:
+        f.seek(offset)
+        f.readline()  # 触发那一行本身
+        read = 0
+        for raw in f:
+            read += len(raw)
+            if read > (16 << 20):
+                break
+            if b'"turn_duration"' in raw:
+                done = True
+                break
+            if b'"scheduled_task_fire"' in raw or b'"promptSource"' in raw and b'"isMeta"' not in raw:  # 下一轮都开始了，这一轮肯定结束了
+                done = True
+                break
+            if b'"type":"assistant"' not in raw or len(raw) > BIG_LINE:
+                continue
+            try:
+                d = json.loads(raw)
+            except Exception:
+                continue
+            if d.get("isSidechain"):
+                continue
+            for b in (d.get("message") or {}).get("content") or []:
+                if isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip():
+                    text = b["text"].strip()
+    return text[:1200], done
+
+
+def crons(pane):
+    info = session(pane)
+    path = info.get("transcript")
+    if info.get("agent") != "claude" or not path or not os.path.isfile(path):
+        return {"tasks": [], "stopped": []}
+    active, stopped, fires = {}, {}, {}
+    creates, deletes = {}, {}
+    offset = 0
+    with open(path, "rb") as f:
+        for raw in f:
+            here = offset
+            offset += len(raw)
+            if not any(k in raw for k in CRON_KEYS):
+                continue
+            try:
+                d = json.loads(raw)
+            except Exception:
+                continue
+            ts = iso_ts(d.get("timestamp") or "")
+            t = d.get("type")
+            if t == "assistant":
+                for b in (d.get("message") or {}).get("content") or []:
+                    if isinstance(b, dict) and b.get("type") == "tool_use":
+                        if b.get("name") == "CronCreate":
+                            creates[b.get("id")] = b.get("input") or {}
+                        elif b.get("name") == "CronDelete":
+                            deletes[b.get("id")] = (b.get("input") or {}).get("id")
+            elif t == "user" or queued_prompt(d):
+                c = queued_prompt(d) or (d.get("message") or {}).get("content")
+                c = c if isinstance(c, str) else result_text(c) if isinstance(c, list) and d.get("promptSource") else ""
+                # 长提示词粘贴进去会被包一层 <pasted_content>，所以不要求在最开头
+                m = re.search(r"\[手机面板\] 立即执行一次定时任务 ([0-9a-f]{6,})", c[:400])
+                if m:  # 手机上点的「立即执行」也算跑了一次
+                    fr = fires.setdefault(m.group(1), {"count": 0})
+                    fr.update(count=fr["count"] + 1, ts=ts, offset=here, manual=True)
+                    continue
+                r = d.get("toolUseResult")
+                if isinstance(r, dict) and isinstance(r.get("jobs"), list):  # CronList 的结果：当时的完整清单
+                    old = active
+                    active = {}
+                    for j in r["jobs"]:
+                        if j.get("id"):
+                            prev = old.get(j["id"]) or {}
+                            active[j["id"]] = {"id": j["id"], "cron": j.get("cron", ""), "prompt": j.get("prompt", ""),
+                                               "recurring": j.get("recurring", True) is not False, "createdAt": prev.get("createdAt") or 0}
+                for b in (d.get("message") or {}).get("content") or []:
+                    if not isinstance(b, dict) or b.get("type") != "tool_result":
+                        continue
+                    tid = b.get("tool_use_id")
+                    txt = result_text(b.get("content"))
+                    if tid in creates:
+                        m = re.search(r"(?:job|Scheduled) ([0-9a-f]{6,})", txt)
+                        if m and not b.get("is_error"):
+                            inp = creates[tid]
+                            active[m.group(1)] = {"id": m.group(1), "cron": inp.get("cron", ""), "prompt": inp.get("prompt", ""),
+                                                  "recurring": "one-shot" not in txt and inp.get("recurring", True) is not False, "createdAt": ts}
+                    elif tid in deletes and not b.get("is_error"):
+                        jid = deletes[tid]
+                        if jid in active:
+                            stopped[jid] = dict(active.pop(jid), stoppedAt=ts)
+            elif t == "attachment" and (d.get("attachment") or {}).get("type") == "session_cron_carry":
+                active = {}
+                for j in d["attachment"].get("tasks") or []:
+                    if j.get("id"):
+                        active[j["id"]] = {"id": j["id"], "cron": j.get("cron", ""), "prompt": j.get("prompt", ""),
+                                           "recurring": j.get("recurring", True) is not False, "createdAt": (j.get("createdAt") or 0) / 1000}
+            elif t == "system" and d.get("subtype") == "scheduled_task_fire":
+                jid = d.get("taskId")
+                if not jid:
+                    continue
+                fr = fires.setdefault(jid, {"count": 0})
+                fr.update(count=fr["count"] + 1, ts=ts, offset=here, manual=False)
+                task = active.get(jid)
+                if task and not task["recurring"]:  # 一次性任务跑过就没了
+                    stopped[jid] = dict(active.pop(jid), stoppedAt=ts, fired=True)
+    # 重启 / 恢复会换新 ID：同名的旧任务跑过的记录接着算
+    by_name = {}
+    for jid, fr in fires.items():
+        task = active.get(jid) or stopped.get(jid)
+        if task:
+            name = cron_name(task["prompt"])
+            agg = by_name.setdefault(name, dict(fr, count=0))
+            if agg["ts"] < fr["ts"]:
+                agg.update(fr, count=agg["count"])
+            agg["count"] += fr["count"]
+    now = time.time()
+    tasks = []
+    for jid, task in active.items():
+        if task["recurring"] and task["createdAt"] and now > task["createdAt"] + WEEK:  # 会话内定时任务 7 天自动过期
+            stopped[jid] = dict(task, stoppedAt=task["createdAt"] + WEEK, expired=True)
+            continue
+        fr = by_name.get(cron_name(task["prompt"])) or fires.get(jid)
+        if fr:
+            text, done = turn_result(path, fr["offset"])
+            task["last"] = {"ts": fr["ts"], "count": fr["count"], "result": text, "manual": fr.get("manual", False),
+                            "running": not done and info.get("status") == "busy"}
+        if task["recurring"] and task["createdAt"]:
+            task["expiresAt"] = task["createdAt"] + WEEK
+        tasks.append(task)
+    # 最近 3 天停掉的，方便一键恢复；同名任务（改了提示词重建的）已经在跑就不列
+    live = {cron_name(t["prompt"]) for t in tasks}
+    gone = sorted((s for s in stopped.values() if cron_name(s["prompt"]) not in live and now - (s.get("stoppedAt") or 0) < 3 * 86400),
+                  key=lambda s: -(s.get("stoppedAt") or 0))
+    seen, recent = set(), []
+    for s in gone:
+        if cron_name(s["prompt"]) in seen:
+            continue
+        seen.add(cron_name(s["prompt"]))
+        fr = by_name.get(cron_name(s["prompt"])) or fires.get(s["id"])
+        if fr:
+            s["last"] = {"ts": fr["ts"], "count": fr["count"]}
+        recent.append(s)
+    return {"tasks": tasks, "stopped": recent[:8], "busy": info.get("status") == "busy", "now": now}
+
+
+if __name__ == "__main__":
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    pane = sys.argv[2] if len(sys.argv) > 2 else ""
+    if not pane.isdigit():
+        sys.exit("bad pane")
+    if cmd == "session":
+        print(json.dumps(session(pane), ensure_ascii=False))
+    elif cmd == "crons":
+        print(json.dumps(crons(pane), ensure_ascii=False))
+    elif cmd == "messages":
+        n = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3].isdigit() else 60
+        known = sys.argv[4] if len(sys.argv) > 4 else ""
+        path = session(pane).get("transcript") or ""
+        # 标识 = 大小 + 修改时间（含 SQLite 的 -wal 文件）：Cursor 的 store.db 写入时大小可能不变
+        stamp = []
+        for f in (path, path + "-wal"):
+            if f and os.path.isfile(f):
+                st = os.stat(f)
+                stamp.append(f"{st.st_size}.{st.st_mtime_ns}")
+        key = f"{path}:{'/'.join(stamp)}"
+        if known and known == key:
+            print(json.dumps({"key": key, "unchanged": True}))
+        else:
+            print(json.dumps({"key": key, "messages": messages(pane, min(n, 200))}, ensure_ascii=False))
+    else:
+        sys.exit(__doc__)

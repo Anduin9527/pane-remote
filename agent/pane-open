@@ -1,0 +1,39 @@
+#!/bin/bash
+# pane-remote：电脑上要打开网址时，如果你此刻在用手机（而不是在电脑前），改在手机的预览面板里打开。
+#   pane-open <url|文件>      给 $BROWSER 用：判断后转给手机，或交给系统浏览器
+# 「在用手机」= 服务端最近 150 秒内标记过（~/.cache/pane-remote-active），并且电脑键鼠空闲超过 60 秒。
+# 转给手机的方式：往 pane-event 的事件文件里写一条 open，中转扫描时读走，再推到手机。
+set -u
+target="${1:-}"
+[[ -n "$target" ]] || exec /usr/bin/open "$@"
+
+phone_active() {
+  [[ "${PANE_OPEN_FORCE:-}" == phone ]] && return 0  # 测试用
+  local marker=$HOME/.cache/pane-remote-active
+  [[ -f "$marker" ]] || return 1
+  local age=$(( $(date +%s) - $(stat -f %m "$marker") ))
+  (( age < 150 )) || return 1
+  local idle
+  idle=$(/usr/sbin/ioreg -c IOHIDSystem | awk '/HIDIdleTime/ { print int($NF / 1000000000); exit }')
+  (( ${idle:-0} >= 60 ))
+}
+
+url=""
+case "$target" in
+  http://*|https://*|file://*) url=$target ;;
+  *)
+    # 网页类本地文件也转（Claude 产出的 html / 图片 / pdf）
+    if [[ -f "$target" && "$target" =~ \.(html?|svg|png|jpe?g|gif|webp|pdf)$ ]]; then
+      url="file://$(cd "$(dirname "$target")" && pwd)/$(basename "$target")"
+    fi
+    ;;
+esac
+
+if [[ -n "$url" ]] && phone_active; then
+  log=$HOME/.local/state/pane-remote/events.jsonl
+  mkdir -p "$(dirname "$log")"
+  /usr/bin/python3 -c 'import json,sys,time,os; print(json.dumps({"t": time.time(), "pane": int(os.environ.get("WEZTERM_PANE") or 0) if (os.environ.get("WEZTERM_PANE") or "0").isdigit() else 0, "kind": "open", "msg": sys.argv[1]}, ensure_ascii=False))' "$url" >> "$log"
+  echo "已转到手机的预览面板打开：$url" >&2
+  exit 0
+fi
+exec /usr/bin/open "$target"

@@ -1,0 +1,7 @@
+#!/bin/bash
+# 拦截 open 命令（开启「网址转手机」模块时，安装器把它链接到 PATH 里排在 /usr/bin 前面的目录）：只有「一个参数、是网址或网页文件、你此刻在用手机」
+# 才改由 pane-open 转到手机；带任何选项（-a、-R、-g…）或多个参数时原样交给系统的 open。
+if [[ $# -eq 1 && "$1" != -* ]]; then
+  exec "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/pane-open" "$1"
+fi
+exec /usr/bin/open "$@"
