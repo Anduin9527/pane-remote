@@ -36,6 +36,7 @@
   import { pushStatus } from '$lib/push'
   import { ui, boot, loadPanes, paneName, select, setStatus, waitingElsewhere, setPaused, onOpenUrl, reconnectPane } from '$lib/session.svelte'
   import { openInPreview, previewUi } from '$lib/preview/request.svelte'
+  import { update } from '$lib/update.svelte'
   import { appConfig, loadAppConfig } from '$lib/appConfig.svelte'
   import { cn } from '$lib/utils'
 
@@ -162,6 +163,9 @@
       <button class={cn('grid h-7 w-8 place-items-center rounded-md text-muted-foreground', mode === 'preview' && 'bg-card text-foreground shadow-sm')} aria-label="预览" aria-pressed={mode === 'preview'} onclick={() => (mode = 'preview')}><Globe class="size-4" /></button>
     {/if}
   </div>
+  {#if update.available}
+    <button class="flex-none rounded-full bg-primary px-2.5 text-[12px] leading-6 font-semibold text-primary-foreground active:opacity-80" onclick={() => location.reload()}>更新</button>
+  {/if}
   {#if mode === 'term'}
     <button class="-mr-2 grid size-8 flex-none place-items-center rounded-lg active:bg-accent" aria-label="重连（{ui.statusMsg}）" title="点一下手动重连" onclick={reconnect}>
       <span class={cn('size-2 rounded-full bg-muted-foreground', ui.status === 'live' && 'bg-ok', ui.status === 'err' && 'bg-destructive', reconnecting && 'animate-ping bg-primary')}></span>
@@ -258,4 +262,5 @@
 <ClaudeSheet bind:open={claudeOpen} />
 <CronSheet bind:open={cronOpen} />
 <Reader bind:open={readerOpen} onpreview={() => (mode = 'preview')} />
-<Toaster theme="system" position="top-center" />
+<!-- 提示层避开 iPhone 的刘海 / 状态栏，并放在顶栏下面（不挡顶栏的按钮）；带关闭按钮，任何提示都能随手关掉 -->
+<Toaster theme="system" position="top-center" closeButton offset={{ top: 'calc(env(safe-area-inset-top) + 52px)' }} mobileOffset={{ top: 'calc(env(safe-area-inset-top) + 52px)' }} />

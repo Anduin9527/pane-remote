@@ -2,6 +2,7 @@ import { mount } from 'svelte'
 import './app.css'
 import App from './App.svelte'
 import { report } from '$lib/api'
+import { update } from '$lib/update.svelte'
 
 // 报错发回服务端，方便排查手机上的问题（journalctl -u pane-relay | grep client）
 addEventListener('error', (e) => report('error', `${e.message} @ ${e.filename}:${e.lineno}:${e.colno} ${e.error?.stack || ''}`))
@@ -17,8 +18,8 @@ document.addEventListener('focusout', () => setTimeout(() => { if (!document.act
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {})
 
-// 检查新版本：切回前台、每 10 分钟拉一次首页，资源文件名（带内容哈希）变了就提示刷新。
-// iOS 主屏幕 App 从后台回来不会重新加载页面，不提示的话会一直停在旧版。
+// 检查新版本：切回前台、每 10 分钟拉一次首页，资源文件名（带内容哈希）变了就在顶栏亮「更新」按钮
+// （不用常驻的提示层：会挡住顶栏）。iOS 主屏幕 App 从后台回来不会重新加载页面，不提示的话会一直停在旧版。
 let notified = false
 async function checkUpdate() {
   if (notified || build === 'dev' || document.visibilityState !== 'visible') return
@@ -27,8 +28,7 @@ async function checkUpdate() {
     const latest = html.match(/assets\/(index-[^"]+\.js)/)?.[1]
     if (latest && latest !== build) {
       notified = true
-      const { toast } = await import('svelte-sonner')
-      toast('有新版本', { duration: Infinity, action: { label: '刷新', onClick: () => location.reload() } })
+      update.available = true
     }
   } catch {}
 }
