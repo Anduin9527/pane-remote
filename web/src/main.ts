@@ -37,5 +37,15 @@ setInterval(checkUpdate, 10 * 60000)
 setTimeout(checkUpdate, 5000)
 
 const app = mount(App, { target: document.getElementById('app')! })
+// 诊断：安全区和各种高度（iOS 主屏幕 App 的布局问题靠这个查）
+setTimeout(() => {
+  const probe = document.createElement('div')
+  probe.style.cssText = 'position:fixed;visibility:hidden;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)'
+  document.body.appendChild(probe)
+  const cs = getComputedStyle(probe)
+  const vv = window.visualViewport
+  report('layout', `inset t${cs.paddingTop} r${cs.paddingRight} b${cs.paddingBottom} l${cs.paddingLeft} inner ${innerWidth}x${innerHeight} vv ${vv ? `${Math.round(vv.width)}x${Math.round(vv.height)}+${Math.round(vv.offsetTop)}` : '-'} screen ${screen.width}x${screen.height} doc ${document.documentElement.clientHeight} body ${document.body.getBoundingClientRect().height} vvh ${getComputedStyle(document.documentElement).getPropertyValue('--vvh')}`)
+  probe.remove()
+}, 1500)
 ;(window as any).__mounted = true // index.html 里的保底脚本据此判断页面有没有显示出来
 export default app

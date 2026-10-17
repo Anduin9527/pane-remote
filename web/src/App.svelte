@@ -156,7 +156,9 @@
 </script>
 
 {#if !(mode === 'preview' && previewUi.immersive)}
-<header class="flex items-center gap-2 border-b bg-card px-3 pt-[calc(env(safe-area-inset-top)+6px)] pb-1.5">
+<!-- sticky：新版 iOS 的主屏幕网页 App 会在顶部叠一层半透明渐隐（Safari 网页里没有），压在顶栏上发白。
+     顶部是 fixed / sticky 元素时 Safari 改用它的底色填充，不再叠渐隐。页面本身不滚动，sticky 对布局没有影响 -->
+<header class="sticky top-0 z-30 flex items-center gap-2 border-b bg-card px-3 pt-[calc(env(safe-area-inset-top)+6px)] pb-1.5">
   <div class="flex flex-none rounded-lg bg-secondary p-0.5">
     <button class={cn('grid h-7 w-8 place-items-center rounded-md text-muted-foreground', mode === 'term' && 'bg-card text-foreground shadow-sm')} aria-label="终端" aria-pressed={mode === 'term'} onclick={() => (mode = 'term')}><Terminal class="size-4" /></button>
     {#if appConfig.modules.preview}

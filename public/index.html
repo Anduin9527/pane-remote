@@ -3,18 +3,21 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
-<meta name="theme-color" content="#14161c">
-<style>html,body{background:#14161c}@media (prefers-color-scheme:light){html,body{background:#fafafa}}</style>
+<!-- 状态栏颜色跟着深浅色走，和顶栏一致（顶栏是 card 色） -->
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#15171c">
+<style>html,body{background:#15171c}@media (prefers-color-scheme:light){html,body{background:#fff}}</style>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<!-- default：iOS 给状态栏单独留一条实心区域（颜色取 theme-color），页面从状态栏下面开始 -->
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Panes">
 <title>Pane Remote</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-180.png">
-  <script type="module" crossorigin src="./assets/index-B66DMp6y.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-_hq6t_aB.css">
+  <script type="module" crossorigin src="./assets/index-Cf2B3eDK.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-JsdcQlap.css">
 </head>
 <body>
 <div id="app"></div>
