@@ -29,7 +29,8 @@ const OK_USER_DIR = /^\/(Users|home)\/(<[^>]+>|you|user|me|USERNAME|\$USER|\$\{U
 
 const RULES = [
   ['邮箱地址', /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g, (m) => !OK_EMAIL.test(m) && !allowEmails.has(m.toLowerCase())],
-  ['个人目录路径', /\/(Users|home)\/[^\s/"'`)\]]+/g, (m) => !OK_USER_DIR.test(m)],
+  // ${变量} 是代码里拼出来的模板占位（比如打印给用户填的 systemd 文件），不是真实用户名
+  ['个人目录路径', /\/(Users|home)\/[^\s/"'`)\]]+/g, (m) => !OK_USER_DIR.test(m) && !/^\/(Users|home)\/\$\{\w+\}$/.test(m)],
   ['IP 地址', /(?<![\d.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?![\d.])/g, (m) => !OK_IP.has(m) && m.split('.').every((x) => +x <= 255)],
   // 任何 *.ts.net 都算（新式 tailnet 名是两个英文词连起来的，不一定带 tail 前缀），示例用的占位名除外
   ['tailnet 主机名', /\b[a-z0-9-]+(\.[a-z0-9-]+)*\.ts\.net\b/gi, (m) => !/^(xxx|example|your-?[a-z-]*|tailnet|machine|host|login)(\.|$)/i.test(m)],
