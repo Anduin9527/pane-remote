@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "用手机查看和操作电脑上 WezTerm 里的终端、Claude Code / Codex 会话",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "pane-remote": "bin/pane-remote"

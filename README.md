@@ -127,3 +127,7 @@ scripts/audit.mjs   发布前审计：查个人信息、内网地址和密钥
 ```
 
 改了前端要重新构建：`npm run build`（会在 web/ 里装开发依赖）。
+
+## 许可证
+
+[MIT](LICENSE)
