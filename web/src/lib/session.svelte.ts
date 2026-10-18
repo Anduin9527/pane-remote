@@ -83,9 +83,10 @@ export function onFrame(fn: FrameListener) {
 const emit = (changed: number[] | null) => { for (const fn of listeners) fn(changed) }
 
 function updateAlt() {
-  // 全屏程序没有回滚内容，get-text 正常会多出一行；WezTerm 窗口和 mux 的尺寸不同步时还会再多一两行
-  // （pane 1 出过 38 行 / 报 36 行，结果没认成全屏，滑动不转滚轮）。有回滚的终端动辄几百行，放宽到 +3 不会误判
-  ui.alt = lines.length <= ui.rows + 3
+  // 全屏程序没有回滚内容，get-text 正常会多出一行；WezTerm 窗口和 mux 的尺寸不同步时屏幕缓冲还会比 pty 多几行
+  // （见过 38 行 / 报 36 行，也见过 40 行的 pane 拿到 44 行），没认成全屏的话滑动不转滚轮、高度也不压进屏幕。
+  // 有回滚的终端动辄几百行，放宽到 +8 不会误判
+  ui.alt = lines.length <= ui.rows + 8
 }
 
 export async function loadPanes() {
