@@ -118,7 +118,11 @@ ws.onclose = () => { out({ t: 'error', msg: CURSOR ? '和 Cursor 的连接断了
 // 只监听 127.0.0.1，路径前面带随机令牌：别的网页猜不到地址，读不到文件。只允许家目录和 /tmp。
 // /<令牌>/view?p=路径  文件夹 → 列表；文件 → 按类型显示（图片 / 视频 / 音频 / PDF / Markdown / 代码文本 / CSV）
 // /<令牌>/raw?p=路径   原始文件（支持 Range，视频能拖进度）
-const TOKEN = crypto.randomUUID().replaceAll('-', '')
+// 令牌和端口存下来，重启后沿用：Chrome 是常驻的，开着的标签页、后退记录里都是旧地址，换了就全打不开（连接一断代理就会重启）。
+// 每个来源一份（chrome / cursor 两个代理同时跑），文件只有自己能读
+const FILES_STATE = path.join(DIR, `files-${CURSOR ? 'cursor' : 'chrome'}.json`)
+const saved = (() => { try { const o = JSON.parse(fs.readFileSync(FILES_STATE, 'utf8')); return /^[0-9a-f]{32}$/.test(o.token) ? o : null } catch { return null } })()
+const TOKEN = saved?.token || crypto.randomUUID().replaceAll('-', '')
 const HOME = os.homedir()
 // 查看器用的脚本库都从本机 node_modules 提供（不走 CDN：这个来源握着读文件的令牌，外部脚本一旦被篡改就能读走所有文件）
 const APP_DIR = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
@@ -203,6 +207,7 @@ const viewUrl = (p) => `${filesBase}/view?p=${encodeURIComponent(p)}`
 const rawUrl = (p) => `${filesBase}/raw?p=${encodeURIComponent(p)}`
 /** 预览里的地址 → 地址栏显示的样子（文件浏览器的地址显示成 ~/路径） */
 function displayUrl(u) {
+  u = fixStale(u) || u
   if (/^file:\/\//i.test(u)) { try { return tilde(decodeURIComponent(new URL(u).pathname)) } catch { return u } }
   if (!filesBase || !u.startsWith(filesBase + '/view?')) return u
   try { return tilde(new URL(u).searchParams.get('p') || '') } catch { return u }
@@ -423,8 +428,22 @@ const fileServer = http.createServer((req, res) => {
     res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' }); res.end(e.message)
   }
 })
-await new Promise((r) => fileServer.listen(0, '127.0.0.1', r))
+function listenOn(port) {
+  return new Promise((resolve, reject) => {
+    const fail = (e) => { fileServer.off('listening', ok); reject(e) }
+    const ok = () => { fileServer.off('error', fail); resolve() }
+    fileServer.once('error', fail).once('listening', ok).listen(port, '127.0.0.1')
+  })
+}
+// 上次的端口被占了（比如旧代理还没退）就随便换一个，旧地址靠下面的 fixStale 改过来
+try { if (!saved?.port) throw 0; await listenOn(saved.port) } catch { await listenOn(0) }
 filesBase = `http://127.0.0.1:${fileServer.address().port}/${TOKEN}`
+try { fs.mkdirSync(DIR, { recursive: true }); fs.writeFileSync(FILES_STATE, JSON.stringify({ token: TOKEN, port: fileServer.address().port }), { mode: 0o600 }) } catch (e) { log('files state', e.message) }
+/** 以前的代理留下的文件浏览器地址（端口或令牌不一样了）→ 换成现在的；不是就返回 null */
+function fixStale(u) {
+  const m = /^http:\/\/127\.0\.0\.1:\d+\/[0-9a-f]{32}(\/(?:view|raw)\?.*)$/.exec(u || '')
+  return m && !u.startsWith(filesBase + '/') ? filesBase + m[1] : null
+}
 
 // ---------- 页面 ----------
 const pages = new Map() // targetId → { sessionId, url, title }
@@ -590,6 +609,9 @@ handlers.set('Target.targetInfoChanged', ({ targetInfo }) => {
   if (!p) return
   p.url = targetInfo.url
   p.title = targetInfo.title
+  // 刷新、后退、页面里的链接走到了旧代理的地址：直接改去现在的
+  const fixed = fixStale(p.url)
+  if (fixed) { cdp('Page.navigate', { url: fixed }, p.sessionId).catch(() => {}); return }
   if (targetInfo.targetId === current) sendNav()
   sendTabs()
 })
@@ -638,7 +660,7 @@ function normalizeUrl(input) {
       return real && kindOf(real) === 'html' ? fileUrl(real) : viewUrl(fp) // 不在允许范围内的，交给文件浏览器去拒绝
     } catch { return HOME_URL }
   }
-  if (/^(https?|about|data|chrome):/i.test(s)) return s
+  if (/^(https?|about|data|chrome):/i.test(s)) return fixStale(s) || s
   if (s === '~' || s.startsWith('~/') || s.startsWith('/')) {
     const real = resolveSafe(s)
     return real && kindOf(real) === 'html' && fs.statSync(real).isFile() ? fileUrl(real) : viewUrl(s)
@@ -735,7 +757,11 @@ async function handle(msg) {
 await cdp('Target.setDiscoverTargets', { discover: true })
 const { targetInfos } = await cdp('Target.getTargets')
 for (const t of targetInfos.filter((t) => t.type === TARGET_TYPE)) {
-  try { const p = await attach(t.targetId); p.url = t.url; p.title = t.title } catch (e) { log('attach', e.message) }
+  try {
+    const p = await attach(t.targetId); p.url = t.url; p.title = t.title
+    const fixed = fixStale(t.url) // 上一个代理打开的文件浏览器页面
+    if (fixed) cdp('Page.navigate', { url: fixed }, p.sessionId).catch(() => {})
+  } catch (e) { log('attach', e.message) }
 }
 if (pages.size) await focus([...pages.keys()].pop())
 else if (CURSOR) out({ t: 'error', msg: 'Cursor 的浏览器现在没打开网页：在 Cursor 里打开 Browser 面板访问一个网址，这里会自动接上' })

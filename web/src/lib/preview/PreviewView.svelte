@@ -25,6 +25,8 @@
   import { cn } from '$lib/utils'
   import { previewRequest, previewUi } from './request.svelte'
   import { t, tr, lang } from '$lib/i18n'
+  import { currentPane } from '$lib/session.svelte'
+  import { resolveLink } from '$lib/links'
 
   type Tab = { id: string; url: string; title: string }
   let nav = $state({ url: '', title: '', loading: false })
@@ -136,6 +138,13 @@
     const contains = pathPrefix ? entries.filter((e) => !e.name.toLowerCase().startsWith(pathPrefix) && e.name.toLowerCase().includes(pathPrefix)) : []
     return [...starts, ...contains].slice(0, 80)
   })
+  // 当前 pane 所在的目录（~/ 开头）：地址栏里 ./、../ 按它算，提示列表顶上给一个直达入口
+  const paneCwd = $derived(currentPane()?.cwd || '')
+  $effect(() => {
+    if (!editing || !paneCwd || !/^\.{1,2}\//.test(address)) return
+    const abs = resolveLink(address, paneCwd)
+    if (abs) address = abs + (address.endsWith('/') && abs !== '/' ? '/' : '')
+  })
   function pickEntry(e: Entry) {
     address = pathDir + e.name + (e.dir ? '/' : '')
     if (!e.dir) go()
@@ -244,7 +253,8 @@
 
   function go(e?: Event) {
     e?.preventDefault()
-    const u = address.trim()
+    let u = address.trim()
+    if (/^\.{1,2}(\/|$)/.test(u) && paneCwd) u = resolveLink(u, paneCwd) || u
     if (!u) return
     send({ t: 'open', url: u })
     remember(u)
@@ -342,7 +352,7 @@
       bind:value={address}
       onfocus={(e) => { editing = true; (e.currentTarget as HTMLInputElement).select() }}
       onblur={() => setTimeout(() => (editing = false), 150)}
-      placeholder={t('网址、localhost:3000 或 ~/文件路径')}
+      placeholder={t('网址、localhost:3000、~/路径 或 ./相对路径')}
       enterkeyhint="go"
       autocapitalize="off"
       spellcheck="false"
@@ -383,8 +393,14 @@
       <p class="px-2.5 py-2 text-xs text-muted-foreground">{t('没有匹配的文件或文件夹')}</p>
     {/each}
   </div>
-{:else if editing && recent.length}
+{:else if editing && (recent.length || paneCwd)}
   <div class="border-b bg-card px-1.5 pb-1.5">
+    {#if paneCwd}
+      <button class="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-primary active:bg-accent" onpointerdown={(e) => e.preventDefault()} onclick={() => { address = paneCwd + '/'; go() }}>
+        <span class="flex-none">📂</span>
+        <span class="min-w-0 truncate text-[13px] font-medium">{t('当前 pane 的目录')} <span class="font-mono">{paneCwd}</span></span>
+      </button>
+    {/if}
     {#each recent as u (u)}
       <button class="block w-full truncate rounded-md px-2.5 py-2 text-left font-mono text-[13px] active:bg-accent" onpointerdown={(e) => e.preventDefault()} onclick={() => { address = u; go() }}>{u}</button>
     {/each}

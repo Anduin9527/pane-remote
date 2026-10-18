@@ -4,7 +4,38 @@ const wide = (cp: number) =>
   (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe4f) || (cp >= 0xff00 && cp <= 0xff60) ||
   (cp >= 0xffe0 && cp <= 0xffe6) || (cp >= 0x1f300 && cp <= 0x1faff) || (cp >= 0x20000 && cp <= 0x3fffd)
 
-const TEXT_LINK = /(https?:\/\/[^\s<>"'`│]+[^\s<>"'`│.,;:!?)\]}])|((?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):\d{2,5}[^\s"'`│]*)|((?:~|\/Users|\/tmp|\/private)\/[^\s"'`│:]+\.(?:html?|svg|png|jpe?g|gif|webp|pdf|md|txt|json))/g
+// 文件路径认这些扩展名（网页、图片、文档、常见代码），预览的文件浏览器都能显示
+const FILE_EXT = 'html?|svg|png|jpe?g|gif|webp|pdf|md|mdx|txt|log|json|ya?ml|toml|csv|tsv|[cm]?[jt]sx?|svelte|vue|css|scss|py|go|rs|rb|java|kt|swift|sh|sql|mp4|mov|mp3'
+// 第 4 组：相对路径（./x、../x 或带一层以上目录的 a/b.ts），按会话所在目录解析
+const TEXT_LINK = new RegExp(
+  "(https?:\\/\\/[^\\s<>\"'`│]+[^\\s<>\"'`│.,;:!?)\\]}])|((?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|\\[::1\\]):\\d{2,5}[^\\s\"'`│]*)" +
+  `|((?:~|\\/Users|\\/tmp|\\/private)\\/[^\\s"'\`│:]+\\.(?:${FILE_EXT}))(?![\\w/])` +
+  `|((?<![\\w/~.-])(?:\\.{1,2}\\/)?(?:[\\w@.-]+\\/)+[\\w@.-]+\\.(?:${FILE_EXT}))(?![\\w/])`,
+  'g',
+)
+
+/**
+ * 链接 → 预览能打开的地址。网址原样；本机绝对路径（~/、/）去掉行号；相对路径按 base（会话所在目录，绝对路径）拼成绝对路径。
+ * 打不开的（mailto:、页内锚点、没有 base 的相对路径）返回 null
+ */
+export function resolveLink(href: string, base?: string | null): string | null {
+  let h = href.trim()
+  if (/^(https?|file):/i.test(h)) return h
+  if (!h || h.startsWith('#') || h.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(h)) {
+    // localhost:3000 这种没写协议的，交给预览补 http://
+    return /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):\d/.test(h) ? h : null
+  }
+  h = h.split('#')[0].replace(/:\d+(:\d+)?$/, '') // 去掉 #L12、:12:5 这种行号
+  try { h = decodeURI(h) } catch {}
+  if (h.startsWith('~/') || h === '~' || h.startsWith('/')) return h
+  if (!base) return null
+  const parts = base.replace(/\/+$/, '').split('/')
+  for (const seg of h.split('/')) {
+    if (seg === '..') { if (parts.length > 1) parts.pop() }
+    else if (seg && seg !== '.') parts.push(seg)
+  }
+  return parts.join('/') || '/'
+}
 
 export function linkAt(raw: string, col: number): string | null {
   let c = 0

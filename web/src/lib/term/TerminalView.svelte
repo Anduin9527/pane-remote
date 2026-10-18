@@ -11,7 +11,7 @@
   import { ui, onFrame, mouseMode } from '$lib/session.svelte'
   import * as session from '$lib/session.svelte'
   import { mouseMods } from '$lib/mods.svelte'
-  import { linkAt } from '$lib/links'
+  import { linkAt, resolveLink } from '$lib/links'
   import { t } from '$lib/i18n'
 
   let { viewportTick = 0, onpreview }: { viewportTick?: number; onpreview?: (url: string) => void } = $props()
@@ -183,7 +183,8 @@
   function longPress(x: number, y: number) {
     lpFired = true
     const at = lineAt(x, y)
-    const url = at && linkAt(session.lines[at.line] || '', at.col)
+    const found = at && linkAt(session.lines[at.line] || '', at.col)
+    const url = found && (resolveLink(found, session.currentPane()?.dir) || found) // 相对路径按这个 pane 所在的目录算
     navigator.vibrate?.(10)
     if (!url) { toast(t('这里没有链接')); return }
     toast(url, {

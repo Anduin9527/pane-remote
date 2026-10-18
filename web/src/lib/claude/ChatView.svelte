@@ -7,7 +7,8 @@
   import DOMPurify from 'dompurify'
   import Wrench from '@lucide/svelte/icons/wrench'
   import ArrowDown from '@lucide/svelte/icons/arrow-down'
-  import { ui, agentName } from '$lib/session.svelte'
+  import { ui, agentName, currentPane } from '$lib/session.svelte'
+  import { resolveLink } from '$lib/links'
   import { cn } from '$lib/utils'
   import { t as tt, tr, isEn } from '$lib/i18n'
 
@@ -88,13 +89,13 @@
     load()
   })
 
-  // 点链接：网页 / localhost 在预览里打开，不跳出 App
+  // 点链接：网页 / localhost / 本机文件在预览里打开，不跳出 App。相对路径按这个 pane 所在的目录算
   function onclick(e: MouseEvent) {
     const a = (e.target as HTMLElement).closest('a')
     if (!a) return
     e.preventDefault()
-    const href = a.getAttribute('href') || ''
-    if (/^(https?:|file:)/.test(href)) onpreview?.(href)
+    const url = resolveLink(a.getAttribute('href') || '', currentPane()?.dir)
+    if (url) onpreview?.(url)
   }
   const running = $derived(ui.states[ui.current ?? '']?.state === 'running')
 </script>

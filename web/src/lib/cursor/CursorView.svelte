@@ -24,6 +24,7 @@
   import FileDiff from '@lucide/svelte/icons/file-diff'
   import ChangesView from './ChangesView.svelte'
   import UsageCard from './UsageCard.svelte'
+  import { resolveLink } from '$lib/links'
   import Composer from '$lib/components/Composer.svelte'
   import { t, tr, isEn } from '$lib/i18n'
   import { cur, connectCursor, disconnectCursor, reconnectCursor, selectSession, startDraft, cursorCmd, sessionById, type CMsg } from './cursor.svelte'
@@ -95,7 +96,8 @@
     const href = a?.getAttribute('href') || ''
     if (!a || !href) return
     e.preventDefault()
-    if (/^(https?:|file:)/.test(href)) onpreview?.(href)
+    const url = resolveLink(href, cur.path) // 相对路径按会话的项目目录算
+    if (url) onpreview?.(url)
   }
   async function act(cmd: string, body: Record<string, unknown> = {}, ok = '') {
     try { await cursorCmd(cmd, body); if (ok) toast(ok) } catch (err) { toast.error((err as Error).message) }
