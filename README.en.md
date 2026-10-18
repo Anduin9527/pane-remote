@@ -12,7 +12,7 @@ No third-party server is involved: phone and Mac talk over your own Tailscale ne
 **Basic** (available right after install)
 
 - Live view of every WezTerm pane; type and send keys from the phone (key bar, arrow joystick, Ctrl / Shift / Option), swipe to scroll, tap
-- New tab, split, close and rename panes; focus a pane on the Mac
+- New tab, split, close and rename panes; focus a pane on the Mac; if a pane got dragged narrow on the Mac, widen it to fit your phone in one tap (or equalize the whole tab)
 - Claude Code / Codex:
   - Chat view (laid out from the session transcript, easier to read than the raw terminal)
   - **Fork session**: start a new session in a new pane with the full context of the current one (from the chat bar's 「分叉」 (Fork), the pane menu, or when splitting)

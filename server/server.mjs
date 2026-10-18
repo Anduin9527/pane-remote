@@ -355,6 +355,13 @@ async function manage(action, b) {
   if (!isId(b.pane)) throw new Error('bad pane')
   if (action === 'kill') { await bridge(`kill ${b.pane}`); return { ok: true } }
   if (action === 'focus') { await bridge(`focus ${b.pane}`); return { ok: true } }
+  if (action === 'width') {
+    // 从手机调 pane 宽度：电脑上把它拖窄了，手机上看就挤成一条
+    const w = b.width === 'eq' ? 'eq' : Number(b.width)
+    if (w !== 'eq' && !(Number.isInteger(w) && w >= 12 && w <= 999)) throw new Error('bad width')
+    const cols = Number((await bridge(`width ${b.pane} ${w}`)).trim().split('\n').pop())
+    return { cols: Number.isFinite(cols) ? cols : null }
+  }
   if (action === 'title') {
     const t = typeof b.title === 'string' ? b.title.trim() : ''
     if (t.length > 80 || /[\r\n]/.test(t)) throw new Error('bad title')

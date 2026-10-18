@@ -5,12 +5,14 @@
   import Bell from '@lucide/svelte/icons/bell'
   import BellOff from '@lucide/svelte/icons/bell-off'
   import MoveHorizontal from '@lucide/svelte/icons/move-horizontal'
+  import Columns3 from '@lucide/svelte/icons/columns-3'
   import ChevronDown from '@lucide/svelte/icons/chevron-down'
   import TerminalView from '$lib/term/TerminalView.svelte'
   import KeyBar from '$lib/components/KeyBar.svelte'
   import Composer from '$lib/components/Composer.svelte'
   import PaneSheet from '$lib/components/PaneSheet.svelte'
   import PaneActions from '$lib/components/PaneActions.svelte'
+  import WidthSheet from '$lib/components/WidthSheet.svelte'
   import CreatePane from '$lib/components/CreatePane.svelte'
   import RenameSheet from '$lib/components/RenameSheet.svelte'
   import NotifySheet from '$lib/components/NotifySheet.svelte'
@@ -82,6 +84,9 @@
   $effect(() => { if (appConfig.loaded && !appConfig.modules.preview && mode === 'preview') mode = 'term' })
   let pushOn = $state(false)
   let actPane = $state<Pane | null>(null)
+  let widthOpen = $state(false)
+  let widthPane = $state<Pane | null>(null)
+  function openWidth(p: Pane | null | undefined) { if (p) { widthPane = p; widthOpen = true } }
   let createTarget = $state<CreateTarget>({})
   let viewportTick = $state(0)
   let dock = $state<HTMLDivElement>()
@@ -212,6 +217,7 @@
           <button class="h-7 w-9 rounded-md border active:bg-accent" aria-label={t('放大字号')} onclick={() => zoom(1)}>A+</button>
         </div>
         <DropdownMenu.Item onSelect={(e) => { e.preventDefault(); prefs.fit = !prefs.fit }}><MoveHorizontal />{t('适配屏幕宽度')}<span class="ml-auto text-xs {prefs.fit ? 'text-ok' : 'text-muted-foreground'}">{prefs.fit ? t('开') : t('关')}</span></DropdownMenu.Item>
+        <DropdownMenu.Item onSelect={() => openWidth(ui.panes.find((p) => String(p.pane) === ui.current))}><Columns3 />{t('电脑上的宽度')}<span class="ml-auto text-xs text-muted-foreground">{t('{n} 列', { n: ui.cols })}</span></DropdownMenu.Item>
         <DropdownMenu.Item onSelect={() => (notifOpen = true)}>{#if pushOn}<Bell />{:else}<BellOff />{/if}{t('推送通知')}<span class="ml-auto text-xs text-muted-foreground">{pushOn ? t('已开') : t('未开')}</span></DropdownMenu.Item>
         <DropdownMenu.Separator />
         <DropdownMenu.Item onSelect={() => setLang(isEn ? 'zh' : 'en')}><Languages />{t('语言')}<span class="ml-auto text-xs text-muted-foreground">{isEn ? 'English → 中文' : '中文 → English'}</span></DropdownMenu.Item>
@@ -284,7 +290,9 @@
   onopen={() => (pickOpen = false)}
   onsplit={(p, direction) => openCreate({ split: p, direction, dir: p.dir })}
   onrename={() => (renameOpen = true)}
+  onwidth={(p) => openWidth(p)}
 />
+<WidthSheet bind:open={widthOpen} pane={widthPane} />
 <CreatePane bind:open={createOpen} target={createTarget} ondone={() => (pickOpen = false)} />
 <RenameSheet bind:open={renameOpen} pane={actPane} />
 <NotifySheet bind:open={notifOpen} bind:on={pushOn} />

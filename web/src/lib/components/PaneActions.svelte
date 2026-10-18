@@ -7,12 +7,13 @@
   import { paneSession, canFork, forkPane, type PaneSession, type Where } from '$lib/claude/fork'
   import { t, tr } from '$lib/i18n'
 
-  let { open = $bindable(false), pane, onopen, onsplit, onrename }: {
+  let { open = $bindable(false), pane, onopen, onsplit, onrename, onwidth }: {
     open?: boolean
     pane: Pane | null
     onopen: () => void
     onsplit: (p: Pane, direction: 'right' | 'bottom') => void
     onrename: (p: Pane) => void
+    onwidth: (p: Pane) => void
   } = $props()
 
   let armed = $state(false)
@@ -47,6 +48,7 @@
       if (kind === 'open') { open = false; onopen(); select(p.pane) }
       else if (kind === 'right' || kind === 'bottom') { open = false; onsplit(p, kind) }
       else if (kind === 'rename') { open = false; onrename(p) }
+      else if (kind === 'width') { open = false; onwidth(p) }
       else if (kind === 'focus') { await manage('focus', { pane: p.pane }); open = false; toast(t('已在电脑上切到这个 pane')) }
       else if (kind === 'kill') {
         // 二次确认：第一次点变红，再点才关（不用系统弹窗）
@@ -84,6 +86,7 @@
         <button class={item} onclick={() => act('open')}>{t('打开')}</button>
         <button class={item} onclick={() => act('right')}>{t('向右拆分')}</button>
         <button class={item} onclick={() => act('bottom')}>{t('向下拆分')}</button>
+        <button class={item} onclick={() => act('width')}>{t('调整电脑上的宽度')}<span class="ml-1.5 text-xs text-muted-foreground">{t('{n} 列', { n: pane.cols })}</span></button>
         <button class={item} onclick={() => act('rename')}>{t('重命名标签页')}</button>
         <button class={item} onclick={() => act('focus')}>{t('在电脑上切到这里')}</button>
         <button class={cn(item, 'text-destructive', armed && 'bg-destructive text-white active:bg-destructive')} onclick={() => act('kill')}>

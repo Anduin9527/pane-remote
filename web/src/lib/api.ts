@@ -28,7 +28,7 @@ export async function fetchPanes(): Promise<Pane[]> {
   return parse(await fetch('api/panes', { cache: 'no-store' }))
 }
 
-export type ManageAction = 'spawn' | 'split' | 'kill' | 'title' | 'focus' | 'claude'
+export type ManageAction = 'spawn' | 'split' | 'kill' | 'title' | 'focus' | 'claude' | 'width'
 export const manage = <T = any>(action: ManageAction, body: unknown) => postJson<T>(`api/pane/${action}`, body)
 
 export type CreateTarget = { window?: number; dir?: string; split?: Pane; direction?: 'right' | 'bottom' }

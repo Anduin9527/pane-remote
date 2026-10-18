@@ -243,4 +243,17 @@ export default {
   '已重命名': 'Renamed',
   '重命名失败：{msg}': 'Rename failed: {msg}',
   '留空恢复默认标题': 'Leave empty to restore the default title',
+  // ---- 电脑上的宽度（WidthSheet） ----
+  '电脑上的宽度': 'Width on computer',
+  '调整电脑上的宽度': 'Change width on computer',
+  '{n} 列': '{n} cols',
+  '现在 {n} 列。调的是电脑上的分隔线，电脑屏幕会跟着变': 'Now {n} columns. This moves the dividers on the computer, so its screen changes too',
+  '适合手机（{n} 列）': 'Fit phone ({n} cols)',
+  '窄 10 列': '10 narrower',
+  '宽 10 列': '10 wider',
+  '均分': 'Equalize',
+  '「均分」按拆分把这个标签页里的所有 pane 分匀（左右、上下都调）': '"Equalize" evens out all panes in this tab by split (both widths and heights)',
+  '调到了 {n} 列（相邻 pane 至少要留 12 列）': 'Got to {n} columns (neighboring panes keep at least 12)',
+  '已调到 {n} 列': 'Now {n} columns',
+  '调整失败：{msg}': 'Could not change width: {msg}',
 } as Record<string, string>
