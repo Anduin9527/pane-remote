@@ -2,7 +2,7 @@
 
 [中文](../cursor.md) | English
 
-View and drive the [Cursor](https://cursor.com) IDE on your Mac from your phone: session list, messages, send / stop / new / fork / pin / archive, to-do and unread, command output, project files, change diffs, and a live view of Cursor's built-in browser.
+View and drive the [Cursor](https://cursor.com) IDE on your Mac from your phone: session list, messages, send / stop / new / fork / pin / archive, to-do and unread, usage, command output, project files, change diffs, and a live view of Cursor's built-in browser.
 
 ```bash
 pane-remote enable cursor
@@ -20,6 +20,7 @@ Cursor is an Electron app. When it is started with `--remote-debugging-port=9333
 - **Chat actions**: fork (the whole chat, or from a specific turn), pin / unpin and archive, all by clicking Cursor's own buttons; after a fork the phone switches to the new chat
 - **Changes**: diffs the "original text before edits" that Cursor records against the current files on disk (read-only)
 - **Built-in browser**: a page opened in Cursor's Browser panel is a separate web view; switch the preview source to 「Cursor 浏览器」 (Cursor browser) to view and control it
+- **Usage**: the top of the session list shows this billing cycle's usage (Auto / API percentages, spend so far, days left); tap to refresh. It calls the same endpoint as the Usage page in Cursor's settings, with the sign-in token read from that local database. The token is only used in memory on the computer; it is never sent to the phone or written anywhere
 
 Only data is transferred, not video frames, so it stays responsive on poor networks. Memory use is capped (number of sessions, messages per session and their length), and nothing is cached to disk.
 

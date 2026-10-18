@@ -121,4 +121,14 @@ export default {
   新标签: 'New tab',
   'Cursor 浏览器的标签在 Cursor 里开关': 'Open and close Cursor browser tabs in Cursor',
   关闭标签: 'Close tab',
+  // ---- UsageCard ----
+  '刷新 Cursor 用量': 'Refresh Cursor usage',
+  '本周期用量': 'Usage this cycle',
+  '还剩 {n} 天': '{n} days left',
+  'Auto / Composer': 'Auto / Composer',
+  'API（指定模型）': 'API (named models)',
+  '按金额 {used} / {limit}': 'By cost {used} / {limit}',
+  '按金额 {used} / {limit}（{p}）': 'By cost {used} / {limit} ({p})',
+  '合计 {p}': 'Total {p}',
+  '查询中…': 'Loading…',
 } as Record<string, string>

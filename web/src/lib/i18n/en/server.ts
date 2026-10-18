@@ -101,4 +101,8 @@ export default {
   // ---- agent/pane-transcript ----
   '（大输出，已省略）': '(large output omitted)',
   '[图片]': '[image]',
+  // ---- cursor-agent：用量 ----
+  'Cursor 还没登录': "Cursor isn't signed in",
+  'Cursor 的登录过期了，在电脑上打开一次 Cursor 就会刷新': 'Cursor sign-in expired. Open Cursor on the computer once to refresh it',
+  '查询用量失败（{status}）': 'Usage query failed ({status})',
 } as Record<string, string>

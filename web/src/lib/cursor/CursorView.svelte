@@ -23,6 +23,7 @@
   import FolderOpen from '@lucide/svelte/icons/folder-open'
   import FileDiff from '@lucide/svelte/icons/file-diff'
   import ChangesView from './ChangesView.svelte'
+  import UsageCard from './UsageCard.svelte'
   import Composer from '$lib/components/Composer.svelte'
   import { t, tr, isEn } from '$lib/i18n'
   import { cur, connectCursor, disconnectCursor, reconnectCursor, selectSession, startDraft, cursorCmd, sessionById, type CMsg } from './cursor.svelte'
@@ -287,6 +288,7 @@
       <Button size="sm" variant="secondary" class="h-9 rounded-full" onclick={() => { startDraft(''); sheetOpen = false }}><Plus />{t('新对话')}</Button>
     </header>
     <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 pt-2 pb-[calc(env(safe-area-inset-bottom)+12px)]" data-testid="cursor-sessions">
+      <UsageCard />
       {#if !cur.projects.length}<p class="p-6 text-center text-sm text-muted-foreground">{cur.conn === 'ready' ? t('没有会话') : tr(cur.msg) || t('还没接入 Cursor')}</p>{/if}
       <div class="grid gap-3">
         {#each cur.projects as p (p.id)}

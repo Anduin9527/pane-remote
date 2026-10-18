@@ -148,7 +148,7 @@ export function cursorStream(req, res, url) {
   res.on('close', () => { clearInterval(ping); clients.delete(c); markSeen(id); updateWatch() })
 }
 
-const CMDS = new Set(['launch', 'restart', 'open', 'send', 'stop', 'new', 'choose', 'refresh', 'changes', 'pin', 'archive', 'fork'])
+const CMDS = new Set(['launch', 'restart', 'open', 'send', 'stop', 'new', 'choose', 'refresh', 'changes', 'pin', 'archive', 'fork', 'usage'])
 export function cursorCmd(body) {
   if (!CMDS.has(body?.t)) return Promise.resolve({ ok: false, error: 'unknown command' })
   if (body.id && !/^[0-9a-f-]{8,64}$/i.test(String(body.id))) return Promise.resolve({ ok: false, error: 'bad id' })

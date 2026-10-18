@@ -514,10 +514,43 @@ async function forkAt(id, bubble) {
   return { id: activeId }
 }
 
+// ---------- 用量：跟 Cursor 设置里的 Usage 同一个接口，用 Cursor 本地的登录令牌（只在内存里用，不输出、不落盘） ----------
+function itemValue(key) {
+  if (!openDb()) return ''
+  try { const r = db.prepare('SELECT value FROM ItemTable WHERE key = ?').get(key); return r ? String(r.value) : '' } catch { return '' }
+}
+async function usage() {
+  const tok = itemValue('cursorAuth/accessToken')
+  if (!tok) throw new Error('Cursor 还没登录')
+  const r = await fetch('https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${tok}`, 'content-type': 'application/json', 'connect-protocol-version': '1' },
+    body: '{}',
+    signal: AbortSignal.timeout(15000),
+  })
+  if (r.status === 401 || r.status === 403) throw new Error('Cursor 的登录过期了，在电脑上打开一次 Cursor 就会刷新')
+  if (!r.ok) throw new Error(`查询用量失败（${r.status}）`)
+  const d = await r.json()
+  const p = d.planUsage || {}
+  const num = (v) => (v == null || v === '' ? null : Number(v))
+  return {
+    plan: itemValue('cursorAuth/stripeMembershipType') || '',
+    start: num(d.billingCycleStart), end: num(d.billingCycleEnd),
+    // 金额单位是美分
+    used: num(p.totalSpend), limit: num(p.limit), remaining: num(p.remaining),
+    autoPct: num(p.autoPercentUsed), apiPct: num(p.apiPercentUsed), totalPct: num(p.totalPercentUsed),
+    bonus: !!p.remainingBonus,
+    onDemand: d.spendLimitUsage ? { limitType: d.spendLimitUsage.limitType || '', used: num(d.spendLimitUsage.individualUsed ?? d.spendLimitUsage.totalSpend), limit: num(d.spendLimitUsage.individualLimit ?? d.spendLimitUsage.pooledLimit) } : null,
+    message: d.displayMessage || '',
+    at: Date.now(),
+  }
+}
+
 async function handle(m) {
   switch (m.t) {
     case 'watch': watching = m.id || ''; pump.sent = ''; if (watching) { if (attached) await evaluate('window.__paneRemote?.flush(true)').catch(() => {}); schedule(0) } return
     case 'launch': return launch()
+    case 'usage': return usage()
     case 'restart': return restart()
     case 'refresh': if (attached) return evaluate('window.__paneRemote?.flush(true)'); return
     case 'changes': return changes(String(m.id || ''))
