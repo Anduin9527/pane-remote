@@ -447,6 +447,13 @@ setInterval(() => {
 const PREVIEW_IN = new Set(['refresh', 'open', 'viewport', 'tap', 'hover', 'scroll', 'text', 'key', 'back', 'forward', 'reload', 'ack', 'tabs', 'switch', 'close', 'new'])
 function makePreview(source, command) {
   const pv = { source, proc: null, client: null, buf: '', idleTimer: null, gcTimer: null, last: {} }
+  // 预览用的 Chrome 脱离服务单独跑，没人看 20 分钟后关掉。服务刚起来时也排上一次：上一个服务进程排的回收
+  // 随它一起没了（重启、崩溃），不排的话那个 Chrome 会一直挂着，直到下次有人用完预览
+  const gcLater = () => {
+    if (source !== 'chrome') return
+    clearTimeout(pv.gcTimer)
+    pv.gcTimer = setTimeout(() => bridge('preview-stop').then((o) => console.log(`preview gc: ${o.trim()}`), () => {}), 20 * 60000)
+  }
   pv.start = () => {
     if (pv.proc) return
     const proc = bridgeProc(command, ['pipe', 'pipe', 'pipe'])
@@ -503,9 +510,10 @@ function makePreview(source, command) {
       if (pv.client !== ws) return
       pv.client = null
       pv.idleTimer = setTimeout(() => { pv.proc?.stdin.end(); pv.last = {} }, 60000)
-      if (source === 'chrome') pv.gcTimer = setTimeout(() => bridge('preview-stop').then((o) => console.log(`preview gc: ${o.trim()}`), () => {}), 20 * 60000)
+      gcLater()
     })
   })
+  gcLater()
   return pv
 }
 const previews = { chrome: makePreview('chrome', 'preview'), cursor: makePreview('cursor', 'preview-cursor') }

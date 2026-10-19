@@ -81,6 +81,7 @@ The language choice is saved in the config, so later `pane-remote` commands use 
 pane-remote doctor            # self-check; every problem comes with a fix
 pane-remote status            # is the service running
 pane-remote restart | logs
+pane-remote stop | start      # stop / start the service; stop also closes the preview Chrome (it reopens next time you use preview)
 pane-remote enable preview    # turn modules on / off: preview, openUrl, cursor, screen
 pane-remote disable openUrl
 pane-remote init              # re-run after changing config, renaming the Mac or adding a Claude config dir (keeps existing config)
