@@ -29,6 +29,12 @@
 #   preview-stop            关掉预览用的 Chrome
 #   preview-cursor          常驻：预览接管 Cursor IDE 的内置浏览器（stdin/stdout 同 preview）
 #   cursor-ide              常驻：Cursor IDE 映射（会话列表、消息、操作，见 cursor-agent.mjs）
+#   screen <屏序号,清晰>    常驻：手机看电脑屏幕的转码代理（screen 模块），stdin/stdout 是手机那头的 RFB 流（见 screen/proxy.mjs）
+#   screen-displays         每块显示器的名字、位置、大小（JSON），第一块是主屏
+#   screen-windows          能单独看的窗口（JSON，含别的桌面上的），来自 mousectl（要「屏幕录制」授权）
+#   screen-apps             装了的 app（JSON），标出在运行的
+#   screen-launch <bundleId>  后台打开一个 app，不抢前台
+#   screen-summon <bundleId>  唤出一个 app 的窗口（菜单栏 app 按它的唤出快捷键或点菜单栏图标，见 screen/summon.mjs）
 #   awake                   让 Mac 2 分钟内不因空闲睡眠（caffeinate -i），并标记「手机在用」；手机在用时中转每分钟调一次
 # 其他任何输入一律拒绝，不会执行 shell。
 set -u
@@ -50,7 +56,7 @@ if [[ -f "$ENV_FILE" ]]; then
     esac
   done < "$ENV_FILE"
 fi
-[[ -x "$WEZTERM" ]] || { echo "error: 找不到 wezterm（$WEZTERM），跑 pane-remote doctor 看看" >&2; exit 2; }
+[[ -x "$WEZTERM" ]] || { echo "error: 找不到 wezterm（${WEZTERM}），跑 pane-remote doctor 看看" >&2; exit 2; }
 # 持久化模式（可选）：pane 都在后台的 WezTerm mux server 里时直接连它，电脑上 WezTerm 窗口关了也能用。
 # 没配或连不上就连 WezTerm 窗口（GUI）。--no-auto-start：连不上就失败，绝不顺手拉起一个空 server。
 if [[ -n "$MUX_SOCK" && -S "$MUX_SOCK" ]] && WEZTERM_UNIX_SOCKET=$MUX_SOCK "$WEZTERM" cli --no-auto-start list >/dev/null 2>&1; then
@@ -159,7 +165,7 @@ case "$cmd" in
   width)
     check_pane
     [[ "${arg:-}" == eq || ( "${arg:-}" =~ ^[0-9]{2,3}$ && "$arg" -ge 12 ) ]] || fail "bad width"
-    [[ -x "$NODE" ]] || fail "找不到 node（$NODE），跑 pane-remote doctor 看看"
+    [[ -x "$NODE" ]] || fail "找不到 node（${NODE}），跑 pane-remote doctor 看看"
     exec "$NODE" "$HERE/pane-width.mjs" "$pane" "$arg" -- "${CLI[@]}"
     ;;
   cursor)
@@ -260,19 +266,44 @@ PY
     ;;
   cursor-ide)
     # 常驻：Cursor IDE 映射（stdin/stdout 每行一个 JSON，见 cursor-agent.mjs）。node:sqlite 还在实验阶段，关掉那条警告
-    [[ -x "$NODE" ]] || fail "找不到 node（$NODE），跑 pane-remote doctor 看看"
+    [[ -x "$NODE" ]] || fail "找不到 node（${NODE}），跑 pane-remote doctor 看看"
     exec "$NODE" --no-warnings "$HERE/cursor-agent.mjs"
     ;;
   preview-cursor)
     # 常驻：预览接管 Cursor IDE 的内置浏览器（不开自己的 Chrome，见 preview-agent.mjs 的 PREVIEW_SOURCE=cursor）
-    [[ -x "$NODE" ]] || fail "找不到 node（$NODE），跑 pane-remote doctor 看看"
+    [[ -x "$NODE" ]] || fail "找不到 node（${NODE}），跑 pane-remote doctor 看看"
     PREVIEW_SOURCE=cursor exec "$NODE" "$HERE/preview-agent.mjs"
     ;;
   preview|preview-stop)
-    [[ -x "$NODE" ]] || fail "找不到 node（$NODE），跑 pane-remote doctor 看看"
+    [[ -x "$NODE" ]] || fail "找不到 node（${NODE}），跑 pane-remote doctor 看看"
     [[ "$cmd" == preview-stop ]] && exec "$NODE" "$HERE/preview-agent.mjs" --stop
     [[ -n "$CHROME" ]] && export PREVIEW_CHROME=$CHROME
     exec "$NODE" "$HERE/preview-agent.mjs"
+    ;;
+  screen)
+    # 常驻：转码代理连本机的屏幕共享（127.0.0.1:5900），sharp 从仓库根目录的 node_modules 里找
+    [[ "${pane:-}" =~ ^[0-9]{1,2},[01]$ ]] || fail "bad screen args"
+    [[ -x "$NODE" ]] || fail "找不到 node（${NODE}），跑 pane-remote doctor 看看"
+    exec "$NODE" "$HERE/screen/proxy.mjs" "$pane"
+    ;;
+  screen-displays)
+    # 每块屏在全局坐标里的位置（点，原点在主屏左下角、y 向上）和缩放倍数；顺序跟转码代理的屏序号一致
+    exec /usr/bin/osascript -l JavaScript -e 'ObjC.import("AppKit"); JSON.stringify(ObjC.unwrap($.NSScreen.screens).map(s => { const f = s.frame; return { name: ObjC.unwrap(s.localizedName), x: f.origin.x, y: f.origin.y, w: f.size.width, h: f.size.height, scale: s.backingScaleFactor } }))'
+    ;;
+  screen-windows|screen-apps|screen-launch|screen-summon)
+    [[ -x "$NODE" ]] || fail "找不到 node（${NODE}），跑 pane-remote doctor 看看"
+    case "$cmd" in
+      screen-windows) exec "$NODE" "$HERE/screen/wq.mjs" w list ;;
+      screen-apps) exec "$NODE" "$HERE/screen/wq.mjs" w apps ;;
+      screen-launch)
+        [[ "${pane:-}" =~ ^[A-Za-z0-9.-]{1,200}$ ]] || fail "bad bundle id"
+        exec "$NODE" "$HERE/screen/wq.mjs" w launch "$pane"
+        ;;
+      screen-summon)
+        [[ "${pane:-}" =~ ^[A-Za-z0-9.-]{1,200}$ ]] || fail "bad bundle id"
+        exec "$NODE" "$HERE/screen/summon.mjs" "$pane"
+        ;;
+    esac
     ;;
   awake)
     pidf=$HOME/.cache/pane-remote-caffeinate.pid

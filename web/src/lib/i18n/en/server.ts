@@ -105,4 +105,11 @@ export default {
   'Cursor 还没登录': "Cursor isn't signed in",
   'Cursor 的登录过期了，在电脑上打开一次 Cursor 就会刷新': 'Cursor sign-in expired. Open Cursor on the computer once to refresh it',
   '查询用量失败（{status}）': 'Usage query failed ({status})',
+  // ---- 看屏幕模块（server/screen.mjs、agent/screen） ----
+  '看屏幕模块没开（pane-remote enable screen）': 'The screen module is off (pane-remote enable screen)',
+  电脑的屏幕共享没开: 'Screen Sharing is off on the computer',
+  连不上电脑的屏幕共享: "Can't reach Screen Sharing on the computer",
+  窗口关掉了: 'The window was closed',
+  '这个窗口录不到（可能最小化了）': "This window can't be captured (it may be minimized)",
+  '看不懂 uTools 的唤出快捷键 {spec}': "Can't parse uTools's show hotkey {spec}",
 } as Record<string, string>

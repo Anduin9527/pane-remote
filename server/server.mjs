@@ -19,6 +19,7 @@
 //   GET  /api/config             给前端的配置：新建 pane 的启动命令、开了哪些模块
 //   GET|POST /api/push/prefs     推送偏好：{stop} 回合结束是否也推
 //   WS   /api/preview             预览：电脑上无界面 Chrome 的画面（二进制 JPEG，前面一条 JSON 帧头）和操作通道
+//   GET|POST /api/screen/…、WS /api/screen/vnc  看屏幕模块（可选，见 screen.mjs）
 //   POST /api/upload?name=…      请求体是文件原始字节（最大 25MB），存到电脑的 ~/Downloads/pane-remote/，返回 {path}
 // 身份：只认 tailscale serve 注入的 Tailscale-User-Login，且必须在 allowedLogins 里；local 模式还要求 Host 是 serveHosts 之一。
 import http from 'node:http'
@@ -28,6 +29,7 @@ import { execFile, spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import * as push from './push.mjs'
 import { initCursor, cursorStream, cursorCmd, cursorSummary } from './cursor.mjs'
+import { createScreen } from './screen.mjs'
 import { WebSocketServer } from 'ws'
 import zlib from 'node:zlib'
 import { config, APP_DIR, CONFIG_PATH } from './config.mjs'
@@ -568,6 +570,16 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, await cursorCmd(JSON.parse((await readBody(req, 64 << 10)) || '{}')))
       }
     }
+    // 看屏幕模块（可选，macOS，pane-remote enable screen）：手机上看 / 操作电脑屏幕
+    if (url.pathname.startsWith('/api/screen/')) {
+      if (!config.modules.screen) return json(res, 404, { error: '看屏幕模块没开（pane-remote enable screen）' })
+      let body = {}
+      if (req.method === 'POST') {
+        if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'json only' })
+        body = JSON.parse((await readBody(req, 4 << 10)) || '{}')
+      }
+      try { return json(res, 200, await screen.http(req.method, url.pathname.slice('/api/screen/'.length), body)) } catch (e) { return json(res, e.code >= 400 && e.code < 600 ? e.code : 500, { error: e.message }) }
+    }
     if (url.pathname === '/api/config' && req.method === 'GET') {
       return json(res, 200, { presets: config.presets, modules: config.modules })
     }
@@ -731,15 +743,19 @@ push.startMonitor({
   active: () => viewing() || Date.now() - lastApi < 120000,
 })
 
+const screen = createScreen({ bridge, bridgeProc })
+
 // WebSocket 升级不经过上面的请求处理，身份和来源要在这里单独查
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, 'http://x')
   const origin = req.headers.origin
-  const okPath = url.pathname === '/api/preview' && (url.searchParams.get('source') === 'cursor' ? !!config.modules.cursor : config.modules.preview)
+  const isScreen = url.pathname === '/api/screen/vnc'
+  const okPath = isScreen ? !!config.modules.screen : url.pathname === '/api/preview' && (url.searchParams.get('source') === 'cursor' ? !!config.modules.cursor : config.modules.preview)
   if (!authorized(req) || !okPath || (origin && new URL(origin).host !== req.headers.host)) {
     socket.end('HTTP/1.1 403 Forbidden\r\n\r\n')
     return
   }
+  if (isScreen) return screen.upgrade(req, socket, head, url)
   const pv = url.searchParams.get('source') === 'cursor' ? previews.cursor : previews.chrome
   pv.wss.handleUpgrade(req, socket, head, (ws) => pv.wss.emit('connection', ws, req))
 })

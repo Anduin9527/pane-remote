@@ -39,6 +39,7 @@
   import AgentFocusBar from '$lib/components/AgentFocusBar.svelte'
   import Terminal from '@lucide/svelte/icons/square-terminal'
   import Globe from '@lucide/svelte/icons/globe'
+  import Monitor from '@lucide/svelte/icons/monitor'
   import { onSendError, type CreateTarget, type Pane } from '$lib/api'
   import { prefs } from '$lib/prefs.svelte'
   import { pushStatus } from '$lib/push'
@@ -59,6 +60,13 @@
   let inboxOpen = $state(false)
   let claudeOpen = $state(false)
   let cronOpen = $state(false)
+  // 看屏幕模块：全屏盖在最上面，不算一个视图（关掉回到原来的页面）；noVNC 比较大，打开时才加载
+  let screenOpen = $state(false)
+  let ScreenView = $state<typeof import('$lib/screen/ScreenView.svelte').default | null>(null)
+  async function openScreen() {
+    try { ScreenView ??= (await import('$lib/screen/ScreenView.svelte')).default } catch { toast.error(t('屏幕加载失败，刷新页面再试')); return }
+    screenOpen = true
+  }
   // 切到 Claude 会话的 pane 时读一下它的定时任务：有任务才在会话栏显示入口
   $effect(() => { if (ui.current && ui.claude?.agent === 'claude' && ui.claude.session) refreshCrons() })
   const cronTasks = $derived(crons.pane === ui.current && ui.claude?.agent === 'claude' ? crons.data?.tasks ?? [] : [])
@@ -190,6 +198,9 @@
     {#if appConfig.modules.cursor}
       <button class={cn('grid h-7 w-8 place-items-center rounded-md text-muted-foreground', mode === 'cursor' && 'bg-card text-foreground shadow-sm')} aria-label="Cursor" aria-pressed={mode === 'cursor'} onclick={() => (mode = 'cursor')}><span class="relative"><CursorIcon class="size-4" />{#if mode !== 'cursor' && (cursorSummary.waiting.length || cursorSummary.unread)}<span class={cn('absolute -top-1 -right-1.5 size-2 rounded-full ring-2 ring-secondary', cursorSummary.waiting.length ? 'bg-warn' : 'bg-primary')}></span>{/if}</span></button>
     {/if}
+    {#if appConfig.modules.screen}
+      <button class="grid h-7 w-8 place-items-center rounded-md text-muted-foreground" aria-label={t('看电脑屏幕')} onclick={openScreen}><Monitor class="size-4" /></button>
+    {/if}
   </div>
   {#if update.available}
     <button class="flex-none rounded-full bg-primary px-2.5 text-[12px] leading-6 font-semibold text-primary-foreground active:opacity-80" onclick={() => location.reload()}>{t('更新')}</button>
@@ -301,5 +312,8 @@
 <ClaudeSheet bind:open={claudeOpen} />
 <CronSheet bind:open={cronOpen} />
 <Reader bind:open={readerOpen} onpreview={() => (mode = 'preview')} />
+{#if ScreenView && appConfig.modules.screen}
+  <ScreenView bind:open={screenOpen} />
+{/if}
 <!-- 提示层避开 iPhone 的刘海 / 状态栏，并放在顶栏下面（不挡顶栏的按钮）；带关闭按钮，任何提示都能随手关掉 -->
 <Toaster theme="system" position="top-center" closeButton offset={{ top: 'calc(env(safe-area-inset-top) + 52px)' }} mobileOffset={{ top: 'calc(env(safe-area-inset-top) + 52px)' }} />

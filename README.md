@@ -29,6 +29,7 @@
 | 预览浏览器 | 手机上看电脑这边的网页（localhost、内网都行）和文件（文件夹、图片、视频、PDF、Markdown、代码），支持电脑模式（桌面 UA、横屏全屏） | 有 Chrome 时默认开；`pane-remote enable preview` |
 | 网址转手机 | 电脑上打开链接时，如果你正在用手机，就转到手机的预览里打开 | `pane-remote enable openUrl` |
 | Cursor 映射 | 手机上看和操作 Cursor IDE：会话、消息、待办 / 未读、命令输出、改动差异、内置浏览器 | `pane-remote enable cursor`，见 [docs/cursor.md](docs/cursor.md) |
+| 看屏幕 | 手机上看和操作电脑屏幕（一块显示器或单个窗口）：点、拖、滚动、触控板模式、打字（含中文）、多指手势、后台打开 app。走系统自带的屏幕共享，画面在电脑上转码后再传 | `pane-remote enable screen`，见 [docs/screen.md](docs/screen.md) |
 | 中转模式 | 电脑本身跑不了 Tailscale 时，经一台在你 tailnet 里的服务器转发 | 见 [docs/relay.md](docs/relay.md) |
 | 持久化 pane | WezTerm 窗口关了 pane 也不丢，手机照样能连 | 见 [docs/advanced.md](docs/advanced.md) |
 
@@ -40,7 +41,7 @@
 | 终端 | [WezTerm](https://wezfurlong.org/wezterm/)，安装脚本会装；手机上看到的就是 WezTerm 里的 pane |
 | 网络 | [Tailscale](https://tailscale.com)，电脑和手机登录同一个账号。tailnet 要打开 **MagicDNS** 和 **HTTPS Certificates**（管理后台 → DNS）。自建的 Headscale 一般签不了 HTTPS 证书，用不了 |
 | 手机 | iPhone（iOS 16.4 以上才有推送）或 Android，装 Tailscale App |
-| 可选 | Claude Code、Codex（对话视图、分叉等功能）；Chrome（预览浏览器） |
+| 可选 | Claude Code、Codex（对话视图、分叉等功能）；Chrome（预览浏览器）；Cursor（Cursor 模块）；Xcode 命令行工具（看屏幕模块） |
 
 安装脚本用 [Homebrew](https://brew.sh) 装 WezTerm 和 Tailscale；Node.js 用电脑上已有的（20 以上），没有就从 nodejs.org 下载官方版本并校验，只给 pane-remote 自己用。
 
@@ -76,7 +77,7 @@ cd ~/pane-remote
 pane-remote doctor            # 自检：每一项有问题都会给出修复办法
 pane-remote status            # 服务在不在跑
 pane-remote restart | logs
-pane-remote enable preview    # 开 / 关模块：preview、openUrl、cursor
+pane-remote enable preview    # 开 / 关模块：preview、openUrl、cursor、screen
 pane-remote disable openUrl
 pane-remote init              # 改了配置、换了电脑名、装了新的 Claude 配置目录后重跑一次（保留原有配置）
 pane-remote uninstall         # 停服务、撤掉 tailscale serve、还原 hook；加 --purge 连配置和数据一起删
@@ -124,7 +125,7 @@ pane-remote uninstall         # 停服务、撤掉 tailscale serve、还原 hook
 install.sh          一键安装
 bin/pane-remote     命令入口（lib/cli.mjs）
 server/             服务端（手机网页的后端）
-agent/              电脑这边的脚本：bridge（操作 WezTerm 的唯一入口）、hook、会话记录解析、预览浏览器
+agent/              电脑这边的脚本：bridge（操作 WezTerm 的唯一入口）、hook、会话记录解析、预览浏览器、Cursor 适配、看屏幕（screen/）
 web/                手机网页源码（Svelte），构建产物在 public/
 relay/              中转模式的辅助命令
 scripts/audit.mjs   发布前审计：查个人信息、内网地址和密钥
