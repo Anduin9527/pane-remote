@@ -89,6 +89,24 @@ pane-remote uninstall         # stop the service, remove tailscale serve, restor
 
 If the `pane-remote` command isn't on your PATH, use `~/pane-remote/bin/pane-remote`.
 
+## Updating
+
+```bash
+pane-remote update --check     # only check: list incoming commits, changed files and the steps to run (exit code 0 = up to date, 10 = update available)
+pane-remote update             # preview, ask for confirmation (y/N), then apply; add --yes when not running in a terminal
+pane-remote update --rollback  # go back to the version before the last update
+```
+
+- **Updates only come from `origin`, and it must be an https URL.** The first `init` / `update` records the origin URL and branch as `updateSource` in the config; if origin is later changed to a different URL, update refuses (if you changed it on purpose, update `updateSource` too)
+- Nothing from the fetched code runs before you confirm
+- Update refuses when the working tree has local changes or local history has commits upstream doesn't have; it only fast-forwards (`git merge --ff-only`) and never resets, stashes or overwrites your changes
+- Only the affected steps run: `package.json` / `package-lock.json` changed → reinstall npm dependencies (same flags as `install.sh`; sharp is added back when the screen module is on); mousectl source or installer changed and the screen module is on → reinstall mousectl; command line or hook script changed → re-merge the hooks (only in config files that already have them) and `bridge.env`; server, web UI or Mac-side scripts changed → restart the background service
+- After applying, `doctor` runs: if a step fails or there are new problems compared with before the update, it rolls back to the old version automatically and redoes those steps with the old version
+- Screen module: without a signing certificate from `--create-cert`, the installer won't rebuild an existing mousectl and update tells you so; with the certificate it rebuilds and the permissions survive (see [docs/en/screen.md](docs/en/screen.md))
+- Changes to `install.sh` or `Brewfile` are not re-run automatically; update points you to the diff
+- Relay mode: when the server needs updating too, update prints the commands to run at the end (also available any time as `pane-remote relay server-update`); it never connects to the server by itself
+- `pane-remote doctor` mentions a new version based on the last fetch (no network access)
+
 ## Configuration
 
 `~/.config/pane-remote/config.json` (created by init; run `pane-remote restart` after editing):

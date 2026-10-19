@@ -77,7 +77,7 @@ macOS 屏幕共享
 
 macOS 的辅助功能、屏幕录制授权认的是程序的签名。编译器默认给的临时签名每次编译都不一样，所以每次更新重编 mousectl，授权就掉了，得去系统设置里重新打开。
 
-`--create-cert` 在登录钥匙串里建一张名为 `pane-remote local signing` 的自签名代码签名证书（私钥只在本机，临时文件用完就删），之后 `install-mousectl.sh` 都用它签名，重编后授权不掉。建好证书后要再授权一次。第一次用它签名时钥匙串可能问一次要不要允许 codesign 使用，选「始终允许」。
+`--create-cert` 在登录钥匙串里建一张名为 `pane-remote local signing` 的自签名代码签名证书（私钥只在本机，临时文件用完就删），之后 `install-mousectl.sh` 都用它签名，重编后授权不掉。建好证书后要再授权一次。`pane-remote update` 遇到 mousectl 有改动时：有证书就重编重签，授权不掉；没有证书就保留旧的 mousectl 并提示你。第一次用它签名时钥匙串可能问一次要不要允许 codesign 使用，选「始终允许」。
 
 没建证书时，安装脚本只在 mousectl 不存在时编译，避免白白掉授权。
 

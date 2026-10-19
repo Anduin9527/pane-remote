@@ -102,4 +102,11 @@ On the phone, open the server's `https://<server-name>.<tailnet>.ts.net/`.
 
 ## Upgrading
 
-`git pull` on the Mac; on the server, rsync `server/` and `public/` again and run `sudo systemctl restart pane-remote`. Mac and server must run the same version (bridge commands have to match).
+Run `pane-remote update` on the Mac (see "Updating" in the README); when server-side files changed, it prints the commands for updating the server at the end. You can also print them any time:
+
+```bash
+pane-remote relay server-update                      # the server the reverse tunnel connects to
+pane-remote relay server-update <user>@<server> --ssh-port 22
+```
+
+They rsync `server/`, `public/` and `package*.json` from the repo directory on the Mac, then run `npm ci --omit=dev` and `sudo systemctl restart pane-remote` on the server. The commands are only printed, never run automatically. Mac and server must run the same version (bridge commands have to match).

@@ -77,7 +77,7 @@ The Xcode command line tools are also needed (`xcode-select --install`): mousect
 
 macOS ties Accessibility and Screen Recording grants to the program's signature. The ad-hoc signature the compiler applies changes on every build, so each rebuild of mousectl after an update drops the grants and you have to turn them on again.
 
-`--create-cert` creates a self-signed code-signing certificate named `pane-remote local signing` in the login keychain (the private key stays on this Mac; temporary files are deleted right away). From then on `install-mousectl.sh` signs with it and grants survive rebuilds. Grant the permissions once more after creating it. The first signing may ask whether codesign may use the key; choose "Always Allow".
+`--create-cert` creates a self-signed code-signing certificate named `pane-remote local signing` in the login keychain (the private key stays on this Mac; temporary files are deleted right away). From then on `install-mousectl.sh` signs with it and grants survive rebuilds. Grant the permissions once more after creating it. When `pane-remote update` brings mousectl changes, it rebuilds and re-signs with the certificate if there is one (grants survive); without it, the old mousectl is kept and update tells you. The first signing may ask whether codesign may use the key; choose "Always Allow".
 
 Without the certificate, the install script only compiles mousectl when it doesn't exist yet, so grants aren't dropped needlessly.
 

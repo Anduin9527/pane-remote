@@ -10,6 +10,8 @@
 //   pane-remote relay server-config --mac-user <电脑用户名> --login <Tailscale 登录名>
 //                                                 打印服务器上 ~/.config/pane-remote/config.json 的内容
 //   pane-remote relay systemd                      打印服务器上的 systemd 服务文件
+//   pane-remote relay server-update [用户@服务器] [--ssh-port 22]
+//                                                  打印把服务器更新到电脑这边版本的命令（默认用反向隧道连的服务器）
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -113,6 +115,25 @@ ReadWritePaths=/home/${u}/.local/share/pane-remote /home/${u}/.ssh
 WantedBy=multi-user.target`)
     break
   }
+  case 'server-update': {
+    // 只打印命令，不替你连服务器。服务器默认取反向隧道 launchd 配置里的 用户@服务器 和 SSH 端口
+    let target = args[1] && !args[1].startsWith('--') ? args[1] : ''
+    let sshPort = opt('--ssh-port', '')
+    if ((!target || !sshPort) && fs.existsSync(PLIST)) {
+      const a = [...fs.readFileSync(PLIST, 'utf8').matchAll(/<string>([^<]*)<\/string>/g)].map((m) => m[1])
+      const argv = a.slice(a.indexOf('/usr/bin/ssh'))
+      if (!target && /^[\w.-]+@[\w.-]+$/.test(argv[argv.length - 1] || '')) target = argv[argv.length - 1]
+      if (!sshPort && argv.includes('-p')) sshPort = argv[argv.indexOf('-p') + 1]
+    }
+    sshPort = String(Number(sshPort || 22))
+    if (target && !/^[\w.-]+@[\w.-]+$/.test(target)) die(t('用法：pane-remote relay server-update [用户@服务器] [--ssh-port 22]'))
+    const dest = target || t('<用户>@<服务器>')
+    const p = sshPort === '22' ? '' : ` -p ${sshPort}`
+    console.log(`  cd ${APP_DIR.startsWith(HOME + '/') ? '~' + APP_DIR.slice(HOME.length) : APP_DIR}`)
+    console.log(`  rsync -a${p ? ` -e 'ssh${p}'` : ''} server public package.json package-lock.json ${dest}:pane-remote/`)
+    console.log(`  ssh -t${p} ${dest} 'cd pane-remote && npm ci --omit=dev && sudo systemctl restart pane-remote'`)
+    break
+  }
   default:
     console.log(t(`增强版：中转模式的辅助命令（完整步骤见 docs/relay.md）
 
@@ -126,6 +147,8 @@ WantedBy=multi-user.target`)
   pane-remote relay server-config --mac-user <电脑用户名> --login <Tailscale 登录名>
                                                  打印服务器上 ~/.config/pane-remote/config.json 的内容
   pane-remote relay systemd                      打印服务器上的 systemd 服务文件
+  pane-remote relay server-update [用户@服务器] [--ssh-port 22]
+                                                 打印把服务器更新到电脑这边版本的命令（默认用反向隧道连的服务器）
 
 完整步骤：docs/relay.md`))
 }

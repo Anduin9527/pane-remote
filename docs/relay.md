@@ -102,4 +102,11 @@ sudo tailscale serve --bg --https=443 http://127.0.0.1:8787
 
 ## 升级
 
-电脑上 `git pull`；服务器上重新 rsync `server/`、`public/` 后 `sudo systemctl restart pane-remote`。电脑和服务器的版本要一致（bridge 的指令要对得上）。
+电脑上 `pane-remote update`（见 README 的「更新」）；服务器那边的文件有变化时，它最后会打印更新服务器的命令。也可以随时打印：
+
+```bash
+pane-remote relay server-update                      # 用反向隧道连的那台服务器
+pane-remote relay server-update <用户>@<服务器> --ssh-port 22
+```
+
+打印的是：在电脑的仓库目录里把 `server/`、`public/`、`package*.json` rsync 过去，再在服务器上 `npm ci --omit=dev` 并 `sudo systemctl restart pane-remote`。命令只打印、不会自动执行。电脑和服务器的版本要一致（bridge 的指令要对得上）。

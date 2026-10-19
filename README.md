@@ -85,6 +85,24 @@ pane-remote uninstall         # 停服务、撤掉 tailscale serve、还原 hook
 
 没有 `pane-remote` 命令时用 `~/pane-remote/bin/pane-remote`。
 
+## 更新
+
+```bash
+pane-remote update --check     # 只看有没有新版本：列出新提交和改动的文件、要做的步骤（退出码 0 = 已是最新，10 = 有更新）
+pane-remote update             # 预览后问你确认（y/N），再应用；不在终端里运行时要加 --yes
+pane-remote update --rollback  # 回到上一次更新之前的版本
+```
+
+- **只从 `origin` 更新，而且必须是 https 地址。** 第一次 `init` / `update` 时把 origin 地址和分支记进配置的 `updateSource`；之后 origin 被改成别的地址就拒绝更新（确实是你自己改的，就同步改 `updateSource`）
+- 你确认之前，不会执行拉下来的任何代码
+- 工作区有改动、或者本地有上游没有的提交时拒绝更新，只做快进合并（`git merge --ff-only`），不会 reset / stash / 覆盖你的改动
+- 只重做改动涉及的步骤：`package.json` / `package-lock.json` 变了重装 npm 依赖（和 `install.sh` 一样的参数；开了看屏幕模块会补装 sharp）；mousectl 的源码或安装脚本变了、并且开了看屏幕模块，重装 mousectl；命令行或 hook 脚本变了，重新合并 hook（只动已经装过的配置文件）和 `bridge.env`；服务端、网页、电脑端脚本变了，重启后台服务
+- 应用后跑一遍 `doctor`：某一步失败、或者比更新前多出了问题，就自动回到旧版本，再用旧版本把这些步骤重做一遍
+- 看屏幕模块：没用 `--create-cert` 建签名证书时，安装脚本不会重编已有的 mousectl，update 会提示你；建了证书之后重编，授权不会掉（见 [docs/screen.md](docs/screen.md)）
+- `install.sh`、`Brewfile` 变了不会自动重跑，update 会提示你看一下改动
+- 中转模式：服务器那边要跟着更新时，update 最后会打印要执行的命令（也可以随时 `pane-remote relay server-update`），不会自动连服务器
+- `pane-remote doctor` 会根据上次拉取的结果提示有没有新版本（不联网）
+
 ## 配置
 
 `~/.config/pane-remote/config.json`（init 生成，改完 `pane-remote restart`）：
