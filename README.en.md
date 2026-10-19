@@ -16,6 +16,7 @@ No third-party server is involved: phone and Mac talk over your own Tailscale ne
 - Claude Code / Codex:
   - Chat view (laid out from the session transcript, easier to read than the raw terminal)
   - **Fork session**: start a new session in a new pane with the full context of the current one (from the chat bar's 「分叉」 (Fork), the pane menu, or when splitting)
+  - **Resume session**: the new-tab page lists recent Claude sessions in the chosen directory; tap one to continue it in a new pane with `--resume` (one already open in a pane just switches to it; one still running elsewhere, e.g. the Claude desktop app, is forked with its context instead)
   - New session in the same directory, common slash commands
   - Scheduled-task panel inside a session: see schedules and last results, run now / restart / stop
   - Warns when focus has moved to the background agent list and returns to the input box in one tap
@@ -99,7 +100,7 @@ If the `pane-remote` command isn't on your PATH, use `~/pane-remote/bin/pane-rem
 | `serveHosts` | Host names served by tailscale serve (filled in by init) |
 | `port` | Local service port, default 8787 |
 | `presets` | Launch commands offered when creating a pane, e.g. `{"label": "Claude Code", "command": "claude"}` |
-| `claudeWrappers` | Claude config dir → launch command. With several `CLAUDE_CONFIG_DIR`s, forks must start with the same config dir |
+| `claudeWrappers` | Claude config dir → launch command. With several `CLAUDE_CONFIG_DIR`s, forks and resumes must start with the same config dir |
 | `modules` | Module switches |
 
 ## Security

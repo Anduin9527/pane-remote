@@ -26,7 +26,7 @@
 ## 多个 Claude Code 账号
 
 用 `CLAUDE_CONFIG_DIR` 把不同账号分开（`~/.claude-work`、`~/.claude-personal` 之类）时，init 会给每个配置目录都装上 hook，
-并在 `claudeWrappers` 里记下「配置目录 → 启动命令」，分叉会话时用同一个账号启动，不然找不到原会话。默认生成的命令是：
+并在 `claudeWrappers` 里记下「配置目录 → 启动命令」，分叉、恢复会话时用同一个账号启动，不然找不到原会话。默认生成的命令是：
 
 ```json
 "claudeWrappers": {

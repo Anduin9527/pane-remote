@@ -1,17 +1,20 @@
 <script lang="ts">
   // 新建标签页 / 拆分：全屏页面（不是底部抽屉），高度跟着键盘走，目录建议列表占满键盘上方的剩余空间。
   // 正在填目录时，位置和启动命令两栏先收起来，给建议列表腾地方。
+  // 目录下有 Claude 会话时，底下列出最近的几个：点一条就改成恢复那个会话（已经开在某个 pane 里的直接切过去）。
   import { untrack } from 'svelte'
   import X from '@lucide/svelte/icons/x'
   import Folder from '@lucide/svelte/icons/folder'
+  import History from '@lucide/svelte/icons/history'
+  import Check from '@lucide/svelte/icons/check'
   import { Button } from '$lib/components/ui/button'
-  import { manage, type CreateTarget } from '$lib/api'
+  import { manage, fetchSessions, type CreateTarget, type ClaudeSession } from '$lib/api'
   import { prefs } from '$lib/prefs.svelte'
   import { ui, loadPanes, select } from '$lib/session.svelte'
   import { cn } from '$lib/utils'
   import { paneSession, canFork, forkPane } from '$lib/claude/fork'
   import { appConfig } from '$lib/appConfig.svelte'
-  import { t, tr } from '$lib/i18n'
+  import { t, tr, isEn } from '$lib/i18n'
 
   let { open = $bindable(false), target, ondone }: { open?: boolean; target: CreateTarget; ondone: () => void } = $props()
 
@@ -33,6 +36,8 @@
   let forkable = $state(false)
   const presets = $derived(forkable ? [{ v: '__fork', label: t('分叉这个会话') }, ...PRESETS] : PRESETS)
   const isFork = $derived(cmd === '__fork' && forkable && !!target.split)
+  let sessions = $state<ClaudeSession[]>([])
+  let resume = $state<string | null>(null)
 
   const windows = $derived([...new Set(ui.panes.map((p) => p.window))])
   const home = $derived((ui.panes.find((p) => p.dir && p.cwd.startsWith('~'))?.dir || '').replace(/^(\/Users\/[^/]+).*/, '$1'))
@@ -49,6 +54,42 @@
     return (q && !exact ? dirs.filter((d) => d.toLowerCase().includes(q) || short(d).toLowerCase().includes(q)) : dirs).slice(0, 60)
   })
 
+  // 目录下最近的 Claude 会话：目录变了停 300ms 再查（打字时不连发），回来的结果和当前目录对得上才用
+  let sessTimer: ReturnType<typeof setTimeout> | undefined
+  $effect(() => {
+    const d = open && !isFork ? full(dir) : ''
+    clearTimeout(sessTimer)
+    if (!d.startsWith('/')) { sessions = []; resume = null; return }
+    sessTimer = setTimeout(() => {
+      const done = (s: ClaudeSession[]) => {
+        if (full(dir) !== d) return
+        sessions = s
+        if (resume && !s.some((x) => x.id === resume)) resume = null
+      }
+      fetchSessions(d).then(done, () => done([]))
+    }, 300)
+  })
+  function pickSession(s: ClaudeSession) {
+    if (s.pane != null && ui.panes.some((p) => p.pane === s.pane)) {
+      open = false
+      ondone()
+      select(s.pane)
+      return
+    }
+    resume = resume === s.id ? null : s.id
+  }
+  // 今天的只显示时间，昨天的带「昨天」，更早的显示日期
+  function when(sec: number) {
+    const d = new Date(sec * 1000)
+    const loc = isEn ? 'en-US' : 'zh-CN'
+    const hm = d.toLocaleTimeString(loc, { hour: '2-digit', minute: '2-digit' })
+    const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime()
+    const days = Math.round((day(new Date()) - day(d)) / 86400000)
+    return days === 0 ? hm : days === 1 ? t('昨天 {time}', { time: hm }) : d.toLocaleDateString(loc, { month: 'numeric', day: 'numeric' })
+  }
+  const sessionNote = (s: ClaudeSession) =>
+    s.pane != null ? t('已在 #{pane} 打开，点一下切过去', { pane: s.pane }) : s.running ? t('在别处运行中，恢复时会分叉一个新会话') : ''
+
   // 每次打开按目标重置表单（只跟 open 走：目录列表、pane 列表后到时不能冲掉正在填的内容）
   $effect(() => { if (open) untrack(reset) })
   function reset() {
@@ -62,6 +103,8 @@
     err = ''
     dirFocus = false
     forkable = false
+    sessions = []
+    resume = null
     const split = target.split?.pane
     if (split != null) paneSession(split).then((s) => { if (target.split?.pane === split) forkable = canFork(s) })
   }
@@ -79,14 +122,14 @@
       return
     }
     const command = cmd === '__custom' ? custom.trim() : cmd
-    const body: Record<string, unknown> = { dir: full(dir), command }
+    const body: Record<string, unknown> = resume ? { dir: full(dir), resume } : { dir: full(dir), command }
     let action: 'spawn' | 'split' = 'spawn'
     if (where === 'split' && target.split) { action = 'split'; body.pane = target.split.pane; body.direction = target.direction }
     else body.window = where === 'new' ? 'new' : Number(where.slice(1))
     busy = true
     try {
       const { pane } = await manage<{ pane: number }>(action, body)
-      prefs.lastCmd = command
+      if (!resume) prefs.lastCmd = command
       open = false
       ondone()
       await loadPanes()
@@ -114,7 +157,7 @@
     <header class="flex flex-none items-center gap-2 border-b bg-card px-2 pt-[calc(env(safe-area-inset-top)+6px)] pb-2">
       <button class="grid size-9 place-items-center rounded-lg active:bg-accent" aria-label={t('取消')} onclick={() => (open = false)}><X class="size-5" /></button>
       <strong class="flex-1 text-center">{target.split ? t('拆分 pane') : t('新建标签页')}</strong>
-      <Button size="sm" class="h-9 px-4" disabled={busy || (!isFork && !dir.trim())} onclick={go}>{busy ? t('创建中…') : isFork ? t('分叉') : t('创建')}</Button>
+      <Button size="sm" class="h-9 px-4" disabled={busy || (!isFork && !dir.trim())} onclick={go}>{busy ? t('创建中…') : isFork ? t('分叉') : resume ? t('恢复会话') : t('创建')}</Button>
     </header>
 
     <div class="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden p-3.5">
@@ -128,9 +171,9 @@
         <section class="grid gap-2">
           <span class="text-xs text-muted-foreground">{t('启动')}</span>
           <div class="flex flex-wrap gap-1.5">
-            {#each presets as p (p.v)}<button class={chip(cmd === p.v)} onclick={() => (cmd = p.v)}>{p.label}</button>{/each}
+            {#each presets as p (p.v)}<button class={chip(cmd === p.v && !resume)} onclick={() => { cmd = p.v; resume = null }}>{p.label}</button>{/each}
           </div>
-          {#if cmd === '__custom'}
+          {#if cmd === '__custom' && !resume}
             <input bind:value={custom} placeholder={t('例如 cursor-agent、grok、npm run dev')} autocapitalize="off" spellcheck="false" class="h-10 rounded-[10px] border bg-background px-3 font-mono outline-none focus:ring-2 focus:ring-ring" />
           {/if}
         </section>
@@ -168,6 +211,27 @@
             <p class="p-4 text-center text-sm text-muted-foreground">{t('没有匹配的目录，直接用输入的路径')}</p>
           {/each}
         </div>
+        {#if sessions.length && !dirFocus}
+          <span class="mt-1 text-xs text-muted-foreground">{t('最近的 Claude 会话')}</span>
+          <div class="max-h-52 flex-none overflow-y-auto overscroll-contain rounded-[10px] border bg-card">
+            {#each sessions as s (s.id)}
+              {@const note = sessionNote(s)}
+              <button
+                class={cn('flex w-full items-center gap-2.5 border-b px-3 py-2 text-left last:border-b-0 active:bg-accent', resume === s.id && 'bg-accent')}
+                onclick={() => pickSession(s)}
+              >
+                <History class="size-4 flex-none text-muted-foreground" />
+                <span class="grid min-w-0 flex-1">
+                  <span class="truncate text-sm">{s.title}</span>
+                  <span class="truncate text-xs text-muted-foreground">{when(s.t)}{s.branch && s.branch !== 'HEAD' ? ` · ${s.branch}` : ''}</span>
+                  <!-- 状态单独一行：和分支挤一行时总被截掉，而这正是点之前最该看到的 -->
+                  {#if note}<span class="text-xs text-primary">{note}</span>{/if}
+                </span>
+                {#if resume === s.id}<Check class="size-4 flex-none text-primary" />{/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
         {#if err}<p class="text-sm text-destructive">{err}</p>{/if}
       </section>
       {/if}

@@ -26,7 +26,7 @@ Note: when the mux server restarts (e.g. after upgrading WezTerm), all its panes
 ## Multiple Claude Code accounts
 
 If you separate accounts with `CLAUDE_CONFIG_DIR` (`~/.claude-work`, `~/.claude-personal`, ...), init installs hooks into every config dir
-and records "config dir → launch command" in `claudeWrappers`, so forks start with the same account (otherwise the original session can't be found). The generated commands default to:
+and records "config dir → launch command" in `claudeWrappers`, so forks and resumes start with the same account (otherwise the original session can't be found). The generated commands default to:
 
 ```json
 "claudeWrappers": {

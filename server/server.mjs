@@ -6,7 +6,7 @@
 //   GET  /api/stream?pane=N[&since=序号]  SSE：size（列数行数）、full（全部行）、delta（只含变化的行）、resume（手里的画面已是最新）、ping
 //                                每帧带递增序号（SSE id）；重连时带上 since 或 Last-Event-ID，序号对得上就不重发整屏
 //   POST /api/send {pane, data, rid?}  把 data 原样发进 pane（方向键、回车等用控制序列）
-//   POST /api/pane/{spawn|split|kill|title|focus}  管理：新标签页/拆分（可带启动命令）、关闭、改标题、电脑上切过去
+//   POST /api/pane/{spawn|split|kill|title|focus}  管理：新标签页/拆分（可带启动命令，或带 resume 恢复某个 Claude 会话）、关闭、改标题、电脑上切过去
 //   GET  /api/push/key、POST /api/push/subscribe|unsubscribe|status|test  推送订阅（见 push.mjs）
 //   GET  /api/states             每个 pane 的状态：waiting / running / idle、等待的问题、有没有未读
 //   GET  /api/claude?pane=N      这个 pane 里 Claude 会话的信息（会话 ID、账号、目录），没有就是 {}
@@ -16,6 +16,7 @@
 //   POST /api/pane/claude {pane, mode: fork|new, where: right|bottom|tab}  分叉当前会话 / 同目录新开 Claude
 //   GET  /api/ls?path=…          列目录（预览地址栏的路径提示，只允许家目录和 /tmp）
 //   GET  /api/dirs               新建 pane 可选的目录：当前开着的、以前见过的、Claude 项目里的，按最近排序
+//   GET  /api/sessions?dir=…     这个目录下最近的 Claude 会话（新建页面「恢复会话」用）：标题、时间、分支、是否正在运行、在哪个 pane
 //   GET  /api/config             给前端的配置：新建 pane 的启动命令、开了哪些模块
 //   GET|POST /api/push/prefs     推送偏好：{stop} 回合结束是否也推
 //   WS   /api/preview             预览：电脑上无界面 Chrome 的画面（二进制 JPEG，前面一条 JSON 帧头）和操作通道
@@ -301,11 +302,12 @@ async function reconnect(pane) {
 // ---------- pane 管理 ----------
 // Claude 账号目录 → 启动命令（不同账号用不同的 wrapper，分叉时必须用同一个账号，不然找不到会话）
 const CLAUDE_WRAPPERS = config.claudeWrappers
+const claudeCommand = (configDir) => CLAUDE_WRAPPERS[path.basename(configDir || '')] || 'claude'
 function agentCommand(info, mode) {
   const id = info.session
   switch (info.agent) {
     case 'claude': {
-      const w = CLAUDE_WRAPPERS[path.basename(info.configDir || '')] || 'claude'
+      const w = claudeCommand(info.configDir)
       return mode === 'fork' ? `${w} --resume ${id} --fork-session` : w
     }
     case 'codex': return mode === 'fork' ? `codex fork ${id}` : 'codex'
@@ -316,10 +318,23 @@ function agentCommand(info, mode) {
 }
 const b64 = (s) => Buffer.from(String(s), 'utf8').toString('base64')
 const isId = (v) => /^\d{1,6}$/.test(String(v))
+const isSessionId = (v) => typeof v === 'string' && /^[0-9a-zA-Z-]{8,64}$/.test(v)
+const isDir = (v) => typeof v === 'string' && v.startsWith('/') && v.length <= 1024 && !/[\r\n]/.test(v)
+const dirSessions = async (dir) => JSON.parse((await bridge(`sessions ${b64(dir)}`)) || '[]')
+// 恢复某个 Claude 会话的启动命令：会话信息以电脑上查到的为准（不信前端），用它所在账号的 wrapper。
+// 会话还开在别处（另一个 pane、Claude 桌面应用）时两个进程会往同一个记录里写，改成带着上下文分叉一个新会话
+async function resumeCommand(dir, id) {
+  const s = (await dirSessions(dir)).find((x) => x.id === id)
+  if (!s) throw new Error('找不到这个会话')
+  return `${claudeCommand(s.configDir)} --resume ${id}${s.running ? ' --fork-session' : ''}`
+}
 const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms))
 async function manage(action, b) {
   if (action === 'spawn' || action === 'split') {
     if (typeof b.dir !== 'string' || !b.dir.startsWith('/') || b.dir.length > 1024) throw new Error('bad dir')
+    if (b.resume != null && !isSessionId(b.resume)) throw new Error('bad session')
+    // 先查好恢复命令再开 pane：会话找不到时不留下一个空 pane
+    const cmd = b.resume != null ? await resumeCommand(b.dir, b.resume) : typeof b.command === 'string' ? b.command.trim() : ''
     let out
     if (action === 'spawn') {
       if (b.window !== 'new' && !isId(b.window)) throw new Error('bad window')
@@ -331,7 +346,6 @@ async function manage(action, b) {
     const pane = out.trim()
     if (!isId(pane)) throw new Error(`unexpected: ${pane.slice(0, 80)}`)
     // 启动命令：等 shell 起来后像人一样敲进去（文字和回车分两次，跟手机发送一致）
-    const cmd = typeof b.command === 'string' ? b.command.trim() : ''
     if (cmd) {
       if (cmd.length > 500 || /[\r\n]/.test(cmd)) throw new Error('bad command')
       await sleepMs(900)
@@ -346,7 +360,7 @@ async function manage(action, b) {
     if (!isId(b.pane) || !['fork', 'new'].includes(b.mode) || !['right', 'bottom', 'tab'].includes(b.where)) throw new Error('bad request')
     const info = JSON.parse((await bridge(`session ${b.pane}`)) || '{}')
     if (!info.session && b.mode === 'fork') throw new Error('这个 pane 里还没找到会话')
-    if (info.session && !/^[0-9a-zA-Z-]{8,64}$/.test(info.session)) throw new Error('bad session')
+    if (info.session && !isSessionId(info.session)) throw new Error('bad session')
     const command = agentCommand(info, b.mode)
     if (!command) throw new Error(`${info.agent || '这个 agent'} 不支持分叉会话`)
     const pane = (await listPanes()).find((p) => String(p.pane) === String(b.pane))
@@ -648,6 +662,11 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, JSON.parse((await bridge(`ls ${b64(p)}`)) || '[]'))
     }
     if (url.pathname === '/api/dirs' && req.method === 'GET') return json(res, 200, await allDirs())
+    if (url.pathname === '/api/sessions' && req.method === 'GET') {
+      const dir = url.searchParams.get('dir')
+      if (!isDir(dir)) return json(res, 400, { error: 'bad dir' })
+      return json(res, 200, await dirSessions(dir))
+    }
     if (url.pathname === '/api/states' && req.method === 'GET') {
       return json(res, 200, push.states())
     }

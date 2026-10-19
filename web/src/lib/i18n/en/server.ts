@@ -12,6 +12,7 @@ export default {
   '连接中断，重连中': 'Connection lost, reconnecting',
   'pane 已关闭': 'Pane closed',
   '这个 pane 里还没找到会话': 'No session found in this pane yet',
+  '找不到这个会话': 'Session not found',
   '这个 agent 不支持分叉会话': "This agent doesn't support forking sessions",
   '{agent} 不支持分叉会话': "{agent} doesn't support forking sessions",
   '文件超过 25MB': 'File is larger than 25MB',
