@@ -378,36 +378,56 @@ def agent_pid(pane, agent, old_pid):
     return None
 
 
+def screen_tail(pane, n=14):
+    try:
+        lines = [l.rstrip() for l in cli("get-text", "--pane-id", str(pane)).splitlines() if l.strip()]
+        return "\n".join(lines[-n:])[-900:]
+    except Exception:
+        return ""
+
+
 def exit_agent(pane, info):
-    """让 agent 自己退出，等进程（按 PID）没了。不杀进程"""
+    """让 agent 自己退出，等进程（按 PID）没了。不杀进程。返回 (退了没有, 退不了时的屏幕末尾)"""
     pid = info["pid"]
     if info["agent"] == "claude":
-        send(pane, "\x03")  # 清掉输入框里没发的字，不然 /exit 会接在后面
-        time.sleep(0.4)
-        send(pane, "/exit")
-        time.sleep(0.25)
-        send(pane, "\r")
+        def keys(first):
+            if not first:
+                send(pane, "\x1b")  # 关掉可能开着的浮层（agents 面板、补全菜单之类）
+                time.sleep(0.3)
+            send(pane, "\x03")  # 清掉输入框里没发的字，不然 /exit 会接在后面
+            time.sleep(0.4)
+            send(pane, "/exit")
+            time.sleep(0.25)
+            send(pane, "\r")
 
-        # 有后台任务时 Claude 会问怎么处理：选「退出并停掉」（已经存了快照，起来后重建）。
-        # 绝不选「转到后台再退出」：那样会话还在后台进程里跑，再 resume 就是两个进程写同一个会话
+        # 有后台任务 / 定时任务时 Claude 会问怎么处理：选「退出并停掉」（已经存了快照，起来后重建）。
+        # 绝不选「转到后台再退出」：那样会话还在后台进程里跑，再 resume 就是两个进程写同一个会话。
+        # pane 矮、要列的任务多时，选项会被挤出屏幕（只看得到标题和 ↓），所以认标题也行：第 1 项总是「Exit and stop tasks」，按数字就能选
         def exited():
             if not alive(pid):
                 return True
             try:
-                m = re.search(r"(\d)\.\s+Exit and stop tasks", cli("get-text", "--pane-id", str(pane)))
+                text = cli("get-text", "--pane-id", str(pane))
             except Exception:
-                m = None
-            if m:
-                send(pane, m.group(1))
+                text = ""
+            m = re.search(r"(\d)\.\s+Exit and stop tasks", text)
+            if m or re.search(r"Background work is running|will stop when you exit", text):
+                send(pane, m.group(1) if m else "1")
                 time.sleep(1)
             return False
-        return wait(exited, 20, 0.5)
+
+        # 一轮没退出（8 秒）就再来一轮，最多三轮、共约 35 秒
+        for round_ in range(3):
+            keys(round_ == 0)
+            if wait(exited, 8 if round_ < 2 else 19, 0.5):
+                return True, ""
+        return False, screen_tail(pane)
     # Codex、cursor-agent：Ctrl-C 先清掉输入框，输入框空着时再按就退出。不敲任何文字（退出后会落到 shell 里）
     for _ in range(4):
         send(pane, "\x03")
         if wait(lambda: not alive(pid), 1.5, 0.2):
-            return True
-    return wait(lambda: not alive(pid), 15, 0.5)
+            return True, ""
+    return (True, "") if wait(lambda: not alive(pid), 15, 0.5) else (False, screen_tail(pane))
 
 
 def launch_cmd(info, wrapper, with_plugin):
@@ -446,8 +466,10 @@ def restart_worker(pane, opts):
     set_status(pane, snapshot=snap["files"]["json"], background=len(snap["background"]), crons=len(snap["crons"]), tasks=len(snap["tasks"]))
 
     set_status(pane, step="退出 agent")
-    if not exit_agent(pane, info):
-        raise RuntimeError(f"{info['agent']}（PID {info['pid']}）20 秒没退出，停在这里没继续；快照已保存")
+    ok, tail = exit_agent(pane, info)
+    if not ok:
+        # 带上屏幕末尾：下次排查有证据（退出时弹的东西不会写进会话记录）
+        raise RuntimeError(f"{info['agent']}（PID {info['pid']}）35 秒没退出，停在这里没继续；快照已保存。屏幕末尾：\n{tail}")
     wait(lambda: pt.agent_of(pt.fg_procs(pane)[0]) == "", 5)  # 等 shell 回到前台
     time.sleep(0.4)
 
