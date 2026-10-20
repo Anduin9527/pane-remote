@@ -33,6 +33,8 @@
 | `mac_lock` | 锁屏（**要你在手机上确认**） |
 | `list_panes` / `read_pane` | 看有哪些 pane、读别的 pane 最近的内容 |
 | `send_to_pane` | 往别的 pane 里打字（**要你在手机上确认**，不能发给自己） |
+| `report_incident` | 报告 pane-remote 自己的问题（结果不对、通知没到……），见 [问题报告](incidents.md) |
+| `incident_get` / `incident_update` | 修复问题的 agent 用：读简报、报进度 |
 
 skill（`agent/plugin/skills/pane-remote/SKILL.md`）告诉 agent 什么时候用这些：人不在电脑前又卡在决定上就用 `ask_phone`，别拿通知报流水账，回复照顾手机小屏，确认被拒绝了不许绕过。
 

@@ -33,6 +33,8 @@ The server types `~/.local/share/pane-remote/with-tools <original command>` into
 | `mac_lock` | lock the screen (**asks you to confirm on the phone**) |
 | `list_panes` / `read_pane` | list panes, read another pane's recent output |
 | `send_to_pane` | type into another pane (**asks you to confirm on the phone**; never its own pane) |
+| `report_incident` | report a problem with pane-remote itself (wrong result, notification never arrived, …); see [Incident reports](incidents.md) |
+| `incident_get` / `incident_update` | for agents fixing an incident: read the brief, report progress |
 
 The skill (`agent/plugin/skills/pane-remote/SKILL.md`) tells the agent when to use them: `ask_phone` when it is blocked on a decision and you are away from the Mac, no notifications for routine progress, replies that read well on a small screen, and never working around a declined confirmation.
 

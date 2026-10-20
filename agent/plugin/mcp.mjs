@@ -23,6 +23,9 @@ let paneErr = '' // 认 pane 失败的原因（写进启动日志）
 const PANE = /^\d+$/.test(process.env.WEZTERM_PANE || '') ? Number(process.env.WEZTERM_PANE) : paneFromTty()
 const AGENT = process.env.PANE_REMOTE_AGENT || 'claude'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+// 正常的拒绝（参数不对、没有这个 pane）：照常回给 agent，不算问题；别的出错会自动记成问题报告
+class UserError extends Error {}
+const FIXING = /^[0-9a-f]{12}$/.test(process.env.PANE_REMOTE_INCIDENT || '') ? process.env.PANE_REMOTE_INCIDENT : null // 这个会话是来修哪个问题的
 const b64 = (s) => Buffer.from(String(s), 'utf8').toString('base64')
 
 function bridge(cmd, input) {
@@ -45,11 +48,16 @@ function paneFromTty() {
   } catch (e) { paneErr = String(e.message || e).slice(0, 120) }
   return null
 }
-function emit(op, data) {
+function emit(op, data, kind = 'agent') {
   fs.mkdirSync(path.dirname(EVENTS), { recursive: true })
-  fs.appendFileSync(EVENTS, JSON.stringify({ t: Date.now() / 1000, pane: PANE, agent: AGENT, kind: 'agent', op, ...data }) + '\n')
+  fs.appendFileSync(EVENTS, JSON.stringify({ t: Date.now() / 1000, pane: PANE, agent: AGENT, kind, op, ...data }) + '\n')
 }
 const clip = (s, n) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, n)
+
+function incident(data) {
+  emit('report', data, 'incident')
+}
+const INCIDENTS = path.join(STATE, 'incidents')
 
 // 在手机上问一句、等回答。服务重启会丢掉还没答的问题，所以每 2 分钟重发一次（同一个 id，服务端按 id 去重）
 async function ask(question, options, timeoutSec, extra = {}) {
@@ -129,7 +137,7 @@ const TOOLS = {
     description: "Open a URL on the user's phone, in pane-remote's preview (a browser that runs on this Mac, so localhost / LAN dev servers work). Use after starting a dev server or producing an HTML report.",
     inputSchema: S({ url: { type: 'string', maxLength: 2000 } }, ['url']),
     run: ({ url }) => {
-      if (!/^(https?|file):\/\//.test(url)) throw new Error('only http(s):// and file:// URLs')
+      if (!/^(https?|file):\/\//.test(url)) throw new UserError('only http(s):// and file:// URLs')
       fs.appendFileSync(EVENTS, JSON.stringify({ t: Date.now() / 1000, pane: PANE, agent: AGENT, kind: 'open', msg: url }) + '\n')
       return 'sent: opens in the preview if it is open, otherwise shows a prompt / notification on the phone'
     },
@@ -158,7 +166,7 @@ const TOOLS = {
     description: "Read the last lines of another pane's screen/scrollback as plain text.",
     inputSchema: S({ pane: { type: 'integer', minimum: 0 }, lines: { type: 'integer', minimum: 1, maximum: 2000, description: 'default 80' } }, ['pane']),
     run: ({ pane, lines }) => {
-      if (!panes().some((p) => p.pane === pane)) throw new Error('no such pane')
+      if (!panes().some((p) => p.pane === pane)) throw new UserError('no such pane')
       return bridge(`text ${pane} ${lines || 80}`).replace(/\n{3,}/g, '\n\n').trimEnd()
     },
   },
@@ -167,13 +175,51 @@ const TOOLS = {
     inputSchema: S({ pane: { type: 'integer', minimum: 0 }, text: { type: 'string', maxLength: 4000 }, enter: { type: 'boolean', description: 'press Enter after the text (default true)' } }, ['pane', 'text']),
     run: async ({ pane, text, enter }) => {
       const p = panes().find((x) => x.pane === pane)
-      if (!p) throw new Error('no such pane')
-      if (p.self) throw new Error('refusing to type into your own pane')
+      if (!p) throw new UserError('no such pane')
+      if (p.self) throw new UserError('refusing to type into your own pane')
       const ok = await confirm(`往 #${pane} ${clip(p.title, 40)} 发送${enter === false ? '' : '并回车'}：\n${String(text).slice(0, 400)}`)
       if (!ok) return 'user declined or did not answer; nothing sent'
       bridge(`send ${pane} ${b64(text)}`)
       if (enter !== false) { await sleep(60); bridge(`send ${pane} ${b64('\r')}`) }
       return 'sent'
+    },
+  },
+  report_incident: {
+    description: "Report a problem with pane-remote itself (not with the user's project): a pane-remote tool failed or returned something wrong, a phone notification or question never arrived, the phone UI or a restart misbehaved, or the user told you pane-remote did something unexpected. The report is stored, deduplicated and may be pushed to the user's phone with an offer to fix it.",
+    inputSchema: S({
+      title: { type: 'string', maxLength: 120, description: 'one line: what is wrong' },
+      what_happened: { type: 'string', maxLength: 3000, description: 'what you did and what actually happened (tool name, arguments, output, error text)' },
+      expected: { type: 'string', maxLength: 1000, description: 'what should have happened' },
+      component: { type: 'string', maxLength: 60, description: 'e.g. ask_phone, notify_phone, read_pane, restart, phone-ui, preview' },
+      severity: { type: 'string', enum: ['high', 'normal', 'low'] },
+    }, ['title', 'what_happened']),
+    run: ({ title, what_happened, expected, component, severity }) => {
+      incident({ source: 'agent', component: clip(component || 'agent', 60), ikind: 'report', title: clip(title, 120), msg: clip(title, 300),
+        detail: `${String(what_happened).slice(0, 3000)}${expected ? `\n\n预期：${String(expected).slice(0, 1000)}` : ''}`, severity: severity || 'normal', fixing: FIXING || undefined })
+      return FIXING ? `noted on incident ${FIXING} (you are fixing it)` : 'reported; the user can review it on the phone and choose to have it fixed'
+    },
+  },
+  incident_get: {
+    description: 'Read the brief of a pane-remote incident you were asked to fix ([pane-remote incident <id>]): samples, context and what to do.',
+    inputSchema: S({ id: { type: 'string', pattern: '^[0-9a-f]{12}$' } }, ['id']),
+    run: ({ id }) => {
+      if (!/^[0-9a-f]{12}$/.test(id)) throw new UserError('bad id')
+      try { return fs.readFileSync(path.join(INCIDENTS, `${id}.md`), 'utf8') } catch { throw new UserError('no brief for this incident on this Mac') }
+    },
+  },
+  incident_update: {
+    description: 'Report progress on a pane-remote incident you are fixing. status: investigating (started), needs-confirm (waiting for the user, e.g. before deploy/push/PR), fixed (include branch or pr_url), failed, wontfix. The user gets a push for everything except investigating.',
+    inputSchema: S({
+      id: { type: 'string', pattern: '^[0-9a-f]{12}$' },
+      status: { type: 'string', enum: ['investigating', 'needs-confirm', 'fixed', 'failed', 'wontfix'] },
+      note: { type: 'string', maxLength: 2000, description: 'one or two sentences: cause, what changed, how it was verified' },
+      branch: { type: 'string', maxLength: 100 },
+      pr_url: { type: 'string', maxLength: 300 },
+    }, ['id', 'status', 'note']),
+    run: ({ id, status, note, branch, pr_url }) => {
+      if (!/^[0-9a-f]{12}$/.test(id)) throw new UserError('bad id')
+      emit('update', { id, status, note: String(note).slice(0, 2000), branch, pr: pr_url }, 'incident')
+      return `recorded: ${status}`
     },
   },
 }
@@ -200,6 +246,8 @@ async function handle(m) {
         const r = await t.run(m.params.arguments || {})
         return out({ id: m.id, result: { content: [{ type: 'text', text: typeof r === 'string' ? r : JSON.stringify(r, null, 1) }] } })
       } catch (e) {
+        // 意外的出错（bridge 失败、代码错误）自动记一条问题报告；正常的拒绝（UserError）不记
+        if (!(e instanceof UserError)) incident({ source: 'mac', component: 'mcp', ikind: m.params.name, msg: `${m.params.name}: ${String(e.message || e).slice(0, 500)}`, detail: e.stack, fixing: FIXING || undefined })
         return out({ id: m.id, result: { isError: true, content: [{ type: 'text', text: String(e.message || e) }] } })
       }
     }

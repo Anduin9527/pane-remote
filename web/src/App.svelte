@@ -3,6 +3,9 @@
   import { Toaster } from '$lib/components/ui/sonner'
   import { toast } from 'svelte-sonner'
   import Bell from '@lucide/svelte/icons/bell'
+  import TriangleAlert from '@lucide/svelte/icons/triangle-alert'
+  import IncidentSheet from '$lib/components/IncidentSheet.svelte'
+  import { incidents } from '$lib/incidents.svelte'
   import BellOff from '@lucide/svelte/icons/bell-off'
   import MoveHorizontal from '@lucide/svelte/icons/move-horizontal'
   import Columns3 from '@lucide/svelte/icons/columns-3'
@@ -61,6 +64,8 @@
   let notifOpen = $state(false)
   let keysOpen = $state(false)
   let inboxOpen = $state(false)
+  let incidentOpen = $state(false)
+  const openIncident = (id = '') => { incidents.focus = id; incidentOpen = true }
   let claudeOpen = $state(false)
   let cronOpen = $state(false)
   // 看屏幕模块：全屏盖在最上面，不算一个视图（关掉回到原来的页面）；noVNC 比较大，打开时才加载
@@ -126,6 +131,11 @@
     const c = new URLSearchParams(location.search).get('cursor')
     if (c && /^[0-9a-f-]{8,64}$/i.test(c)) { selectCursorSession(c); mode = 'cursor'; history.replaceState(null, '', location.pathname) }
   }
+  // 从问题报告的通知点进来会带 ?incident=编号
+  {
+    const id = new URLSearchParams(location.search).get('incident')
+    if (id && /^[0-9a-f]{12}$/.test(id)) { history.replaceState(null, '', location.pathname); setTimeout(() => openIncident(id), 300) }
+  }
   // 从「电脑要打开网页」的通知点进来会带 ?preview=…。这个地址谁都能构造（别的网页可以链接过来），
   // 所以不直接打开，要你点一下确认：预览浏览器跑在电脑上，能访问电脑的本机服务和内网
   {
@@ -153,6 +163,7 @@
     const onSw = (e: MessageEvent) => {
       if (e.data?.type === 'open-preview') return previewUrl(e.data.url)
       if (e.data?.type === 'open-cursor') { selectCursorSession(e.data.id); mode = 'cursor'; return }
+      if (e.data?.type === 'open-incident') return openIncident(e.data.id)
       if (e.data?.type === 'open-pane') loadPanes().catch(() => {}).finally(() => select(e.data.pane))
     }
     navigator.serviceWorker?.addEventListener('message', onSw)
@@ -221,6 +232,9 @@
       <span class="min-w-0 truncate font-semibold">{paneName()}</span>
       <ChevronDown class="size-4 flex-none text-muted-foreground" />
     </button>
+    {#if incidents.open}
+      <button class="flex flex-none items-center gap-1 rounded-full bg-destructive/90 px-2 text-[11px] leading-5 font-semibold text-white" title={t('pane-remote 发现的问题')} onclick={() => openIncident()}><TriangleAlert class="size-3" />{incidents.open}</button>
+    {/if}
     {#if waitingOthers()}
       <button class="flex-none rounded-full bg-warn px-2 text-[11px] leading-5 font-semibold text-black" title={t('别的 pane / Cursor 会话在等你操作')} onclick={() => (inboxOpen = true)}>{t('{n} 待办', { n: waitingOthers() })}</button>
     {/if}
@@ -237,6 +251,7 @@
         </div>
         <DropdownMenu.Item onSelect={(e) => { e.preventDefault(); prefs.fit = !prefs.fit }}><MoveHorizontal />{t('适配屏幕宽度')}<span class="ml-auto text-xs {prefs.fit ? 'text-ok' : 'text-muted-foreground'}">{prefs.fit ? t('开') : t('关')}</span></DropdownMenu.Item>
         <DropdownMenu.Item onSelect={() => openWidth(ui.panes.find((p) => String(p.pane) === ui.current))}><Columns3 />{t('电脑上的宽度')}<span class="ml-auto text-xs text-muted-foreground">{t('{n} 列', { n: ui.cols })}</span></DropdownMenu.Item>
+        <DropdownMenu.Item onSelect={() => openIncident()}><TriangleAlert />{t('问题报告')}<span class="ml-auto text-xs text-muted-foreground">{incidents.open ? t('{n} 个待处理', { n: incidents.open }) : t('报告问题')}</span></DropdownMenu.Item>
         <DropdownMenu.Item onSelect={() => (notifOpen = true)}>{#if pushOn}<Bell />{:else}<BellOff />{/if}{t('推送通知')}<span class="ml-auto text-xs text-muted-foreground">{pushOn ? t('已开') : t('未开')}</span></DropdownMenu.Item>
         <DropdownMenu.Separator />
         <DropdownMenu.Item onSelect={() => setLang(isEn ? 'zh' : 'en')}><Languages />{t('语言')}<span class="ml-auto text-xs text-muted-foreground">{isEn ? 'English → 中文' : '中文 → English'}</span></DropdownMenu.Item>
@@ -244,6 +259,9 @@
     </DropdownMenu.Root>
   {:else}
     <span class="min-w-0 flex-1 truncate font-semibold">{mode === 'cursor' ? t('Cursor · 电脑上的 IDE') : t('预览 · 电脑上的浏览器')}</span>
+    {#if incidents.open}
+      <button class="flex flex-none items-center gap-1 rounded-full bg-destructive/90 px-2 text-[11px] leading-5 font-semibold text-white" title={t('pane-remote 发现的问题')} onclick={() => openIncident()}><TriangleAlert class="size-3" />{incidents.open}</button>
+    {/if}
     {#if waitingAll()}
       <button class="flex-none rounded-full bg-warn px-2 text-[11px] leading-5 font-semibold text-black" onclick={() => (inboxOpen = true)}>{t('{n} 待办', { n: waitingAll() })}</button>
     {/if}
@@ -318,6 +336,7 @@
 <KeyEditor bind:open={keysOpen} />
 <Inbox bind:open={inboxOpen} oncursor={(id) => { selectCursorSession(id); mode = 'cursor' }} />
 <AgentAsk />
+<IncidentSheet bind:open={incidentOpen} />
 <ClaudeSheet bind:open={claudeOpen} />
 <CronSheet bind:open={cronOpen} />
 <Reader bind:open={readerOpen} onpreview={() => (mode = 'preview')} />

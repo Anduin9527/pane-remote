@@ -33,6 +33,7 @@
 | 看屏幕 | 手机上看和操作电脑屏幕（一块显示器或单个窗口）：点、拖、滚动、触控板模式、打字（含中文）、多指手势、后台打开 app。登录走系统自带的屏幕共享，画面由 ScreenCaptureKit 录、在电脑上转码后再传；还能关窗口、退出 app、改窗口大小、点到输入框自动弹键盘、锁屏时打字 | `pane-remote enable screen`，见 [docs/screen.md](docs/screen.md) |
 | 这台电脑 | 手机上看电脑的性能（CPU、内存、占用最多的进程），让电脑用自带的 say 念一段话 | `pane-remote enable mac`，见 [docs/mac.md](docs/mac.md) |
 | Agent 工具 | 从手机上开的 Claude Code / Codex / cursor-agent 加载 pane-remote 插件：做完推送、卡住了在手机上问你、把网页开到手机预览；开着的会话能「重启并注入」，重启前存快照、起来后恢复后台任务 | 默认可用，见 [docs/agent.md](docs/agent.md) |
+| 问题报告 | 服务端、手机、电脑端脚本和 agent 发现的异常收到一处去重计数，推送问你要不要修；一键交给绑定的会话或新开的 agent 修，修完回报 | 默认可用，见 [docs/incidents.md](docs/incidents.md) |
 | 中转模式 | 电脑本身跑不了 Tailscale 时，经一台在你 tailnet 里的服务器转发 | 见 [docs/relay.md](docs/relay.md) |
 | 持久化 pane | WezTerm 窗口关了 pane 也不丢，手机照样能连 | 见 [docs/advanced.md](docs/advanced.md) |
 

@@ -1,6 +1,6 @@
 ---
 name: pane-remote
-description: You are running inside pane-remote, where the user drives this terminal from their phone. Read this at session start, and whenever you need the user while they may be away from the Mac, want to show them a page, act on another pane, or resume after a pane-remote restart.
+description: You are running inside pane-remote, where the user drives this terminal from their phone. Read this at session start, and whenever you need the user while they may be away from the Mac, want to show them a page, act on another pane, resume after a pane-remote restart, report a pane-remote problem, or are asked to fix a pane-remote incident.
 ---
 
 # Running under pane-remote
@@ -20,6 +20,25 @@ The user controls this terminal (a WezTerm pane on their Mac) from a phone app c
 - `mac_perf` gives CPU, memory and top processes. `mac_say` speaks text aloud; use it only if the user asked for audible alerts.
 - `list_panes` / `read_pane` let you look at other terminals, for example a dev server's log or another agent's progress.
 - `send_to_pane` types into another pane and `mac_lock` locks the screen. Both ask the user to confirm on the phone and return without acting if they decline or don't answer. Never try to work around a declined confirmation.
+
+## Reporting problems with pane-remote
+Use `report_incident` when pane-remote itself misbehaves. Examples: a pane-remote tool errors or returns something that cannot be right, a notification or question never reaches the phone, a restart leaves the session broken, or the user says the phone app did something wrong.
+- Say what you called, with what arguments, what came back, and what you expected.
+- Report pane-remote problems only. Problems in the user's own project are not incidents.
+- Unexpected tool errors are already recorded automatically. Report the cases a program cannot judge: a call that "succeeded" but with the wrong result.
+
+## Fixing a pane-remote incident
+A message starting with `[pane-remote incident <id>]` asks you to fix a problem in pane-remote's own code.
+1. Read the brief with `incident_get` (or the file named in the message). Then call `incident_update(status="investigating")`.
+2. Work in the pane-remote repository on a separate branch or git worktree, for example `fix/incident-<id>`. Don't edit the checkout that is running. Don't touch the user's other work in progress.
+3. Reproduce the problem, fix it, and verify the fix with the repo's own tests or checks. Follow the repo's instructions (CLAUDE.md / README / docs).
+4. **Ask before anything outward-facing or live**: deploying, restarting services, pushing, opening a PR, merging. Use `ask_phone` when the user is away. Call `incident_update(status="needs-confirm")` while you wait.
+5. Finish with `incident_update`:
+   - `fixed`, with the branch or `pr_url` and one or two sentences on the cause and how you verified it;
+   - otherwise `failed` / `wontfix` with the reason.
+   
+   If the repo has a remote you are allowed to push to, push the branch and open a PR after the user agrees. Otherwise leave the commit on the branch and say so.
+6. If you were already in the middle of other work for the user when the message arrived, finish or park that first and tell the user you are switching to the incident.
 
 ## After a pane-remote restart
 If the first message of the session starts with `[pane-remote restore]`, the session was restarted from the phone to load these tools. That message lists what was running before the restart. Follow its instructions:

@@ -23,6 +23,11 @@ const PREFS_FILE = path.join(DATA, 'prefs.json')
 let prefs = { stop: true } // stop：Claude / Codex 一轮做完也推送
 try { prefs = { ...prefs, ...JSON.parse(fs.readFileSync(PREFS_FILE, 'utf8')) } } catch {}
 export const getPrefs = () => prefs
+// 发现的问题（推送失败、扫描出错、事件到得太晚）交给服务端记成问题报告（incidents.mjs）
+let problem = () => {}
+// 电脑睡着 / 断网时 ssh 连不上：正常情况，不算问题
+const offline = (m) => /Connection refused|Connection timed out|connect to host|kex_exchange|Connection closed|Connection reset|timed out|Operation timed out|No route to host|Network is unreachable/i.test(String(m))
+export function onProblem(fn) { problem = fn }
 /** 电脑键鼠最近一次空闲秒数（tails 扫描时更新）：人在电脑前就不推 */
 export const macIdle = () => lastIdle
 export function setPrefs(p) {
@@ -56,7 +61,8 @@ export async function notify(payload) {
     if (r.status === 'rejected') {
       const code = r.reason?.statusCode
       console.log(`push failed ${code || ''} ${r.reason?.body || r.reason?.message || ''}`.trim())
-      if (code === 404 || code === 410) gone.push(subs[i].endpoint)
+      if (code === 404 || code === 410) gone.push(subs[i].endpoint) // 订阅过期：正常情况，不算问题
+      else problem({ component: 'push', kind: `push-${code || 'error'}`, title: '推送发不出去', msg: `push failed ${code || ''} ${String(r.reason?.body || r.reason?.message || '').slice(0, 300)}` })
     }
   })
   if (gone.length) { subs = subs.filter((s) => !gone.includes(s.endpoint)); saveSubs() }
@@ -161,7 +167,7 @@ async function pushFor(pane, isWatching, payload, why) {
 
 // hook（电脑上的 pane-event）记下的事件：回合结束、需要操作、用户发了新输入
 let eventsOffset = null
-async function readEvents(bridge, isWatching, onOpen, onAgent) {
+async function readEvents(bridge, isWatching, onOpen, onAgent, onIncident) {
   const out = await bridge(`events ${eventsOffset ?? 0}`)
   const nl = out.indexOf('\n')
   const size = Number(out.slice(0, nl < 0 ? undefined : nl))
@@ -174,6 +180,9 @@ async function readEvents(bridge, isWatching, onOpen, onAgent) {
     try { ev = JSON.parse(line) } catch { continue }
     if (ev.kind === 'open') { onOpen?.(ev.msg); continue }
     if (ev.kind === 'agent') { onAgent?.(ev); continue }
+    if (ev.kind === 'incident') { onIncident?.(ev); continue }
+    // agent 的提问、问题报告这类事件该在几秒内被读到：晚了 1 分钟以上说明扫描卡住过
+    if (ev.t && Date.now() / 1000 - ev.t > 60 && (ev.kind === 'stop' || ev.kind === 'notify')) problem({ component: 'monitor', kind: 'events-late', title: '事件读得太晚', msg: `event ${ev.kind} read ${Math.round(Date.now() / 1000 - ev.t)}s late` })
     const pane = String(ev.pane)
     const st = state.get(pane) || blank(Date.now())
     state.set(pane, st)
@@ -188,7 +197,7 @@ async function readEvents(bridge, isWatching, onOpen, onAgent) {
   }
 }
 
-export function startMonitor({ bridge, isWatching, active, onOpen, onAgent }) {
+export function startMonitor({ bridge, isWatching, active, onOpen, onAgent, onIncident }) {
   let busy = false
   setInterval(async () => {
     // 有推送订阅、或手机最近在用（要看状态列表）才扫，不然不打扰电脑
@@ -230,9 +239,10 @@ export function startMonitor({ bridge, isWatching, active, onOpen, onAgent }) {
         state.set(pane, st)
       }
       for (const k of state.keys()) if (!seen.has(k)) state.delete(k)
-      await readEvents(bridge, isWatching, onOpen, onAgent).catch((e) => console.log(`events: ${e.message}`))
+      await readEvents(bridge, isWatching, onOpen, onAgent, onIncident).catch((e) => { console.log(`events: ${e.message}`); if (!offline(e.message)) problem({ component: 'monitor', kind: 'events', msg: `events: ${e.message}` }) })
     } catch (e) {
       console.log(`monitor: ${e.message}`)
+      if (!offline(e.message)) problem({ component: 'monitor', kind: 'scan', msg: `monitor: ${e.message}` })
     } finally {
       busy = false
     }

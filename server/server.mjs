@@ -33,6 +33,7 @@ import path from 'node:path'
 import { execFile, spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import * as push from './push.mjs'
+import * as incidents from './incidents.mjs'
 import { initCursor, cursorStream, cursorCmd, cursorSummary } from './cursor.mjs'
 import { createScreen } from './screen.mjs'
 import { createMac } from './mac.mjs'
@@ -283,6 +284,16 @@ function broadcast(w, event, data) {
 // ---------- 手动重连 ----------
 // 手机上点「重连」：自动重连之外的兜底。关掉这个 pane 的画面通道（在看的手机会自动连回来、拿到一个全新的通道），
 // 清掉对话记录和定时任务缓存；relay 模式下电脑那边连不通时再把 ssh 共享连接整个重建
+// 同一个 pane 5 分钟里重连超过 8 次：画面流有问题（断言 / 异常模式检测）
+const reconnects = new Map()
+function noteReconnect(pane, mac) {
+  const t = Date.now()
+  const r = [...(reconnects.get(pane) || []).filter((x) => t - x < 300000), t]
+  reconnects.set(pane, r)
+  if (r.length > 8) incidents.record({ source: 'server', component: 'stream', kind: 'reconnect-storm', title: '画面流频繁重连', msg: `pane ${pane} 5 分钟内重连 ${r.length} 次（mac ${mac}）`, ctx: { pane: Number(pane) } })
+  // 手机在用、却恢复不了到电脑的连接（电脑睡着时也会这样：只按次数推，不算严重）
+  if (!mac.startsWith('ok') && !mac.endsWith('→ ok')) incidents.record({ source: 'server', component: 'tunnel', kind: 'reconnect-failed', title: '到电脑的连接恢复不了', msg: `reconnect: mac ${mac}` })
+}
 async function reconnect(pane) {
   const w = watchers.get(pane)
   if (w) {
@@ -302,6 +313,7 @@ async function reconnect(pane) {
     try { await bridge('list'); mac += ' → ok' } catch (e2) { mac += ` → still failing: ${e2.message}` }
   }
   console.log(`reconnect pane ${pane}: watcher ${w ? 'restarted' : 'none'}, mac ${mac}`)
+  noteReconnect(pane, mac)
   return { ok: true, mac }
 }
 
@@ -725,6 +737,11 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/states' && req.method === 'GET') {
       return json(res, 200, withAsks(push.states(), url.searchParams.has('test')))
     }
+    if (url.pathname === '/api/incidents' || url.pathname.startsWith('/api/incidents/')) {
+      const sub = url.pathname.slice('/api/incidents'.length).replace(/^\//, '')
+      const b = req.method === 'POST' ? JSON.parse((await readBody(req, 16 << 10)) || '{}') : {}
+      try { return json(res, 200, await incidents.api(req.method, sub, b, url.searchParams)) } catch (e) { return json(res, e.message === 'not found' ? 404 : 400, { error: e.message }) }
+    }
     if (url.pathname === '/api/agent' && req.method === 'GET') {
       const pane = url.searchParams.get('pane')
       if (!isId(pane)) return json(res, 400, { error: 'bad pane' })
@@ -776,6 +793,12 @@ const server = http.createServer(async (req, res) => {
       // 手机端把报错发回来，记进服务日志
       const body = (await readBody(req, 16 << 10)).slice(0, 4000)
       console.log(`[client] ${req.headers['user-agent'] || ''} ${body.replace(/\s+/g, ' ')}`)
+      // 脚本错误、未处理的 Promise、页面卡住、发送失败记成问题报告（发送失败常是网络抖动：只按次数阈值推）
+      try {
+        const c = JSON.parse(body)
+        const sev = { error: 'normal', rejection: 'normal', stuck: 'high', 'send-fail': 'low' }[c.kind]
+        if (sev) incidents.record({ source: 'phone', component: c.kind === 'send-fail' ? 'send' : 'web', kind: c.kind, msg: String(c.msg || '').split('\n')[0], detail: String(c.msg || ''), severity: sev, ctx: { ua: String(req.headers['user-agent'] || '').slice(0, 160), ...(Number.isInteger(c.pane) ? { pane: c.pane } : {}) } })
+      } catch {}
       return json(res, 200, { ok: true })
     }
     if (req.method !== 'GET') return json(res, 405, { error: 'method' })
@@ -809,6 +832,8 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': type, 'content-length': st.size, etag, 'cache-control': 'no-cache' })
     fs.createReadStream(file).pipe(res)
   } catch (e) {
+    // 程序错误（不是参数不对这类正常拒绝）记成问题报告
+    if (incidents.isProgramError(e)) incidents.record({ source: 'server', component: `api ${url.pathname.replace(/\/[0-9a-f]{12}(?=\/|$)/, '/:id')}`, kind: e.name || 'Error', msg: e.message, detail: e.stack, severity: e instanceof TypeError || e instanceof ReferenceError ? 'high' : 'normal' })
     json(res, 502, { error: e.message })
   }
 })
@@ -896,9 +921,34 @@ if (config.modules.cursor) initCursor({
   },
 })
 
+incidents.initIncidents({
+  dataDir: config.dataDir,
+  notify: push.notify,
+  bridge,
+  manage,
+  listPanes,
+  injectCommand,
+  claudeCommand,
+  defaultClaude: () => Object.values(CLAUDE_WRAPPERS)[0] || 'claude',
+  isTestPane: testPane,
+})
+// 进程级异常：先同步写盘再按原样退出（systemd / launchd 会拉起来）；未处理的 Promise 只记不退
+process.on('uncaughtException', (e) => {
+  incidents.record({ source: 'server', component: 'process', kind: 'uncaughtException', msg: e?.message || String(e), detail: e?.stack, severity: 'high' })
+  incidents.flush()
+  console.error(e)
+  process.exit(1)
+})
+process.on('unhandledRejection', (e) => {
+  console.error('unhandledRejection', e)
+  incidents.record({ source: 'server', component: 'process', kind: 'unhandledRejection', msg: e?.message || String(e), detail: e?.stack, severity: 'high' })
+})
+push.onProblem((p) => incidents.record({ source: 'server', ...p }))
+
 push.startMonitor({
   onOpen,
   onAgent,
+  onIncident: incidents.onMacEvent,
   bridge,
   isWatching: (pane) => (watchers.get(String(pane))?.clients.size || 0) > 0,
   active: () => viewing() || Date.now() - lastApi < 120000,

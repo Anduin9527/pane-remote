@@ -496,9 +496,49 @@ def restart_worker(pane, opts):
     set_status(pane, step="完成", done=True, injected=inject, pid=new.get("pid"))
 
 
+def available():
+    """电脑上装了哪些 agent（修问题时选 agent 用）"""
+    import shutil
+    path = os.pathsep.join([os.path.join(HOME, ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin", os.environ.get("PATH", "")])
+    return [a for a in AGENTS if shutil.which(a, path=path)]
+
+
+def locate(sid):
+    """某个会话正在哪个 pane 里跑、忙不忙（测试 workspace 不算）"""
+    try:
+        panes = json.loads(cli("list", "--format", "json"))
+    except Exception:
+        return {}
+    for p in panes:
+        if p.get("workspace") == "pane-remote-test":
+            continue
+        try:
+            info = inspect(str(p["pane_id"]))
+        except Exception:
+            continue
+        if info.get("session") == sid:
+            return {"pane": p["pane_id"], "status": info.get("status"), "agent": info.get("agent")}
+    return {}
+
+
+def incident(component, kind, msg, severity="normal"):
+    """电脑端发现的问题：写进 events.jsonl（kind=incident），服务端读走记成问题报告"""
+    try:
+        with open(os.path.join(HOME, ".local/state/pane-remote/events.jsonl"), "a") as f:
+            # kind 是事件类型（incident），问题本身的类型放 ikind
+            f.write(json.dumps({"t": time.time(), "kind": "incident", "op": "report", "source": "mac", "component": component, "ikind": kind,
+                                "msg": msg[:2000], "severity": severity}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     pane = sys.argv[2] if len(sys.argv) > 2 else ""
+    if cmd == "available":
+        return print(json.dumps(available()))
+    if cmd == "locate":
+        return print(json.dumps(locate(pane)))
     if not pane.isdigit():
         sys.exit("bad pane")
     if cmd == "inspect":
@@ -525,6 +565,9 @@ def main():
             restart_worker(pane, opts)
         except Exception as e:
             set_status(pane, error=str(e), done=True)
+            # 正常的拒绝（在干活、不是 agent）不算问题；别的（退不出、起不来、代码出错）记成问题报告
+            if not re.match(r"(agent 正在干活|这个 pane 里没有认得的)", str(e)):
+                incident("pane-agent", "restart", f"重启并注入失败（pane {pane}）：{e}", "high" if not isinstance(e, RuntimeError) else "normal")
     elif cmd == "restart-status":
         try:
             print(open(status_path(pane)).read())

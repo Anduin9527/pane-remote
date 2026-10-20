@@ -6,6 +6,7 @@
   import { toast } from 'svelte-sonner'
   import { manage, sendRaw, postJson } from '$lib/api'
   import { prefs } from '$lib/prefs.svelte'
+  import { incidents, setFixer, pollIncidents } from '$lib/incidents.svelte'
   import { ui, loadPanes, select, agentName } from '$lib/session.svelte'
   import { t, tr } from '$lib/i18n'
 
@@ -80,6 +81,20 @@
     }
   }
   $effect(() => () => clearTimeout(pollTimer))
+
+  // 设为问题修复会话：pane-remote 自己出问题时交给这个会话（按会话 ID 认，重启后也认得）
+  const isBound = $derived(!!ui.claude?.session && incidents.config?.bound?.session === ui.claude.session)
+  $effect(() => { if (open) pollIncidents(false) })
+  async function bindFixer() {
+    const c = ui.claude
+    if (!c?.session) return
+    try {
+      await setFixer(isBound ? { bound: null, fixer: incidents.config?.fixer === 'bound' ? 'auto' : incidents.config?.fixer } : { bound: { session: c.session, agent: c.agent, cwd: c.cwd, configDir: c.configDir, label: `#${ui.current} ${ui.title || ''}`.trim() } })
+      toast(isBound ? t('已设为修复会话') : t('已解除'))
+    } catch (e) {
+      toast.error(t('没成功：{msg}', { msg: tr((e as Error).message) }))
+    }
+  }
 </script>
 
 <Drawer.Root bind:open>
@@ -122,6 +137,12 @@
           <p class="text-xs text-muted-foreground">{t('同一个会话原地重启，上下文不丢。重启前会记下后台命令、子代理、定时任务，起来后只读的自动重建，会改东西的先问你。输入框里没发出去的字会被清掉。')}</p>
         {/if}
       </section>
+      {#if ui.claude?.session && ui.claude.cwd}
+      <section class="grid gap-1.5">
+        <span class="text-sm font-medium">{t('问题修复')}<span class="ml-1.5 text-xs font-normal text-muted-foreground">{t('pane-remote 自己出问题时交给谁修')}</span></span>
+        <Button variant="secondary" onclick={bindFixer}>{isBound ? t('✓ 这是修复会话（点一下解除）') : t('设为修复会话')}</Button>
+      </section>
+      {/if}
       {/if}
       {#if COMMANDS.length}
       <section class="grid gap-2">
