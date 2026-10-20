@@ -17,6 +17,7 @@
   type Msg = { id: string; role: 'user' | 'assistant'; ts: string; parts: Part[] }
   // 每个 pane 的对话缓存（模块级，组件重建也在）：切回来立刻显示，后台再刷新
   const cache = ((globalThis as any).__chatCache ??= new Map<string, Msg[]>()) as Map<string, Msg[]>
+  const etags = ((globalThis as any).__chatEtags ??= new Map<string, string>()) as Map<string, string>
   let msgs = $state<Msg[]>([])
   let loaded = $state(false)
   let error = $state('')
@@ -54,10 +55,15 @@
     const pane = ui.current
     if (!pane || document.visibilityState !== 'visible') return
     try {
-      const r = await fetch(`api/transcript?pane=${pane}&n=80`, { cache: 'no-store' })
+      // 带上次的 ETag：没变服务端回 304、不再重发几百 KB
+      const tag = etags.get(pane)
+      const r = await fetch(`api/transcript?pane=${pane}&n=80`, { cache: 'no-store', headers: tag && cache.has(pane) ? { 'if-none-match': tag } : {} })
+      if (r.status === 304) { if (pane === ui.current) { error = ''; loaded = true } return }
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`)
       const d: Msg[] = await r.json()
       if (pane !== ui.current) return
+      const et = r.headers.get('etag')
+      if (et) etags.set(pane, et)
       error = ''
       const next = JSON.stringify(d.map((m) => [m.id, m.parts.length, m.parts.at(-1)]))
       loaded = true

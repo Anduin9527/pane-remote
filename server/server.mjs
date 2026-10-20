@@ -34,6 +34,7 @@ import { createScreen } from './screen.mjs'
 import { createMac } from './mac.mjs'
 import { WebSocketServer } from 'ws'
 import zlib from 'node:zlib'
+import crypto from 'node:crypto'
 import { config, APP_DIR, CONFIG_PATH } from './config.mjs'
 
 const PORT = config.port
@@ -517,6 +518,26 @@ const previewSend = preview.send
 const gzCache = new Map()
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json', '.woff2': 'font/woff2', '.ico': 'image/x-icon' }
 
+// 对话记录动辄几百 KB、手机每 2 秒拉一次：没变就回 304，变了也 gzip 再发（VPS 出口只有约 0.48MB/s，
+// 以前长会话一直全量重发，把同一条线路上的画面流和输入都挤卡了）。消息数组没变时对象不变，按它缓存
+const transcriptBodies = new WeakMap()
+function sendTranscript(req, res, messages) {
+  let b = transcriptBodies.get(messages)
+  if (!b) {
+    const raw = Buffer.from(JSON.stringify(messages))
+    b = { raw, gz: zlib.gzipSync(raw, { level: 6 }), etag: `"${crypto.createHash('sha1').update(raw).digest('base64url')}"` }
+    transcriptBodies.set(messages, b)
+  }
+  const head = { 'content-type': 'application/json', 'cache-control': 'no-store', etag: b.etag }
+  if (req.headers['if-none-match'] === b.etag) { res.writeHead(304, head); return res.end() }
+  if (/\bgzip\b/.test(req.headers['accept-encoding'] || '')) {
+    res.writeHead(200, { ...head, 'content-encoding': 'gzip', 'content-length': b.gz.length, vary: 'accept-encoding' })
+    return res.end(b.gz)
+  }
+  res.writeHead(200, { ...head, 'content-length': b.raw.length })
+  res.end(b.raw)
+}
+
 function json(res, code, body) {
   res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' })
   res.end(JSON.stringify(body))
@@ -642,7 +663,7 @@ const server = http.createServer(async (req, res) => {
       const pane = url.searchParams.get('pane')
       const n = Math.min(200, Number(url.searchParams.get('n')) || 60)
       if (!/^\d{1,6}$/.test(pane || '')) return json(res, 400, { error: 'bad pane' })
-      return json(res, 200, await transcript(pane, n))
+      return sendTranscript(req, res, await transcript(pane, n))
     }
     if (url.pathname === '/api/reconnect' && req.method === 'POST') {
       const { pane } = JSON.parse((await readBody(req, 1024)) || '{}')

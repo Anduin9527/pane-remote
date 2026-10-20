@@ -17,6 +17,7 @@
   import MousePointer2 from '@lucide/svelte/icons/mouse-pointer-2'
   import Hand from '@lucide/svelte/icons/hand'
   import AppWindow from '@lucide/svelte/icons/app-window'
+  import Lock from '@lucide/svelte/icons/lock'
   import Undo2 from '@lucide/svelte/icons/undo-2'
   import Monitor from '@lucide/svelte/icons/monitor'
   import ChevronDown from '@lucide/svelte/icons/chevron-down'
@@ -188,6 +189,13 @@
 
   /** 把之前的前台 app 切回来（看窗口时点过它，它就被切到了前台） */
   function restoreFront() { sock?.readyState === 1 && sock.send(new Uint8Array([253])) }
+  // 锁屏并离开（点两次）：Mac 马上锁屏，不保留会话（平时锁着连上、手机解的锁，断开后 Mac 会保持解锁 1 小时，回来不用再输开机密码）
+  function lockAndLeave() {
+    if (!armed('lock')) return
+    moreOpen = false
+    if (sock?.readyState === 1) sock.send(new Uint8Array([246]))
+    setTimeout(close, 400)
+  }
   let note = $state('')
   let noteTimer: ReturnType<typeof setTimeout> | undefined
   function showNote(m: string) { note = m; clearTimeout(noteTimer); noteTimer = setTimeout(() => (note = ''), 4000) }
@@ -880,6 +888,10 @@
             <Undo2 class="size-4 text-white/60" /><span class="flex-1">{t('切回原来的前台 app')}</span>
           </button>
         {/if}
+        <button class="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left active:bg-white/10" onclick={lockAndLeave}>
+          <Lock class="size-4 text-white/60" /><span class="flex-1">{confirmKey === 'lock' ? t('再点一次：锁屏并断开') : t('锁屏并离开')}</span>
+        </button>
+        <p class="px-2.5 pb-1 text-[11px] leading-snug text-white/40">{t('锁着连上的：直接断开时 Mac 保持解锁 1 小时，回来不用再输开机密码')}</p>
       </div>
     {/if}
   </div>

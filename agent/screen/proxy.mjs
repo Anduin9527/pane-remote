@@ -32,7 +32,15 @@ import { spawn, execFile, execFileSync } from 'node:child_process'
 import sharp from 'sharp'
 
 sharp.concurrency(4)
-const log = (...a) => process.stderr.write(`vnc-proxy ${a.join(' ')}\n`)
+// 日志走 stderr（经 ssh 进 VPS 的日志）；手机断开、会话保留期间 ssh 已经没了，改记到本机文件
+const HOLD_LOG = process.env.VNC_PROXY_HOLD_LOG || path.join(process.env.HOME, '.cache/pane-remote/screen-hold.log')
+const log = (...a) => {
+  const line = `vnc-proxy ${a.join(' ')}\n`
+  if (globalThis.__held) { try { fs.appendFileSync(HOLD_LOG, `${new Date().toISOString()} ${process.pid} ${line}`) } catch {} }
+  else process.stderr.write(line)
+}
+process.stderr.on('error', () => {})
+process.on('SIGHUP', () => {}) // ssh 断了也别跟着退：退不退由会话是否保留决定
 const parseArg = (s) => {
   const m = /^(\d{1,2}),([01])$/.exec(String(s || ''))
   return m ? { index: Number(m[1]), hi: m[2] === '1' } : null
@@ -74,16 +82,24 @@ const MAC_PORT = Number(process.env.VNC_PROXY_PORT || 5900) // 测试时指到�
 if (process.env.VNC_PROXY_WAKE === '1') {
   try { execFileSync('/usr/bin/caffeinate', ['-u', '-t', '2'], { stdio: 'ignore', timeout: 4000 }) } catch {}
 }
+// 锁着的时候连上、在手机上解了锁的会话，苹果会在连接断开时立刻重新锁屏。所以这种会话在手机断开后先不关（见 holdPhone）
+const LOCK_FILE = process.env.VNC_PROXY_LOCK_FILE // 测试用：这个文件在 = 锁着
+const isLocked = () => { if (LOCK_FILE) return fs.existsSync(LOCK_FILE); try { return /"IOConsoleLocked" = Yes/.test(execFileSync('/usr/sbin/ioreg', ['-n', 'Root', '-d1'], { encoding: 'utf8', timeout: 2000 })) } catch { return false } }
+const startedLocked = isLocked()
 const mac = net.connect(MAC_PORT, '127.0.0.1')
 mac.setNoDelay(true)
-const fromMac = new Reader(), fromPhone = new Reader()
+const fromMac = new Reader()
+let fromPhone = new Reader()
+let macGone = false // 手机接回保留的会话时，这条只用来让苹果验密码的连接要关掉，关掉不算出错
 mac.on('data', (b) => fromMac.push(b))
-mac.on('error', (e) => { log('mac error', e.code || e.message); process.exit(1) })
-mac.on('close', () => { log('mac closed'); process.exit(0) })
+mac.on('error', (e) => { if (macGone) return; log('mac error', e.code || e.message); process.exit(1) })
+mac.on('close', () => { if (macGone) return; log('mac closed'); process.exit(0) })
+// 手机那头：一开始是 stdin/stdout；断开后会话保留时没有手机（attached = false，发给手机的都丢掉），接回后换成保留口上的连接
+let phoneOut = process.stdout, attached = true
 process.stdin.on('data', (b) => fromPhone.push(b))
-process.stdin.on('end', () => { mac.destroy(); process.exit(0) })
-process.stdout.on('error', () => { mac.destroy(); process.exit(0) })
-const toPhone = (b) => process.stdout.write(b)
+process.stdin.on('end', () => fromPhone.end())
+process.stdout.on('error', () => fromPhone.end())
+const toPhone = (b) => { if (attached) phoneOut.write(b) }
 const toMac = (b) => mac.write(b)
 const u16 = (b, o = 0) => b.readUInt16BE(o)
 const u32 = (b, o = 0) => b.readUInt32BE(o)
@@ -640,8 +656,9 @@ async function probeFocus(mode, px, py) {
 // ---------- 锁屏：键盘改走屏幕共享 ----------
 // 锁屏时密码框是系统的安全输入：不接受粘贴，普通进程（mousectl）发的按键也进不去；屏幕共享是系统服务，它注入的能进。
 // 所以每秒看一次锁没锁，锁着的时候文字和按键都逐个 keysym 交给屏幕共享
-let screenLocked = false
+let screenLocked = startedLocked
 setInterval(() => {
+  if (LOCK_FILE) { const v = fs.existsSync(LOCK_FILE); if (v !== screenLocked) { screenLocked = v; log(`screen ${v ? 'locked' : 'unlocked'}`) } return }
   execFile('/usr/sbin/ioreg', ['-n', 'Root', '-d1'], { timeout: 2000 }, (err, out) => {
     if (err) return
     const v = /"IOConsoleLocked" = Yes/.test(out)
@@ -699,7 +716,7 @@ async function macLoop() {
         stats.rects++; stats.enc[e] = (stats.enc[e] || 0) + 1
         if (c) { addDirty(c); covered += c.w * c.h; markTiles(c) }
       }
-      if (win) continue // 看窗口时不再向 Mac 要画面
+      if (win || !attached) continue // 看窗口时、没有手机时不再向 Mac 要画面
       if (!fresh && tilesLeft === 0) { fresh = true; clearTimeout(freshTimer); markAll() }
       macRequest(true)
       flush()
@@ -824,6 +841,12 @@ async function phoneLoop() {
       const b = await fromPhone.need(5)
       log(`focus probe ${b[0]} requested at ${u16(b, 1)},${u16(b, 3)}${win ? ` (window ${win.taken ? 'taken' : 'background'})` : ''}`)
       probeFocus(b[0], u16(b, 1), u16(b, 3))
+    } else if (t === 246) {
+      // 锁屏并离开：不保留会话，马上锁屏（mousectl 按 ⌃⌘Q；锁着连上的会话断开时苹果也会再锁一次）
+      leaving = true
+      log('phone asked to lock and leave')
+      if (mousectl) for (const d of [1, 0]) mousectl.write(`k 12 ${0x40000 | 0x100000} ${d}\n`)
+      else for (const [sym, d] of [[0xffe3, 1], [0xffe7, 1], [0x71, 1], [0x71, 0], [0xffe7, 0], [0xffe3, 0]]) { const k = Buffer.from([4, d, 0, 0, 0, 0, 0, 0]); k.writeUInt32BE(sym, 4); toMac(k) }
     } else if (t === 253) {
       // 把之前的前台 app 切回来
       if (win?.prev) { mousectl?.write(`r ${win.prev}\n`); log('restored front app') }
@@ -832,32 +855,147 @@ async function phoneLoop() {
   }
 }
 
-try {
-  const init = await handshake()
-  W = init.W; H = init.H; name = init.name
-  const cached = loadScreens()
-  layout()
-  // 给手机的 ServerInit：裁好缩好的尺寸，名字先空着（画面到了再用 DesktopName 告诉它）
+// ---------- 手机断开后保留会话 ----------
+// 锁着连上、手机解的锁：断开连接苹果就会立刻重新锁屏，下次进来又要输开机密码。所以手机断开后这条连接先留着
+// （最多 HOLD_MS），同时让显示器别睡、空闲计时归零（不然系统自己也会到点锁屏）。下一个手机连上时照常走一遍苹果的认证
+// （新开一条连接让苹果验账号密码，验完就关；那条是解锁状态下连的，关掉不会锁屏），通过了才通过保留口接回这里。
+// 保留期间 Mac 被锁了（人在电脑前锁的、到点锁的）就不再保留：锁着的屏不能靠这个绕过去。
+const HOLD_MS = Number(process.env.VNC_PROXY_HOLD_MS ?? 3600000)
+const HOLD_SOCK = process.env.VNC_PROXY_HOLD_SOCK || path.join(process.env.HOME, '.cache/pane-remote/screen-hold.sock')
+let leaving = false
+function holdPhone() {
+  return new Promise((resolve) => {
+    const srv = net.createServer()
+    let done = false, caf = null
+    const awake = () => { if (process.env.VNC_PROXY_NO_CAFFEINATE) return; caf?.kill(); caf = spawn('/usr/bin/caffeinate', ['-d', '-u', '-t', '90'], { stdio: 'ignore' }) }
+    const finish = (att = null) => {
+      if (done) return
+      done = true
+      clearTimeout(timer); clearInterval(keep); clearInterval(lockWatch)
+      srv.close()
+      try { fs.unlinkSync(HOLD_SOCK) } catch {}
+      caf?.kill()
+      resolve(att)
+    }
+    const timer = setTimeout(() => { log('hold expired'); finish() }, HOLD_MS)
+    const lockWatch = setInterval(() => { if (screenLocked) { log('screen locked while holding, letting go'); finish() } }, 1000)
+    const keep = setInterval(awake, 60000)
+    awake()
+    srv.on('connection', (sock) => {
+      // 接回：第一行「attach 屏序号,清晰」，后面就是手机的 RFB 流（从 ClientInit 之后开始）
+      let buf = Buffer.alloc(0)
+      const onData = (d) => {
+        buf = Buffer.concat([buf, d])
+        const i = buf.indexOf(10)
+        if (i < 0) { if (buf.length > 64) sock.destroy(); return }
+        sock.off('data', onData)
+        const args = parseArg(buf.subarray(0, i).toString('latin1').replace(/^attach /, ''))
+        if (!args) return sock.destroy()
+        sock.pause()
+        finish({ sock, rest: buf.subarray(i + 1), args })
+      }
+      sock.on('data', onData)
+      sock.on('error', () => {})
+    })
+    srv.on('error', (e) => { log('hold failed', e.code); finish() })
+    fs.mkdirSync(path.dirname(HOLD_SOCK), { recursive: true, mode: 0o700 })
+    try { fs.unlinkSync(HOLD_SOCK) } catch {}
+    const um = process.umask(0o177) // 只有自己能连
+    srv.listen(HOLD_SOCK, () => { process.umask(um); log(`phone gone, holding the unlocked session for ${Math.round(HOLD_MS / 60000)} min`) })
+  })
+}
+/** 有保留的会话就接过去：这个进程只当管道，原来那个进程接着服务 */
+function joinHeld(args, early) {
+  return new Promise((resolve) => {
+    const c = net.connect(HOLD_SOCK)
+    c.on('error', () => resolve(false))
+    c.on('connect', () => {
+      macGone = true
+      mac.destroy()
+      mousectl?.destroy()
+      c.write(`attach ${args.index},${args.hi ? 1 : 0}\n`)
+      if (early.length) c.write(early)
+      process.stdin.removeAllListeners('data')
+      process.stdin.removeAllListeners('end')
+      process.stdin.pipe(c)
+      c.pipe(process.stdout)
+      log('joined the held session')
+      const bye = () => process.exit(0)
+      c.on('close', bye)
+      process.stdin.on('end', () => c.end())
+      resolve(true)
+    })
+  })
+}
+function bye() {
+  const t = setTimeout(() => process.exit(0), 1000)
+  phoneOut.write('', () => { clearTimeout(t); mac.destroy(); process.exit(0) })
+}
+let serverPf = null
+/** 给手机的 ServerInit：裁好缩好的尺寸，名字先空着（画面到了再用 DesktopName 告诉它） */
+function phoneInit() {
   const si = Buffer.alloc(24)
-  si.writeUInt16BE(crop.w / s, 0); si.writeUInt16BE(crop.h / s, 2); init.pf.copy(si, 4)
+  si.writeUInt16BE(crop.w / s, 0); si.writeUInt16BE(crop.h / s, 2); serverPf.copy(si, 4)
   toPhone(si)
   sendSize = false
+}
+
+try {
+  const init = await handshake()
+  // 认证过了：有保留着的会话（锁着连上、手机解的锁）就接回去，不用这条新连接
+  if (fs.existsSync(HOLD_SOCK)) {
+    const early = Buffer.concat(fromPhone.chunks)
+    if (await joinHeld(view, early)) await new Promise(() => {})
+  }
+  W = init.W; H = init.H; name = init.name; serverPf = init.pf
+  const cached = loadScreens()
+  layout()
+  phoneInit()
   toMac(Buffer.concat([PIXEL_FORMAT]))
   const se = Buffer.alloc(4 + 4 * ENCODINGS.length); se[0] = 2; se.writeUInt16BE(ENCODINGS.length, 2)
   ENCODINGS.forEach((e, i) => se.writeInt32BE(e, 4 + 4 * i))
   toMac(se)
   await waitMousectl()
   showScreen()
-  const loops = Promise.all([macLoop(), phoneLoop()])
+  macLoop().catch((e) => { log(e.message); bye() })
   if (!cached && !win) {
     // 先按估算的位置出画面，画面到了再在后台校准，算出来了换成准确的
-    const t0 = Date.now()
-    while (!fresh && Date.now() - t0 < 8000) await sleep(100)
-    if ((await calibrate()) && !win) { layout(); macRequest(false) }
+    ;(async () => {
+      const t0 = Date.now()
+      while (!fresh && Date.now() - t0 < 8000) await sleep(100)
+      if ((await calibrate()) && !win) { layout(); macRequest(false) }
+    })()
   }
-  await loops
+  for (;;) {
+    try { await phoneLoop() } catch (e) { if (e.message !== 'eof') log(e.message) }
+    // 手机走了
+    attached = false
+    globalThis.__held = true
+    stopWindow()
+    phoneWants = false
+    if (leaving || !startedLocked || screenLocked || HOLD_MS <= 0) break
+    const att = await holdPhone()
+    if (!att) break
+    // 新手机接回来：从头发 ServerInit，按它要的屏重新出画面
+    const { sock, rest, args } = att
+    fromPhone = new Reader()
+    sock.on('data', (b) => fromPhone.push(b))
+    sock.on('end', () => fromPhone.end())
+    sock.on('close', () => fromPhone.end())
+    if (rest.length) fromPhone.push(rest)
+    phoneOut = sock
+    attached = true // 日志继续记文件：原来的 ssh 已经没了
+    view = args
+    quality = 70; flushing = false; displayRetries = 0; failNote = ''
+    layout()
+    phoneInit()
+    showScreen()
+    sock.resume()
+    log(`phone rejoined (screen ${view.index}${view.hi ? ' sharp' : ''})`)
+  }
+  bye()
 } catch (e) {
   if (e.message !== 'eof') log(e.message)
   // 让刚写给手机的数据（比如认证失败的原因）先发出去
-  process.stdout.write('', () => { mac.destroy(); process.exit(0) })
+  bye()
 }
