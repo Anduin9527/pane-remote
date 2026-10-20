@@ -29,7 +29,8 @@
 | 预览浏览器 | 手机上看电脑这边的网页（localhost、内网都行）和文件（文件夹、图片、视频、PDF、Markdown、代码），支持电脑模式（桌面 UA、横屏全屏） | 有 Chrome 时默认开；`pane-remote enable preview` |
 | 网址转手机 | 电脑上打开链接时，如果你正在用手机，就转到手机的预览里打开 | `pane-remote enable openUrl` |
 | Cursor 映射 | 手机上看和操作 Cursor IDE：会话、消息、待办 / 未读、命令输出、改动差异、内置浏览器 | `pane-remote enable cursor`，见 [docs/cursor.md](docs/cursor.md) |
-| 看屏幕 | 手机上看和操作电脑屏幕（一块显示器或单个窗口）：点、拖、滚动、触控板模式、打字（含中文）、多指手势、后台打开 app。走系统自带的屏幕共享，画面在电脑上转码后再传 | `pane-remote enable screen`，见 [docs/screen.md](docs/screen.md) |
+| 看屏幕 | 手机上看和操作电脑屏幕（一块显示器或单个窗口）：点、拖、滚动、触控板模式、打字（含中文）、多指手势、后台打开 app。登录走系统自带的屏幕共享，画面由 ScreenCaptureKit 录、在电脑上转码后再传；还能关窗口、退出 app、改窗口大小、点到输入框自动弹键盘、锁屏时打字 | `pane-remote enable screen`，见 [docs/screen.md](docs/screen.md) |
+| 这台电脑 | 手机上看电脑的性能（CPU、内存、占用最多的进程），让电脑用自带的 say 念一段话 | `pane-remote enable mac`，见 [docs/mac.md](docs/mac.md) |
 | 中转模式 | 电脑本身跑不了 Tailscale 时，经一台在你 tailnet 里的服务器转发 | 见 [docs/relay.md](docs/relay.md) |
 | 持久化 pane | WezTerm 窗口关了 pane 也不丢，手机照样能连 | 见 [docs/advanced.md](docs/advanced.md) |
 
@@ -77,7 +78,7 @@ cd ~/pane-remote
 pane-remote doctor            # 自检：每一项有问题都会给出修复办法
 pane-remote status            # 服务在不在跑
 pane-remote restart | logs
-pane-remote enable preview    # 开 / 关模块：preview、openUrl、cursor、screen
+pane-remote enable preview    # 开 / 关模块：preview、openUrl、cursor、screen、mac
 pane-remote disable openUrl
 pane-remote init              # 改了配置、换了电脑名、装了新的 Claude 配置目录后重跑一次（保留原有配置）
 pane-remote uninstall         # 停服务、撤掉 tailscale serve、还原 hook；加 --purge 连配置和数据一起删
@@ -143,7 +144,7 @@ pane-remote update --rollback  # 回到上一次更新之前的版本
 install.sh          一键安装
 bin/pane-remote     命令入口（lib/cli.mjs）
 server/             服务端（手机网页的后端）
-agent/              电脑这边的脚本：bridge（操作 WezTerm 的唯一入口）、hook、会话记录解析、预览浏览器、Cursor 适配、看屏幕（screen/）
+agent/              电脑这边的脚本：bridge（操作 WezTerm 的唯一入口）、hook、会话记录解析、预览浏览器、Cursor 适配、看屏幕（screen/）、这台电脑（mac/）
 web/                手机网页源码（Svelte），构建产物在 public/
 relay/              中转模式的辅助命令
 scripts/audit.mjs   发布前审计：查个人信息、内网地址和密钥

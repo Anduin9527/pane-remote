@@ -35,6 +35,12 @@
 #   screen-apps             装了的 app（JSON），标出在运行的
 #   screen-launch <bundleId>  后台打开一个 app，不抢前台
 #   screen-summon <bundleId>  唤出一个 app 的窗口（菜单栏 app 按它的唤出快捷键或点菜单栏图标，见 screen/summon.mjs）
+#   screen-close <窗口号>   按这个窗口自己的关闭按钮（辅助功能，跟点红叉一样；app 要问保存会弹它自己的框）
+#   screen-quit / screen-forcequit <bundleId>  退出 app（正常退出 app 能保存）/ 强制退出；系统进程由 mousectl 拒绝
+#   mac-perf                JSON：CPU、内存、交换区，占 CPU / 内存最多的几个进程（mac 模块，见 mac/perf.mjs，要 2 秒左右）
+#   mac-voices              JSON：say 能用的嗓音（mac 模块，见 mac/say.mjs）
+#   mac-say <base64 JSON>   用自带的 say 念一段话（{text, voice, rate, volume}），后台念、马上返回
+#   mac-say-stop            停掉正在念的
 #   awake                   让 Mac 2 分钟内不因空闲睡眠（caffeinate -i），并标记「手机在用」；手机在用时中转每分钟调一次
 # 其他任何输入一律拒绝，不会执行 shell。
 set -u
@@ -290,7 +296,7 @@ PY
     # 每块屏在全局坐标里的位置（点，原点在主屏左下角、y 向上）和缩放倍数；顺序跟转码代理的屏序号一致
     exec /usr/bin/osascript -l JavaScript -e 'ObjC.import("AppKit"); JSON.stringify(ObjC.unwrap($.NSScreen.screens).map(s => { const f = s.frame; return { name: ObjC.unwrap(s.localizedName), x: f.origin.x, y: f.origin.y, w: f.size.width, h: f.size.height, scale: s.backingScaleFactor } }))'
     ;;
-  screen-windows|screen-apps|screen-launch|screen-summon)
+  screen-windows|screen-apps|screen-launch|screen-summon|screen-close|screen-quit|screen-forcequit)
     [[ -x "$NODE" ]] || fail "找不到 node（${NODE}），跑 pane-remote doctor 看看"
     case "$cmd" in
       screen-windows) exec "$NODE" "$HERE/screen/wq.mjs" w list ;;
@@ -302,6 +308,28 @@ PY
       screen-summon)
         [[ "${pane:-}" =~ ^[A-Za-z0-9.-]{1,200}$ ]] || fail "bad bundle id"
         exec "$NODE" "$HERE/screen/summon.mjs" "$pane"
+        ;;
+      screen-close)
+        [[ "${pane:-}" =~ ^[0-9]{1,10}$ ]] || fail "bad window id"
+        exec "$NODE" "$HERE/screen/wq.mjs" w close "$pane"
+        ;;
+      screen-quit|screen-forcequit)
+        [[ "${pane:-}" =~ ^[A-Za-z0-9.-]{1,200}$ ]] || fail "bad bundle id"
+        exec "$NODE" "$HERE/screen/wq.mjs" w quit "$pane" "$([[ $cmd == screen-forcequit ]] && echo 1 || echo 0)"
+        ;;
+    esac
+    ;;
+  mac-perf|mac-voices|mac-say|mac-say-stop)
+    # mac 模块：性能快照、用 say 念一段话。都是 node 脚本，参数直接传（不经过 shell）
+    [[ -x "$NODE" ]] || fail "找不到 node（${NODE}），跑 pane-remote doctor 看看"
+    case "$cmd" in
+      mac-perf) exec "$NODE" "$HERE/mac/perf.mjs" ;;
+      mac-voices) exec "$NODE" "$HERE/mac/say.mjs" voices ;;
+      mac-say-stop) exec "$NODE" "$HERE/mac/say.mjs" stop ;;
+      mac-say)
+        # macOS 的 bash 正则重复次数上限 255，长度单独判断
+        [[ -n "${pane:-}" && ${#pane} -le 12000 && "$pane" =~ ^[A-Za-z0-9+/=]+$ ]] || fail "bad base64"
+        exec "$NODE" "$HERE/mac/say.mjs" say "$pane"
         ;;
     esac
     ;;

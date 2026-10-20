@@ -4,11 +4,17 @@
 //   `k <keycode> <flags> <1|0>`  按下/松开一个键（macOS 虚拟键码 + CGEventFlags）
 //   `t <base64 UTF-8>`  在光标处输入一段文字：放进剪贴板再 ⌘V，打完一阵子再把原来的剪贴板放回去
 //   `q`  回一行当前光标位置
+//   `f`  回一行 JSON：系统焦点在什么控件上（只读辅助功能查询，不读文字内容）：app、角色、能不能编辑、输入光标在屏幕上的位置、是不是安全输入（密码框）
 // 按窗口看（需要「屏幕录制」授权）：
 //   `w list` / `w apps`  回一行 JSON：能录的窗口（含别的桌面上的）/ 装了的 app
 //   `w launch <bundleId>`  后台启动，不抢前台；回 ok
 //   `w tray <bundleId>`  点一下这个 app 的菜单栏图标
-//   `w stream <windowID> <0|1>`  这条连接从此变成二进制画面流：只录这个窗口，1 = 按像素（清晰）、0 = 按点
+//   `w close <windowID>`  按窗口自己的关闭按钮（跟点红叉一样，app 要问保存会弹它自己的框）
+//   `w place <windowID> <size|fill|left|right|aspect|check> [a] [b]`  用辅助功能直接设窗口位置 / 大小（不拖、不切前台）：
+//       size = 宽 a × 高 b（点，左上角不动）；fill / left / right = 占满 / 左半 / 右半个所在显示器的可用区域；aspect = 按 a:b 的比例尽量大、居中；check = 只看能不能改
+//       回一行 `ok <x> <y> <宽> <高>` 或 `error: …`
+//   `w quit <bundleId> <0|1>`  退出 app：0 = 正常退出（app 能保存），1 = 强制退出
+//   `w stream <windowID|s屏序号> <0|1>`  这条连接从此变成二进制画面流：只录这个窗口（或整块显示器），1 = 按像素（清晰）、0 = 按点
 //       [1, W u16, H u16] 画面尺寸   [2, x, y, w, h (u16), w*h*4 字节 BGRA] 变了的区域
 //       [3, x i32, y i32, w u16, h u16] 窗口在屏幕上的位置（点）   [4] 窗口没了
 //       [5, 1|0] 窗口不在屏幕上，退成定时截图（画面可能是空白、不更新）/ 又有实时画面了
@@ -22,12 +28,14 @@ import AppKit
 import ApplicationServices
 import Foundation
 import ScreenCaptureKit
+import Carbon
 
 let path = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : NSHomeDirectory() + "/.cache/pane-remote/mouse.sock"
 let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
 FileHandle.standardError.write("mousectl trusted=\(AXIsProcessTrustedWithOptions(opts))\n".data(using: .utf8)!)
 
 let src = CGEventSource(stateID: .hidSystemState)
+_ = NSApplication.shared // NSCursor 的标准指针图要有 NSApplication 才拿得到
 var last: UInt8 = 0
 var lastDown = (t: 0.0, p: CGPoint.zero, n: Int64(0))
 let buttons: [(bit: UInt8, b: CGMouseButton, down: CGEventType, up: CGEventType, drag: CGEventType)] = [
@@ -158,13 +166,14 @@ func windowList() -> String {
       // 0 是普通窗口，1–19 是浮动面板（uTools 这类置顶搜索框在 9）；20 往上是程序坞、菜单栏这些系统界面
       // 例外：Spotlight 的搜索框归 com.apple.campo（显示名 Siri），在 23 层，高度只有 57
       if w.owningApplication?.bundleIdentifier == spotlightHost { return w.windowLayer < 30 && w.frame.width >= 300 && on.contains(w.windowID) }
-      guard let a = w.owningApplication, w.windowLayer >= 0, w.windowLayer < 20, w.frame.width >= 160, w.frame.height >= 120 else { return false }
+      guard let a = w.owningApplication, w.windowLayer >= 0, w.windowLayer < 20, w.frame.width >= 30, w.frame.height >= 30 else { return false }
       if hiddenBundles.contains(a.bundleIdentifier) || a.applicationName.hasPrefix("AutoFill") || a.applicationName.contains("Open and Save Panel") { return false }
       // 当前桌面上看得见的直接算；不在的必须是 app 自己报的窗口（台前调度收起、别的桌面上的它会报），
       // 否则是关掉后只是藏起来的窗口（QQ、微信点关闭并不销毁窗口）或后台缓冲，截出来是空白
       let ax = axWindows(a.processID)
       let t = (w.title ?? "") != "" ? w.title! : ax[w.windowID] ?? ""
-      if on.contains(w.windowID) || ax[w.windowID] != nil { titles[w.windowID] = t; return true }
+      // app 自己报的窗口不管多小都算（台前调度把后台打开的窗口缩成 40×100 左右的缩略图）；没报的要够大，挡掉各种小浮层
+      if ax[w.windowID] != nil || (on.contains(w.windowID) && w.frame.width >= 160 && w.frame.height >= 120) { titles[w.windowID] = t; return true }
       return false
     }
     return json(["windows": wins.map { w in
@@ -204,6 +213,84 @@ func launch(_ id: String) -> String {
   case .failure(let e): return "error: \(e.localizedDescription)"
   }
 }
+func closeWindow(_ id: CGWindowID) -> String {
+  guard let info = (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]])?.first(where: { ($0[kCGWindowNumber as String] as? CGWindowID) == id }),
+        let pid = info[kCGWindowOwnerPID as String] as? pid_t else { return "error: no such window" }
+  var v: CFTypeRef?
+  AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXWindowsAttribute as CFString, &v)
+  for w in v as? [AXUIElement] ?? [] {
+    var wid: CGWindowID = 0
+    guard _AXUIElementGetWindow(w, &wid) == .success, wid == id else { continue }
+    var b: CFTypeRef?
+    AXUIElementCopyAttributeValue(w, kAXCloseButtonAttribute as CFString, &b)
+    guard let btn = b else { return "error: no close button" }
+    return AXUIElementPerformAction(btn as! AXUIElement, kAXPressAction as CFString) == .success ? "ok" : "error: press failed"
+  }
+  return "error: window not found"
+}
+/** 找到这个窗口号对应的辅助功能窗口 */
+func axWindow(_ id: CGWindowID) -> AXUIElement? {
+  guard let info = (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]])?.first(where: { ($0[kCGWindowNumber as String] as? CGWindowID) == id }),
+        let pid = info[kCGWindowOwnerPID as String] as? pid_t else { return nil }
+  var v: CFTypeRef?
+  AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXWindowsAttribute as CFString, &v)
+  return (v as? [AXUIElement])?.first { var wid: CGWindowID = 0; return _AXUIElementGetWindow($0, &wid) == .success && wid == id }
+}
+/** 窗口所在显示器的可用区域（去掉菜单栏、程序坞），全局坐标、左上角原点 */
+func usableRect(around r: CGRect) -> CGRect {
+  let mainH = NSScreen.screens.first?.frame.height ?? 0
+  let c = CGPoint(x: r.midX, y: r.midY)
+  let flip = { (f: NSRect) in CGRect(x: f.minX, y: mainH - f.maxY, width: f.width, height: f.height) }
+  let s = NSScreen.screens.first { flip($0.frame).contains(c) } ?? NSScreen.screens.first
+  return s.map { flip($0.visibleFrame) } ?? r
+}
+func placeWindow(_ id: CGWindowID, _ mode: String, _ a: Double, _ b: Double) -> String {
+  guard let w = axWindow(id) else { return "error: window not found" }
+  var sz: DarwinBoolean = false, ps: DarwinBoolean = false
+  AXUIElementIsAttributeSettable(w, kAXSizeAttribute as CFString, &sz)
+  AXUIElementIsAttributeSettable(w, kAXPositionAttribute as CFString, &ps)
+  func frame() -> CGRect {
+    var p = CGPoint.zero, s = CGSize.zero, r: CFTypeRef?
+    if AXUIElementCopyAttributeValue(w, kAXPositionAttribute as CFString, &r) == .success { AXValueGetValue(r as! AXValue, .cgPoint, &p) }
+    if AXUIElementCopyAttributeValue(w, kAXSizeAttribute as CFString, &r) == .success { AXValueGetValue(r as! AXValue, .cgSize, &s) }
+    return CGRect(origin: p, size: s)
+  }
+  let cur = frame()
+  let out = { (r: CGRect) in "ok \(Int(r.minX)) \(Int(r.minY)) \(Int(r.width)) \(Int(r.height))" }
+  if mode == "check" { return sz.boolValue ? out(cur) : "error: 这个窗口不能改大小" }
+  guard sz.boolValue else { return "error: 这个窗口不能改大小" }
+  let u = usableRect(around: cur)
+  var t = cur
+  switch mode {
+  case "size": t.size = CGSize(width: max(80, min(a, u.width)), height: max(60, min(b, u.height)))
+  case "fill": t = u
+  case "left": t = CGRect(x: u.minX, y: u.minY, width: u.width / 2, height: u.height)
+  case "right": t = CGRect(x: u.midX, y: u.minY, width: u.width / 2, height: u.height)
+  case "aspect":
+    guard a > 0, b > 0 else { return "error: bad aspect" }
+    let k = min(u.width * 0.92 / a, u.height * 0.92 / b)
+    t.size = CGSize(width: a * k, height: b * k)
+    t.origin = CGPoint(x: u.midX - t.width / 2, y: u.midY - t.height / 2)
+  default: return "error: bad mode"
+  }
+  // 放大后别跑出可用区域：先挪位置再改大小（有的 app 不让窗口超出屏幕，大小会被截掉）
+  if t.maxX > u.maxX { t.origin.x = max(u.minX, u.maxX - t.width) }
+  if t.maxY > u.maxY { t.origin.y = max(u.minY, u.maxY - t.height) }
+  if ps.boolValue && t.origin != cur.origin { var o = t.origin; AXUIElementSetAttributeValue(w, kAXPositionAttribute as CFString, AXValueCreate(.cgPoint, &o)!) }
+  var size = t.size
+  AXUIElementSetAttributeValue(w, kAXSizeAttribute as CFString, AXValueCreate(.cgSize, &size)!)
+  usleep(150_000)
+  return out(frame())
+}
+// 系统自己的进程不让从手机上退出
+let protectedBundles: Set<String> = ["com.apple.finder", "com.apple.dock", "com.apple.loginwindow", "com.apple.systemuiserver", "com.apple.WindowManager", "com.apple.controlcenter", "com.apple.notificationcenterui", "com.apple.Spotlight"]
+func quitApp(_ id: String, force: Bool) -> String {
+  if protectedBundles.contains(id) { return "error: 系统进程不能退出" }
+  let apps = NSRunningApplication.runningApplications(withBundleIdentifier: id)
+  if apps.isEmpty { return "ok" }
+  for a in apps { _ = force ? a.forceTerminate() : a.terminate() }
+  return "ok"
+}
 /** 点一下 app 的菜单栏图标（没有快捷键的托盘 app 只能这样唤出） */
 func pressTray(_ id: String) -> String {
   guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: id).first else { return "error: not running" }
@@ -222,7 +309,7 @@ func bounds(_ id: CGWindowID) -> CGRect? {
   return r
 }
 func activate(_ id: CGWindowID) -> String {
-  let prev = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+  let prev = frontPid()
   guard let info = (CGWindowListCopyWindowInfo([.optionIncludingWindow], id) as? [[String: Any]])?.first,
         let pid = info[kCGWindowOwnerPID as String] as? pid_t else { return "0" }
   let ax = AXUIElementCreateApplication(pid)
@@ -258,6 +345,7 @@ func textToPid(_ pid: pid_t, _ text: String) {
 
 final class WindowStream: NSObject, SCStreamOutput, SCStreamDelegate {
   let c: Int32, id: CGWindowID, hi: Bool
+  var display: CGDirectDisplayID? = nil // 录整块显示器（不是窗口）
   var stream: SCStream?
   var size = (w: 0, h: 0), frame = CGRect.zero, alive = true
   var prev = [UInt8]() // 上一帧（紧凑 BGRA），用来找出真正变了的区域：系统给的变化区域经常是整个窗口
@@ -272,16 +360,23 @@ final class WindowStream: NSObject, SCStreamOutput, SCStreamDelegate {
     let k = hi ? (NSScreen.screens.map { $0.backingScaleFactor }.max() ?? 2) : 1
     cfg.width = max(2, Int(r.width * k)); cfg.height = max(2, Int(r.height * k))
     cfg.pixelFormat = kCVPixelFormatType_32BGRA
-    cfg.showsCursor = false
+    cfg.showsCursor = display != nil // 整块屏带上鼠标指针（窗口不带）
     cfg.minimumFrameInterval = CMTime(value: 1, timescale: 15)
     cfg.queueDepth = 4
     return cfg
   }
   func start() -> String {
     guard case .success(let content) = shareable() else { return "error: no screen recording permission" }
-    guard let w = content.windows.first(where: { $0.windowID == id }) else { return "error: no such window" }
-    frame = bounds(id) ?? w.frame
-    let f = SCContentFilter(desktopIndependentWindow: w)
+    let f: SCContentFilter
+    if let did = display {
+      guard let d = content.displays.first(where: { $0.displayID == did }) else { return "error: no such display" }
+      frame = CGDisplayBounds(did)
+      f = SCContentFilter(display: d, excludingWindows: [])
+    } else {
+      guard let w = content.windows.first(where: { $0.windowID == id }) else { return "error: no such window" }
+      frame = bounds(id) ?? w.frame
+      f = SCContentFilter(desktopIndependentWindow: w)
+    }
     filter = f
     let s = SCStream(filter: f, configuration: config(for: frame), delegate: self)
     do { try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: q) } catch { return "error: \(error.localizedDescription)" }
@@ -303,7 +398,7 @@ final class WindowStream: NSObject, SCStreamOutput, SCStreamDelegate {
   func sendBounds() { send([3] + be32(Int(frame.minX)) + be32(Int(frame.minY)) + be16(Int(frame.width)) + be16(Int(frame.height))) }
   func watch() {
     guard alive else { return }
-    guard let r = bounds(id) else { send([4]); stop(); return }
+    guard let r = display.map({ CGDisplayBounds($0) }) ?? bounds(id) else { send([4]); stop(); return }
     if r != frame {
       let resized = r.size != frame.size
       frame = r
@@ -397,7 +492,8 @@ final class WindowStream: NSObject, SCStreamOutput, SCStreamDelegate {
           // 连续 2 秒截不到（比如最小化了）：告诉代理录不到
           if self.misses >= 6 && !self.gotFrame { self.send(Array("error: 这个窗口录不到（可能最小化了）\n".utf8)); self.stop(); return }
         }
-        self.q.asyncAfter(deadline: .now() + 0.33) { [weak self] in self?.poll() }
+        // 整块屏只有截图（锁屏界面受保护拿不到实时画面）时截勤一点，不然打字看着很卡；窗口截图慢一点就够
+        self.q.asyncAfter(deadline: .now() + (self.display != nil ? 0.12 : 0.33)) { [weak self] in self?.poll() }
       }
     }
   }
@@ -411,6 +507,64 @@ final class WindowStream: NSObject, SCStreamOutput, SCStreamDelegate {
     gotFrame = true
     handle(buf, bpr, W, H)
   }
+}
+
+let sysWide = AXUIElementCreateSystemWide()
+/** 现在的前台 app：NSWorkspace.frontmostApplication 在没有主循环的常驻进程里不会更新，用辅助功能问系统；
+ *  问不到就取最上面那个普通窗口的主人 */
+func frontPid() -> pid_t {
+  var v: CFTypeRef?
+  if AXUIElementCopyAttributeValue(sysWide, kAXFocusedApplicationAttribute as CFString, &v) == .success, let a = v {
+    var pid: pid_t = 0
+    if AXUIElementGetPid(a as! AXUIElement, &pid) == .success, pid > 0 { return pid }
+  }
+  let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+  return list.first { ($0[kCGWindowLayer as String] as? Int) == 0 }?[kCGWindowOwnerPID as String] as? pid_t ?? 0
+}
+/** 系统当前显示的鼠标指针是不是 I 形（文字输入）：各种 app 在输入框上都会换成它，只读系统的当前指针，不碰任何 app */
+func cursorIsIBeam() -> Bool {
+  guard let cur = NSCursor.currentSystem else { return false }
+  let ib = NSCursor.iBeam
+  if cur.hotSpot == ib.hotSpot && cur.image.size == ib.image.size { return true }
+  // app 实际用的 I 形跟系统给的参考图不一定一样（实测 9×18、热点在正中）：窄、高、热点在中间就算
+  let w = cur.image.size.width, h = cur.image.size.height
+  return w <= 16 && h >= w * 1.5 && abs(cur.hotSpot.x - w / 2) <= 2 && abs(cur.hotSpot.y - h / 2) <= 2
+}
+func focusInfo() -> String {
+  AXUIElementSetMessagingTimeout(sysWide, 0.3)
+  func attr(_ e: AXUIElement, _ a: String) -> CFTypeRef? { var v: CFTypeRef?; return AXUIElementCopyAttributeValue(e, a as CFString, &v) == .success ? v : nil }
+  var out: [String: Any] = ["secure": IsSecureEventInputEnabled(), "ibeam": cursorIsIBeam()]
+  let fp = frontPid()
+  let front = fp > 0 ? NSRunningApplication(processIdentifier: fp) : nil
+  out["front"] = front?.bundleIdentifier ?? ""
+  // 系统级查询拿不到时直接问前台 app（有的 app 只回应针对它自己的查询）
+  var fe = attr(sysWide, kAXFocusedUIElementAttribute)
+  if fe == nil, let p = front?.processIdentifier { let ae = AXUIElementCreateApplication(p); AXUIElementSetMessagingTimeout(ae, 0.3); fe = attr(ae, kAXFocusedUIElementAttribute); out["via"] = "app" }
+  guard let f = fe else { return json(out) }
+  let e = f as! AXUIElement
+  var pid: pid_t = 0
+  AXUIElementGetPid(e, &pid)
+  let app = NSRunningApplication(processIdentifier: pid)
+  out["app"] = app?.localizedName ?? ""
+  out["bundle"] = app?.bundleIdentifier ?? ""
+  out["role"] = attr(e, kAXRoleAttribute) as? String ?? ""
+  out["subrole"] = attr(e, kAXSubroleAttribute) as? String ?? ""
+  var settable: DarwinBoolean = false
+  AXUIElementIsAttributeSettable(e, kAXValueAttribute as CFString, &settable)
+  out["editable"] = settable.boolValue
+  if let r = attr(e, kAXSelectedTextRangeAttribute) {
+    var b: CFTypeRef?
+    if AXUIElementCopyParameterizedAttributeValue(e, kAXBoundsForRangeParameterizedAttribute as CFString, r, &b) == .success, let bv = b {
+      var rect = CGRect.zero
+      AXValueGetValue(bv as! AXValue, .cgRect, &rect)
+      out["caret"] = ["x": rect.minX, "y": rect.minY, "w": rect.width, "h": rect.height]
+    }
+  }
+  if let fv = attr(e, "AXFrame") {
+    var rect = CGRect.zero
+    if CFGetTypeID(fv) == AXValueGetTypeID() { AXValueGetValue(fv as! AXValue, .cgRect, &rect); out["frame"] = ["x": rect.minX, "y": rect.minY, "w": rect.width, "h": rect.height] }
+  }
+  return json(out)
 }
 
 func location() -> String {
@@ -471,6 +625,22 @@ while true {
           else if f[1] == "apps" { reply(c, appList()) }
           else if f[1] == "launch", f.count == 3 { reply(c, launch(String(f[2]))) }
           else if f[1] == "tray", f.count == 3 { reply(c, queue.sync { pressTray(String(f[2])) }) }
+          else if f[1] == "close", f.count == 3, let id = UInt32(f[2]) { reply(c, queue.sync { closeWindow(id) }) }
+          else if f[1] == "place", f.count >= 4, let id = UInt32(f[2]) {
+            let mode = String(f[3]), a = f.count > 4 ? Double(f[4]) ?? 0 : 0, b = f.count > 5 ? Double(f[5]) ?? 0 : 0
+            reply(c, queue.sync { placeWindow(id, mode, a, b) })
+          }
+          else if f[1] == "quit", f.count == 4 { let id = String(f[2]), force = f[3] == "1"; reply(c, queue.sync { quitApp(id, force: force) }) }
+          else if f[1] == "stream", f.count == 4, f[2].hasPrefix("s"), let idx = Int(f[2].dropFirst()) {
+            // 整块显示器：s<序号>，序号跟 NSScreen.screens 的顺序一样（0 是主屏）
+            let screens = NSScreen.screens
+            if idx >= 0, idx < screens.count, let num = screens[idx].deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+              let ws = WindowStream(c: c, id: 0, hi: f[3] == "1")
+              ws.display = CGDirectDisplayID(num.uint32Value)
+              let r = ws.start()
+              if r != "ok" { reply(c, r) } else { stream = ws }
+            } else { reply(c, "error: no such display") }
+          }
           else if f[1] == "stream", f.count == 4, let id = UInt32(f[2]) {
             let ws = WindowStream(c: c, id: id, hi: f[3] == "1")
             let r = ws.start()
@@ -493,6 +663,10 @@ while true {
           batch = nil
           let down = f[4] == "1"
           queue.async { keyToPid(pid, kc, fl, down) }
+        } else if f.first == "f" {
+          lock.unlock()
+          reply(c, queue.sync { focusInfo() })
+          lock.lock()
         } else if f.first == "q" {
           let s = Array(location().utf8)
           _ = s.withUnsafeBytes { write(c, $0.baseAddress, s.count) }

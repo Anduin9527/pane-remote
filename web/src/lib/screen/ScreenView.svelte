@@ -13,13 +13,17 @@
   import RFB from '@novnc/novnc'
   import X from '@lucide/svelte/icons/x'
   import Keyboard from '@lucide/svelte/icons/keyboard'
-  import Scan from '@lucide/svelte/icons/scan'
   import RotateCw from '@lucide/svelte/icons/rotate-cw'
-  import RectangleHorizontal from '@lucide/svelte/icons/rectangle-horizontal'
   import MousePointer2 from '@lucide/svelte/icons/mouse-pointer-2'
   import Hand from '@lucide/svelte/icons/hand'
   import AppWindow from '@lucide/svelte/icons/app-window'
   import Undo2 from '@lucide/svelte/icons/undo-2'
+  import Monitor from '@lucide/svelte/icons/monitor'
+  import ChevronDown from '@lucide/svelte/icons/chevron-down'
+  import Ellipsis from '@lucide/svelte/icons/ellipsis'
+  import Maximize from '@lucide/svelte/icons/maximize'
+  import RotateCcwSquare from '@lucide/svelte/icons/rotate-ccw-square'
+  import Scaling from '@lucide/svelte/icons/scaling'
   import { Button } from '$lib/components/ui/button'
   import { cn } from '$lib/utils'
   import { t, tr } from '$lib/i18n'
@@ -55,6 +59,14 @@
   let authFailed = false
   // Mac 的屏幕共享冷启动后第一个连接整场黑屏，转码代理会报「[r]」让我们马上用同一组用户名密码重连一次（只在内存里留到用掉）
   let lastCreds: { username?: string; password: string } | null = null
+  // 加载超过 3 秒多半是屏幕共享冷启动（转码代理在等画面 / 让我们重连），提示一下
+  let slowLoad = $state(false)
+  let slowTimer: ReturnType<typeof setTimeout> | undefined
+  $effect(() => {
+    clearTimeout(slowTimer)
+    slowLoad = false
+    if (status === 'loading' || status === 'auth') slowTimer = setTimeout(() => (slowLoad = true), 3000)
+  })
   let rotated = $state(load('screenRotate', '0') === '1')
   let pad = $state(load('screenPad', '0') === '1') // 触控板模式
   let hi = $state(load('screenHi', '0') === '1') // 清晰模式：按屏幕的实际像素发（流量大约 4 倍）
@@ -146,6 +158,34 @@
     } catch (e) { pickErr = tr((e as Error).message) }
     launching = ''
   }
+  // 关窗口（点一次）/ 退出 app（点两次：第一次变成「确认退出？」，3 秒内再点才退出；退不掉再给「强制退出」，也要点两次）
+  let confirmKey = $state('')
+  let confirmTimer: ReturnType<typeof setTimeout> | undefined
+  let stuck = $state<string[]>([]) // 正常退出 3 秒后还在的 app
+  const PROTECTED = new Set(['com.apple.finder', 'com.apple.Spotlight', 'com.apple.dock'])
+  function armed(k: string) {
+    if (confirmKey === k) { clearTimeout(confirmTimer); confirmKey = ''; return true }
+    confirmKey = k
+    clearTimeout(confirmTimer)
+    confirmTimer = setTimeout(() => (confirmKey = ''), 3000)
+    return false
+  }
+  async function closeWin(w: Win) {
+    try { await postJson('api/screen/close', { id: w.id }); await new Promise((r) => setTimeout(r, 600)); await loadWindows() } catch (e) { pickErr = tr((e as Error).message) }
+  }
+  async function quitApp(bundle: string, force = false) {
+    if (!armed(`${force ? 'force' : 'quit'}:${bundle}`)) return
+    try {
+      await postJson('api/screen/quit', { bundle, force })
+      await new Promise((r) => setTimeout(r, force ? 1000 : 3000))
+      await loadWindows()
+      try { apps = (await getJson<{ apps: App[] }>('apps')).apps } catch {}
+      const still = wins.some((w) => w.bundle === bundle) || apps.some((a) => a.bundle === bundle && a.running)
+      stuck = still && !force ? [...stuck, bundle] : stuck.filter((b) => b !== bundle)
+      if (still && force) pickErr = t('强制退出后它还在运行')
+    } catch (e) { pickErr = tr((e as Error).message) }
+  }
+
   /** 把之前的前台 app 切回来（看窗口时点过它，它就被切到了前台） */
   function restoreFront() { sock?.readyState === 1 && sock.send(new Uint8Array([253])) }
   let note = $state('')
@@ -162,6 +202,66 @@
   })
   const idle = $derived(apps.filter((a) => !wins.some((w) => w.bundle === a.bundle) && (!query.trim() || q(a.name))))
 
+  let moreOpen = $state(false)
+
+  // ---------- 改窗口大小（窗口模式）：拖右边 / 下边 / 右下角的手柄，松手一次设到那个大小；也有占满、半屏、适合手机 ----------
+  // 设大小在电脑上用辅助功能直接改（不拖窗口边、不切前台），拖的过程中只在手机上画目标轮廓
+  let resizing = $state(false)
+  let resizeEl = $state<HTMLDivElement>()
+  let winPts = $state<{ w: number; h: number } | null>(null) // 窗口现在的大小（点）
+  let drag = $state<{ edge: 'r' | 'b' | 'rb'; x0: number; y0: number; w: number; h: number } | null>(null) // 目标大小（画面像素）
+  function sendPlace(mode: number, a = 0, b = 0) {
+    if (!sock || sock.readyState !== 1) return
+    const m = new Uint8Array(6), v = new DataView(m.buffer)
+    m[0] = 247; m[1] = mode; v.setUint16(2, Math.max(0, Math.min(65535, Math.round(a)))); v.setUint16(4, Math.max(0, Math.min(65535, Math.round(b))))
+    sock.send(m)
+  }
+  function startResize() { moreOpen = false; resizing = true; winPts = null; sendPlace(0) }
+  function onPlace(r: { m: number; ok: boolean; pw?: number; ph?: number; err?: string }) {
+    if (!r.ok) { showNote(r.err ? tr(r.err) : t('没改成')); if (r.m === 0) resizing = false; return }
+    winPts = { w: r.pw!, h: r.ph! }
+    if (r.m !== 0) showNote(t('窗口改成了 {w}×{h}', { w: r.pw!, h: r.ph! }))
+  }
+  // 手柄和轮廓的位置：画面（窗口）在舞台里的矩形
+  const canvasBox = $derived.by(() => {
+    cursorTick
+    if (!resizing || !stage || !canvas() || !display()) return null
+    const cr = localRect(canvas()!), sr = localRect(stage)
+    const d = display()
+    const [w, h] = [(d.width - d._viewportLoc.x) * d._scale, (d.height - d._viewportLoc.y) * d._scale]
+    return { x: cr.left - sr.left, y: cr.top - sr.top, w: Math.min(w, cr.width), h: Math.min(h, cr.height), scale: d._scale as number, fw: d.width as number, fh: d.height as number }
+  })
+  function handleDown(e: TouchEvent, edge: 'r' | 'b' | 'rb') {
+    e.preventDefault(); e.stopPropagation()
+    const b = canvasBox, p = e.touches[0]
+    if (!b || !p) return
+    const lp = toLocal(p.clientX, p.clientY)
+    drag = { edge, x0: lp.x, y0: lp.y, w: b.fw, h: b.fh }
+  }
+  function handleMove(e: TouchEvent) {
+    e.preventDefault(); e.stopPropagation()
+    const b = canvasBox, p = e.touches[0]
+    if (!drag || !b || !p) return
+    const lp = toLocal(p.clientX, p.clientY)
+    const dw = drag.edge === 'b' ? 0 : (lp.x - drag.x0) / b.scale, dh = drag.edge === 'r' ? 0 : (lp.y - drag.y0) / b.scale
+    drag = { ...drag, w: Math.max(120, b.fw + dw), h: Math.max(90, b.fh + dh) }
+  }
+  function handleUp(e: TouchEvent) {
+    e.preventDefault(); e.stopPropagation()
+    const b = canvasBox
+    if (drag && b && (Math.abs(drag.w - b.fw) > 2 || Math.abs(drag.h - b.fh) > 2)) sendPlace(1, drag.w, drag.h)
+    drag = null
+  }
+  // 拖动时显示的目标大小（点）：按现在的「点 / 画面像素」比例换算
+  const dragPts = $derived(drag && winPts && canvasBox ? { w: Math.round((drag.w * winPts.w) / canvasBox.fw), h: Math.round((drag.h * winPts.h) / canvasBox.fh) } : null)
+  /** 画面来源下拉：显示器 / 当前窗口 / 选择窗口… */
+  function onSource(e: Event) {
+    const el = e.currentTarget as HTMLSelectElement
+    const v = el.value
+    el.value = winView ? 'win' : `d${selected}` // 「选择窗口…」只是个动作，选完复原
+    if (v === 'pick') openPicker()
+    else if (v.startsWith('d')) pickDisplay(Number(v.slice(1)))
+  }
   const shortName = (n: string) => (/built-?in/i.test(n) ? t('内建屏') : n)
 
   // ---------- 连接 ----------
@@ -216,6 +316,8 @@
     r.addEventListener('desktopname', (e: any) => {
       if (rfb !== r || !e.detail?.name) return
       const n = String(e.detail.name)
+      if (n.startsWith('[k]')) { try { onProbe(JSON.parse(n.slice(3))) } catch {} return } // 输入框探测结果
+      if (n.startsWith('[z]')) { try { onPlace(JSON.parse(n.slice(3))) } catch {} return } // 改窗口大小的结果
       if (n === '[r]') { if (lastCreds) { status = 'loading'; connect() } return } // 冷启动黑屏：用刚输的密码马上重连一次（只一次，密码用掉就没了）
       // 转码代理看窗口时报「[w]窗口号」；报回 Mac 的名字说明在看整块屏（窗口关了它会自己退回去）
       if (n.startsWith('[w]')) {
@@ -223,8 +325,8 @@
         winStale = n.endsWith('p') // 切到前台也还是拿不到实时画面（比如最小化了）：只有截图
         if (n.endsWith('f')) showNote(t('窗口不在当前桌面，已把它切到前台'))
       }
-      else if (n.startsWith('[x]')) { winView = null; showNote(tr(n.slice(3))) } // 窗口录不到，转码代理退回看屏了
-      else { winView = null; desktop = n }
+      else if (n.startsWith('[x]')) { winView = null; resizing = false; showNote(tr(n.slice(3))) } // 窗口录不到，转码代理退回看屏了
+      else { winView = null; resizing = false; desktop = n }
       status = 'live'
       tick().then(applyView)
     })
@@ -421,7 +523,7 @@
   }
 
   // 登录框、重连按钮这些浮层上的触摸照常交给浏览器（浮层跟 noVNC 的画布是兄弟节点，碰不到 noVNC）
-  const onOverlay = (e: TouchEvent) => (!!overlay && overlay.contains(e.target as Node)) || (!!pickerEl && pickerEl.contains(e.target as Node))
+  const onOverlay = (e: TouchEvent) => (!!overlay && overlay.contains(e.target as Node)) || (!!pickerEl && pickerEl.contains(e.target as Node)) || (!!bubble && bubble.contains(e.target as Node)) || (!!resizeEl && resizeEl.contains(e.target as Node))
 
   function onStart(e: TouchEvent) {
     if (onOverlay(e)) return
@@ -453,6 +555,8 @@
     const p = ps[0]
     sx = lx = p.x; sy = ly = p.y
     g = 'tap'
+    probe0 = null
+    if (autoKb && !rotated) { const f = fbOf(target(p)); if (f) sendProbe(0, f) }
     holdTimer = setTimeout(() => { if (g === 'tap') { g = 'hold'; navigator.vibrate?.(10) } }, 450)
   }
   function onMove(e: TouchEvent) {
@@ -526,7 +630,14 @@
       return
     }
     if (e.type === 'touchcancel') { if (g === 'drag') sendAt(target({ x: lx, y: ly }), 0); g = 'none'; return }
-    if (g === 'tap') clickAt(target({ x: sx, y: sy }))
+    if (g === 'tap') {
+      const tp = target({ x: sx, y: sy })
+      const f = autoKb && !rotated ? fbOf(tp) : null
+      // 手指按下时问的结果已经到了、而且是输入框：趁还在手势里弹键盘
+      if (f && probe0?.t && Date.now() - probe0.at < 2000 && Math.abs(probe0.x - f.x) < 24 && Math.abs(probe0.y - f.y) < 24) openKb(f)
+      clickAt(tp)
+      if (f) { kbTarget = f; setTimeout(() => sendProbe(1, f), 250) }
+    }
     else if (g === 'hold') clickAt(target({ x: sx, y: sy }), 4) // RFB 里右键是第 3 位
     else if (g === 'drag') sendAt(target({ x: lx, y: ly }), 0)
     g = 'none'
@@ -548,9 +659,32 @@
   })
 
   // ---------- 键盘：手机输入框里打的字逐个发过去；特殊键和修饰键用按钮 ----------
-  const K = { BackSpace: 0xff08, Tab: 0xff09, Return: 0xff0d, Escape: 0xff1b, Left: 0xff51, Up: 0xff52, Right: 0xff53, Down: 0xff54, Shift: 0xffe1, Control: 0xffe3, Option: 0xffe9, Command: 0xffeb, F11: 0xffc8 }
+  const K = { BackSpace: 0xff08, Tab: 0xff09, Return: 0xff0d, Escape: 0xff1b, Left: 0xff51, Up: 0xff52, Right: 0xff53, Down: 0xff54, Shift: 0xffe1, Control: 0xffe3, Option: 0xffe9, Command: 0xffeb, F11: 0xffc8, Delete: 0xffff, Home: 0xff50, End: 0xff57, PageUp: 0xff55, PageDown: 0xff56 }
   const MODS = [['⌘', K.Command], ['⌥', K.Option], ['⌃', K.Control], ['⇧', K.Shift]] as const
   let mods = $state<number[]>([]) // 按下的修饰键：只对下一个键生效
+  // 快捷键跟终端页的规则一样：第一行放最常用的（正好排满一行不用滑），其余收在「⋯」展开的面板里（自动换行）。
+  // ⌘Q 太容易误点退出 app，不放；要用就点 ⌘ 再按 q
+  type KB = { label: string; mod?: number; sym?: number; extra?: number[] }
+  const TOP_KEYS: KB[] = [{ label: '⌘', mod: K.Command }, { label: 'Esc', sym: K.Escape }, { label: 'Tab', sym: K.Tab }, { label: '↩', sym: K.Return }, { label: '⌫', sym: K.BackSpace },
+    { label: '←', sym: K.Left }, { label: '→', sym: K.Right }, { label: '⌘C', sym: 0x63, extra: [K.Command] }, { label: '⌘V', sym: 0x76, extra: [K.Command] }]
+  const MORE_KEYS: KB[] = [{ label: '⌥', mod: K.Option }, { label: '⌃', mod: K.Control }, { label: '⇧', mod: K.Shift }, { label: '↑', sym: K.Up }, { label: '↓', sym: K.Down }, { label: '⌦', sym: K.Delete },
+    { label: 'Home', sym: K.Home }, { label: 'End', sym: K.End }, { label: 'PgUp', sym: K.PageUp }, { label: 'PgDn', sym: K.PageDown },
+    { label: '⌘X', sym: 0x78, extra: [K.Command] }, { label: '⌘A', sym: 0x61, extra: [K.Command] }, { label: '⌘Z', sym: 0x7a, extra: [K.Command] }, { label: '⌘⇧Z', sym: 0x7a, extra: [K.Command, K.Shift] },
+    { label: '⌘S', sym: 0x73, extra: [K.Command] }, { label: '⌘F', sym: 0x66, extra: [K.Command] }, { label: '⌘W', sym: 0x77, extra: [K.Command] }, { label: '⌘T', sym: 0x74, extra: [K.Command] },
+    { label: '⌘Tab', sym: K.Tab, extra: [K.Command] }, { label: '⌘Space', sym: 0x20, extra: [K.Command] }]
+  let moreKeys = $state(false)
+  const hitKey = (k: KB) => (k.mod ? toggleMod(k.mod) : press(k.sym!, k.extra))
+  const moreModOn = $derived(MORE_KEYS.some((k) => k.mod && mods.includes(k.mod)))
+  // 手机键盘弹着（可视高度明显比窗口矮）：底部不再留安全区
+  let kbUp = $state(false)
+  $effect(() => {
+    const vv = window.visualViewport
+    if (!vv) return
+    const f = () => (kbUp = window.innerHeight - vv.height > 120)
+    f()
+    vv.addEventListener('resize', f)
+    return () => vv.removeEventListener('resize', f)
+  })
   const keysym = (ch: string) => { const cp = ch.codePointAt(0)!; return cp < 0x100 ? cp : 0x01000000 | cp }
   function press(sym: number, extra: number[] = []) {
     if (!rfb) return
@@ -560,7 +694,7 @@
     for (const m of [...all].reverse()) rfb.sendKey(m, null, false)
     mods = []
   }
-  /** 一段文字：[251, 长度, UTF-8] 整段发给转码代理，由 Mac 上的助手粘贴进去（不受 Mac 输入法影响、顺序不乱）；
+  /** 一段文字：[251, 长度, UTF-8] 整段发给转码代理，由电脑上的助手粘贴进去（不受 Mac 输入法影响、顺序不乱）；
    *  按着修饰键时（比如先点了 ⌘ 再打 c）还是逐个按键 */
   function typeText(s: string) {
     if (mods.length || !sock || sock.readyState !== 1) { for (const ch of s) press(ch === '\n' ? K.Return : keysym(ch)); return }
@@ -603,43 +737,152 @@
     if (kbOpen) { await tick(); kbInput?.focus() }
   }
 
+  // ---------- 自动键盘：点到电脑上的输入框就弹手机键盘（开关，默认关） ----------
+  // 判断在电脑上做（转码代理的 254 探测：系统指针是不是 I 形 + 辅助功能里的焦点控件，都是只读的）。
+  // iOS 只允许在手指点的那一下同步弹键盘：手指刚按下就先问一次，抬起时结果到了就当场弹；没赶上就点完再问，
+  // 是输入框就在旁边浮一个「⌨」按钮，点它弹键盘。弹出后把输入光标（拿不到就用点的位置）挪到键盘上面
+  let autoKb = $state(load('screenAutoKb', '0') === '1')
+  function toggleAutoKb() {
+    autoKb = !autoKb
+    save('screenAutoKb', autoKb ? '1' : '0')
+    if (autoKb && rotated) showNote(t('横过来显示时不会自动弹键盘，竖着用才行'))
+  }
+  let ghost = $state<HTMLInputElement>() // 一直在页面里的隐形输入框：同步 focus 它才能在手势里弹出键盘
+  let bubble = $state<HTMLButtonElement>()
+  let probe0: { x: number; y: number; t: boolean; at: number } | null = null
+  let bubbleAt = $state<{ x: number; y: number } | null>(null)
+  let bubbleTimer: ReturnType<typeof setTimeout> | undefined
+  let kbTarget: { x: number; y: number } | null = null // 键盘弹出后要露出来的点（画面坐标）
+  /** 相对画布的像素 → 画面坐标 */
+  function fbOf(p: readonly [number, number]) {
+    const d = display()
+    return d ? { x: Math.round(d._viewportLoc.x + p[0] / d._scale), y: Math.round(d._viewportLoc.y + p[1] / d._scale) } : null
+  }
+  function sendProbe(mode: 0 | 1, f: { x: number; y: number }) {
+    if (!sock || sock.readyState !== 1) return
+    const m = new Uint8Array(6)
+    const v = new DataView(m.buffer)
+    m[0] = 254; m[1] = mode; v.setUint16(2, Math.max(0, f.x)); v.setUint16(4, Math.max(0, f.y))
+    sock.send(m)
+  }
+  function openKb(target?: { x: number; y: number }) {
+    ghost?.focus() // 必须同步（还在手势里）
+    if (target) kbTarget = target
+    bubbleAt = null
+    kbOpen = true
+    tick().then(() => kbInput?.focus())
+  }
+  function onProbe(r: { m: number; t: boolean; x: number; y: number; cx?: number; cy?: number }) {
+    if (r.m === 0) { probe0 = { x: r.x, y: r.y, t: r.t, at: Date.now() }; return }
+    if (r.cx != null) kbTarget = { x: r.cx, y: r.cy! }
+    if (!r.t || !autoKb) return
+    // 快捷栏开着但手机键盘其实收起了（输入框没焦点）：还是要给按钮
+    const typing = kbOpen && (document.activeElement === kbInput || document.activeElement === ghost)
+    if (typing) { if (kbUp) revealTarget(); return }
+    bubbleAt = { x: r.x, y: r.y }
+    clearTimeout(bubbleTimer)
+    bubbleTimer = setTimeout(() => (bubbleAt = null), 4000)
+  }
+  /** 键盘弹着时把要输入的地方挪到看得见的位置：放大到画面跟屏幕一样宽，目标点放在可视区域 60% 高的地方 */
+  function revealTarget() {
+    const d = display()
+    if (!kbTarget || !d || !stage || !d.width) return
+    const zw = stage.clientWidth / d.width / fitScale()
+    if (zw > zoom) zoom = zw
+    const sc = fitScale() * zoom
+    pos = { x: kbTarget.x - stage.clientWidth / sc / 2, y: kbTarget.y - (stage.clientHeight / sc) * 0.6 }
+    applyView()
+  }
+  $effect(() => { if (kbUp && kbOpen && kbTarget) setTimeout(revealTarget, 250) })
+  const bubbleStyle = $derived.by(() => {
+    cursorTick
+    if (!bubbleAt || !stage || !canvas() || !display()) return null
+    const cr = localRect(canvas()!), sr = localRect(stage)
+    const [x, y] = fbOnCanvas(bubbleAt.x, bubbleAt.y)
+    return `left:${cr.left - sr.left + x}px;top:${cr.top - sr.top + y + 14}px`
+  })
+
   const fmtMB = (n: number) => (n / 1048576).toFixed(1)
   const bar = 'grid size-9 flex-none place-items-center rounded-lg text-white/80 active:bg-white/15'
   const key = 'h-9 min-w-9 flex-none rounded-md bg-white/10 px-2 text-[13px] text-white active:bg-white/25'
   const chip = 'h-7 flex-none rounded-full bg-white/10 px-2.5 text-[12px] text-white/80 active:bg-white/25'
 </script>
 
+{#snippet quitBtns(bundle: string)}
+  {#if stuck.includes(bundle)}
+    <button class={cn(chip, 'flex-none', confirmKey === `force:${bundle}` ? 'bg-red-600 text-white' : 'text-red-300')} onclick={() => quitApp(bundle, true)}>{confirmKey === `force:${bundle}` ? t('确认强制退出？') : t('强制退出')}</button>
+  {:else}
+    <button class={cn(chip, 'flex-none', confirmKey === `quit:${bundle}` ? 'bg-red-600 text-white' : '')} onclick={() => quitApp(bundle)}>{confirmKey === `quit:${bundle}` ? t('确认退出？') : t('退出')}</button>
+  {/if}
+{/snippet}
+
 {#if open}
 <div
   class="fixed top-0 left-0 z-50 flex flex-col bg-neutral-950 text-white"
-  style={rotated ? 'width:100dvh;height:100dvw;transform-origin:top left;transform:rotate(90deg) translateY(-100%)' : 'width:100vw;height:100dvh;padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)'}
+  style={rotated ? 'width:100dvh;height:100dvw;transform-origin:top left;transform:rotate(90deg) translateY(-100%)' : 'width:100vw;height:var(--vvh,100dvh);padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)'}
 >
-  <div class={cn('flex items-center gap-0.5 px-1.5 pb-1', rotated ? 'pt-1' : 'pt-[calc(env(safe-area-inset-top)+4px)]')}>
+  <!-- 顶栏：左边关闭 + 画面来源（下拉）；右边按常用程度：键盘、操作方式、更多（画质、自动键盘、横过来、整块屏、切回前台） -->
+  <div class={cn('relative flex items-center gap-1 px-1.5 pb-1', rotated ? 'pt-1' : 'pt-[calc(env(safe-area-inset-top)+4px)]')}>
     <button class={bar} aria-label={t('关闭')} onclick={close}><X class="size-5" /></button>
-    <span class="min-w-0 flex-1 truncate text-[13px] text-white/70">{winView ? winLabel(winView) : desktop || t('Mac 的屏幕')}{status === 'live' && zoom > 1.01 ? ` · ${zoom.toFixed(1)}×` : ''}</span>
-    <button class={cn(bar, rotated && 'bg-white/20')} aria-label={t('横过来显示')} onclick={toggleRotate}><RectangleHorizontal class="size-4.5" /></button>
     {#if status === 'live' || status === 'loading'}
-      <button class={cn(bar, pad && 'bg-white/20')} aria-label={pad ? t('触控板模式（点一下换成直接点）') : t('直接点模式（点一下换成触控板）')} onclick={togglePad}>
+      <label class="relative flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-lg bg-white/10 pr-2 pl-2.5 text-[13px] text-white/90 active:bg-white/20">
+        {#if winView}<AppWindow class="size-4 flex-none text-white/60" />{:else}<Monitor class="size-4 flex-none text-white/60" />{/if}
+        <span class="min-w-0 flex-1 truncate">{winView ? `${winView.app}${winView.title && winView.title !== winView.app ? ' · ' + winView.title : ''}` : displays.length ? `${selected === 0 ? '★ ' : ''}${shortName(displays[selected]?.name || '')}` : desktop || t('Mac 的屏幕')}</span>
+        <ChevronDown class="size-4 flex-none text-white/50" />
+        <select class="absolute inset-0 opacity-0" aria-label={t('看哪个画面')} value={winView ? 'win' : `d${selected}`} onchange={onSource}>
+          <optgroup label={t('显示器')}>
+            {#each displays as d, i (i)}<option value={`d${i}`}>{i === 0 ? '★ ' : ''}{shortName(d.name)}</option>{/each}
+          </optgroup>
+          <optgroup label={t('窗口')}>
+            {#if winView}<option value="win">{winView.app}{winView.title && winView.title !== winView.app ? ' · ' + winView.title : ''}</option>{/if}
+            <option value="pick">{t('选择窗口…')}</option>
+          </optgroup>
+        </select>
+      </label>
+      {#if zoom > 1.01}
+        <button class="h-8 flex-none rounded-lg bg-white/10 px-2 text-[12px] text-white/80 active:bg-white/20" aria-label={t('整块屏')} onclick={resetView}>{zoom.toFixed(1)}×</button>
+      {/if}
+      <button class={cn(bar, kbOpen && 'bg-white/20')} aria-label={t('键盘')} onclick={toggleKb}><Keyboard class="size-4.5" /></button>
+      <button class={bar} aria-label={pad ? t('触控板模式（点一下换成直接点）') : t('直接点模式（点一下换成触控板）')} onclick={togglePad}>
         {#if pad}<MousePointer2 class="size-4.5" />{:else}<Hand class="size-4.5" />{/if}
       </button>
-      <button class={bar} aria-label={t('整块屏')} onclick={resetView}><Scan class="size-4.5" /></button>
-      <button class={cn(bar, kbOpen && 'bg-white/20')} aria-label={t('键盘')} onclick={toggleKb}><Keyboard class="size-4.5" /></button>
+      <button class={cn(bar, moreOpen && 'bg-white/20')} aria-label={t('更多')} onclick={() => (moreOpen = !moreOpen)}><Ellipsis class="size-5" /></button>
+    {:else}
+      <span class="min-w-0 flex-1 truncate text-[13px] text-white/70">{t('Mac 的屏幕')}</span>
+      <button class={cn(bar, rotated && 'bg-white/20')} aria-label={t('横过来显示')} onclick={toggleRotate}><RotateCcwSquare class="size-4.5" /></button>
+    {/if}
+    {#if moreOpen && (status === 'live' || status === 'loading')}
+      <!-- 点面板外面收起 -->
+      <button class="fixed inset-0 z-40 cursor-default" aria-label={t('收起')} onclick={() => (moreOpen = false)}></button>
+      <div class="absolute top-full right-1.5 z-50 w-64 rounded-xl border border-white/10 bg-neutral-900 p-1.5 text-[13px] shadow-xl">
+        <label class="flex items-center gap-2 rounded-lg px-2.5 py-2">
+          <span class="flex-1 text-white/80">{t('画质')}</span>
+          <select class="rounded-md bg-white/10 px-2 py-1 text-white outline-none" value={hi ? 'hi' : 'lo'} onchange={(e) => { if ((e.currentTarget.value === 'hi') !== hi) toggleHi() }}>
+            <option value="lo">{t('省流（按点）')}</option>
+            <option value="hi">{t('清晰（按像素，流量约 4 倍）')}</option>
+          </select>
+        </label>
+        <button class="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left active:bg-white/10" onclick={toggleAutoKb}>
+          <Keyboard class="size-4 text-white/60" /><span class="flex-1">{t('点到输入框自动弹键盘')}</span>
+          <span class={cn('h-5 w-9 rounded-full p-0.5 transition-colors', autoKb ? 'bg-primary' : 'bg-white/20')}><span class={cn('block size-4 rounded-full bg-white transition-transform', autoKb && 'translate-x-4')}></span></span>
+        </button>
+        <button class="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left active:bg-white/10" onclick={() => { toggleRotate(); moreOpen = false }}>
+          <RotateCcwSquare class="size-4 text-white/60" /><span class="flex-1">{t('横过来显示')}</span>{#if rotated}<span class="text-xs text-primary">{t('已开')}</span>{/if}
+        </button>
+        <button class="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left active:bg-white/10" onclick={() => { resetView(); moreOpen = false }}>
+          <Maximize class="size-4 text-white/60" /><span class="flex-1">{t('整块屏（取消放大）')}</span>
+        </button>
+        {#if winView}
+          <button class="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left active:bg-white/10" onclick={startResize}>
+            <Scaling class="size-4 text-white/60" /><span class="flex-1">{t('调整窗口大小')}</span>
+          </button>
+          <button class="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left active:bg-white/10" onclick={() => { restoreFront(); moreOpen = false }}>
+            <Undo2 class="size-4 text-white/60" /><span class="flex-1">{t('切回原来的前台 app')}</span>
+          </button>
+        {/if}
+      </div>
     {/if}
   </div>
-  {#if status === 'live' || status === 'loading'}
-    <div class="flex gap-1.5 overflow-x-auto px-2 pb-1.5">
-      {#if displays.length > 1 || winView}
-        {#each displays as d, i (i)}
-          <button class={cn(chip, i === selected && !winView && 'bg-white text-neutral-900')} onclick={() => pickDisplay(i)}>{i === 0 ? '★ ' : ''}{shortName(d.name)}</button>
-        {/each}
-      {/if}
-      <button class={cn(chip, 'flex items-center gap-1', winView && 'bg-white text-neutral-900')} onclick={openPicker}><AppWindow class="size-3.5" />{winView ? winView.app : t('窗口')}</button>
-      {#if winView}
-        <button class={cn(chip, 'flex items-center gap-1')} aria-label={t('切回原来的前台 app')} onclick={restoreFront}><Undo2 class="size-3.5" />{t('切回')}</button>
-      {/if}
-      <button class={cn(chip, 'ml-auto', hi && 'bg-white text-neutral-900')} onclick={toggleHi}>{hi ? t('清晰') : t('省流')}</button>
-    </div>
-  {/if}
 
   <div bind:this={stage} class="relative min-h-0 flex-1 touch-none overflow-hidden">
     <div bind:this={screen} class="absolute inset-0 [&>div]:!overflow-hidden"></div>
@@ -653,13 +896,21 @@
           <p class="pb-2 text-[11px] text-white/45">{t('只录这一个窗口，不切到前台；第一次点它时才会切到前台')}</p>
           {#if pickErr}<p class="pb-2 text-xs text-red-300">{pickErr}</p>{/if}
           {#each groups as [app, ws] (app)}
-            <p class="pt-2 pb-1 text-[12px] font-medium text-white/60">{app}</p>
+            <div class="flex items-center gap-2 pt-2 pb-1">
+              <p class="min-w-0 flex-1 truncate text-[12px] font-medium text-white/60">{app}</p>
+              {#if !PROTECTED.has(ws[0].bundle)}{@render quitBtns(ws[0].bundle)}{/if}
+            </div>
             {#each ws as w (w.id)}
-              <button class={cn('flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left active:bg-white/15', winView?.id === w.id ? 'bg-white/15' : 'bg-white/5')} onclick={() => pickWindow(w)}>
-                <span class="min-w-0 flex-1 truncate">{w.title || t('（无标题）')}</span>
-                {#if thumb(w)}<span class="flex-none text-[11px] text-white/40">{t('台前调度收起（点了会切到前台）')}</span>
-              {:else if !w.onScreen}<span class="flex-none text-[11px] text-white/40">{t('别的桌面 / 最小化')}</span>{/if}
-              </button>
+              <div class={cn('flex items-center rounded-lg', winView?.id === w.id ? 'bg-white/15' : 'bg-white/5')}>
+                <button class="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-2 text-left active:bg-white/15" onclick={() => pickWindow(w)}>
+                  <span class="min-w-0 flex-1 truncate">{w.title || t('（无标题）')}</span>
+                  {#if thumb(w)}<span class="flex-none text-[11px] text-white/40">{t('台前调度收起（点了会切到前台）')}</span>
+                  {:else if !w.onScreen}<span class="flex-none text-[11px] text-white/40">{t('别的桌面 / 最小化')}</span>{/if}
+                </button>
+                {#if w.bundle !== 'com.apple.Spotlight'}
+                  <button class="grid size-9 flex-none place-items-center rounded-lg text-white/50 active:bg-white/15" aria-label={t('关闭这个窗口')} onclick={() => closeWin(w)}><X class="size-4" /></button>
+                {/if}
+              </div>
             {/each}
           {/each}
           {#if idle.length}
@@ -667,6 +918,7 @@
             {#each idle as a (a.bundle)}
               <div class="flex items-center gap-2 rounded-lg px-2.5 py-1.5">
                 <span class="min-w-0 flex-1 truncate text-white/80">{a.name}</span>
+              {#if a.running && !PROTECTED.has(a.bundle)}{@render quitBtns(a.bundle)}{/if}
                 <button class={cn(chip, 'flex-none')} disabled={!!launching} onclick={() => launchApp(a)}>{launching === a.bundle ? t('打开中…') : a.running ? (a.tray ? t('唤出') : t('开个窗口')) : t('后台打开')}</button>
               </div>
             {/each}
@@ -679,6 +931,34 @@
     {/if}
     {#if note}
       <div class="pointer-events-none absolute inset-x-0 top-2 z-30 mx-auto w-fit max-w-[90%] rounded-full bg-black/80 px-3 py-1.5 text-center text-xs text-white">{note}</div>
+    {/if}
+    <input bind:this={ghost} aria-hidden="true" tabindex="-1" class="pointer-events-none absolute top-0 left-0 size-px opacity-0" />
+    {#if bubbleStyle}
+      <button bind:this={bubble} class="absolute z-30 -translate-x-1/2 rounded-full bg-primary px-3 py-1.5 text-xs text-primary-foreground shadow-lg" style={bubbleStyle} onclick={() => openKb()}>⌨ {t('打字')}</button>
+    {/if}
+    {#if resizing && winView && status === 'live'}
+      <div bind:this={resizeEl} class="pointer-events-none absolute inset-0 z-30">
+        <!-- 工具栏 -->
+        <div class="pointer-events-auto absolute inset-x-2 top-2 flex flex-wrap items-center gap-1.5 rounded-xl bg-black/80 p-1.5 text-xs text-white">
+          <span class="px-1 text-white/70">{dragPts ? `${dragPts.w}×${dragPts.h}` : winPts ? `${winPts.w}×${winPts.h}` : t('读取中…')}</span>
+          <button class={chip} onclick={() => stage && sendPlace(5, stage.clientWidth, stage.clientHeight)}>{t('适合手机')}</button>
+          <button class={chip} onclick={() => sendPlace(2)}>{t('占满')}</button>
+          <button class={chip} onclick={() => sendPlace(3)}>{t('左半')}</button>
+          <button class={chip} onclick={() => sendPlace(4)}>{t('右半')}</button>
+          <button class={cn(chip, 'ml-auto bg-primary text-primary-foreground')} onclick={() => (resizing = false)}>{t('完成')}</button>
+        </div>
+        {#if canvasBox}
+          {@const b = canvasBox}
+          {#if drag}
+            <div class="absolute border-2 border-dashed border-primary bg-primary/10" style="left:{b.x}px;top:{b.y}px;width:{drag.w * b.scale}px;height:{drag.h * b.scale}px"></div>
+          {/if}
+          {@const w = drag ? drag.w * b.scale : b.w}
+          {@const h = drag ? drag.h * b.scale : b.h}
+          <div role="presentation" class="pointer-events-auto absolute h-14 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-primary/80 shadow" style="left:{b.x + w}px;top:{b.y + h / 2}px" ontouchstart={(e) => handleDown(e, 'r')} ontouchmove={handleMove} ontouchend={handleUp} ontouchcancel={handleUp}></div>
+          <div role="presentation" class="pointer-events-auto absolute h-5 w-14 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-primary/80 shadow" style="left:{b.x + w / 2}px;top:{b.y + h}px" ontouchstart={(e) => handleDown(e, 'b')} ontouchmove={handleMove} ontouchend={handleUp} ontouchcancel={handleUp}></div>
+          <div role="presentation" class="pointer-events-auto absolute size-8 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-primary shadow" style="left:{b.x + w}px;top:{b.y + h}px" ontouchstart={(e) => handleDown(e, 'rb')} ontouchmove={handleMove} ontouchend={handleUp} ontouchcancel={handleUp}></div>
+        {/if}
+      </div>
     {/if}
     {#if cursorStyle}
       <div class="pointer-events-none absolute size-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-sky-500/50 shadow" style={cursorStyle}></div>
@@ -698,7 +978,7 @@
         {:else if status === 'connecting' || status === 'auth' || status === 'loading'}
           <div class="grid justify-items-center gap-3 text-white/75">
             <span class="size-7 animate-spin rounded-full border-2 border-white/25 border-t-white"></span>
-            <p>{status === 'connecting' ? t('正在连接 Mac 的屏幕共享…') : status === 'auth' ? t('正在验证…') : t('正在加载画面…')}</p>
+            <p>{status === 'connecting' ? t('正在连接 Mac 的屏幕共享…') : status === 'auth' ? t('正在验证…') : slowLoad ? t('屏幕共享正在启动，第一次连接要多等几秒…') : t('正在加载画面…')}</p>
             {#if status === 'loading'}<p class="text-xs text-white/50">{t('已收到 {n} MB', { n: fmtMB(received) })}</p>{/if}
           </div>
         {:else}
@@ -713,18 +993,24 @@
 
   {#if status === 'live'}
     {#if kbOpen}
-      <div class="flex gap-1.5 overflow-x-auto px-2 pt-1.5">
-        {#each MODS as [label, sym] (sym)}
-          <button class={cn(key, mods.includes(sym) && 'bg-primary text-primary-foreground')} onpointerdown={(e) => e.preventDefault()} onclick={() => toggleMod(sym)}>{label}</button>
-        {/each}
-        <button class={key} onpointerdown={(e) => e.preventDefault()} onclick={() => press(K.Escape)}>Esc</button>
-        <button class={key} onpointerdown={(e) => e.preventDefault()} onclick={() => press(K.Tab)}>Tab</button>
-        <button class={key} onpointerdown={(e) => e.preventDefault()} onclick={() => press(K.Left)}>←</button>
-        <button class={key} onpointerdown={(e) => e.preventDefault()} onclick={() => press(K.Up)}>↑</button>
-        <button class={key} onpointerdown={(e) => e.preventDefault()} onclick={() => press(K.Down)}>↓</button>
-        <button class={key} onpointerdown={(e) => e.preventDefault()} onclick={() => press(K.Right)}>→</button>
+      <div class="flex items-center gap-1 px-2 pt-1.5">
+        <div class="grid min-w-0 flex-1 gap-1" style:grid-template-columns="repeat({TOP_KEYS.length}, minmax(0, 1fr))">
+          {#each TOP_KEYS as k (k.label)}
+            <button class={cn(key, 'min-w-0 px-0', k.mod && mods.includes(k.mod) && 'bg-primary text-primary-foreground')} onpointerdown={(e) => e.preventDefault()} onclick={() => hitKey(k)}>{k.label}</button>
+          {/each}
+        </div>
+        <button class={cn('relative grid h-9 w-8 flex-none place-items-center rounded-md text-white/70 active:bg-white/25', moreKeys && 'bg-white/15 text-white')} aria-label={t('更多按键')} onpointerdown={(e) => e.preventDefault()} onclick={() => (moreKeys = !moreKeys)}>
+          ⋯{#if moreModOn && !moreKeys}<span class="absolute top-1 right-1 size-1.5 rounded-full bg-primary"></span>{/if}
+        </button>
       </div>
-      <div class={cn('px-2 pt-1.5', rotated ? 'pb-1.5' : 'pb-[calc(env(safe-area-inset-bottom)+6px)]')}>
+      {#if moreKeys}
+        <div class="grid grid-cols-[repeat(auto-fill,minmax(52px,1fr))] gap-1 px-2 pt-1">
+          {#each MORE_KEYS as k (k.label)}
+            <button class={cn(key, 'min-w-0 px-1', k.mod && mods.includes(k.mod) && 'bg-primary text-primary-foreground')} onpointerdown={(e) => e.preventDefault()} onclick={() => hitKey(k)}>{k.label}</button>
+          {/each}
+        </div>
+      {/if}
+      <div class={cn('px-2 pt-1.5', rotated || kbUp ? 'pb-1.5' : 'pb-[calc(env(safe-area-inset-bottom)+6px)]')}>
         <input bind:this={kbInput} onbeforeinput={onBeforeInput} oncompositionend={onCompositionEnd} onkeydown={onKeyDown}
           autocapitalize="off" autocomplete="off" spellcheck="false" enterkeyhint="enter" {...{ autocorrect: 'off' }}
           placeholder={mods.length ? t('按下一个键（带 {m}）', { m: MODS.filter(([, s]) => mods.includes(s)).map(([l]) => l).join('') }) : t('在这里打字，直接发到 Mac')}

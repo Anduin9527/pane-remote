@@ -20,6 +20,7 @@
 //   GET|POST /api/push/prefs     推送偏好：{stop} 回合结束是否也推
 //   WS   /api/preview             预览：电脑上无界面 Chrome 的画面（二进制 JPEG，前面一条 JSON 帧头）和操作通道
 //   GET|POST /api/screen/…、WS /api/screen/vnc  看屏幕模块（可选，见 screen.mjs）
+//   GET|POST /api/mac/…                         mac 模块：性能、念一段话（可选，见 mac.mjs）
 //   POST /api/upload?name=…      请求体是文件原始字节（最大 25MB），存到电脑的 ~/Downloads/pane-remote/，返回 {path}
 // 身份：只认 tailscale serve 注入的 Tailscale-User-Login，且必须在 allowedLogins 里；local 模式还要求 Host 是 serveHosts 之一。
 import http from 'node:http'
@@ -30,6 +31,7 @@ import { fileURLToPath } from 'node:url'
 import * as push from './push.mjs'
 import { initCursor, cursorStream, cursorCmd, cursorSummary } from './cursor.mjs'
 import { createScreen } from './screen.mjs'
+import { createMac } from './mac.mjs'
 import { WebSocketServer } from 'ws'
 import zlib from 'node:zlib'
 import { config, APP_DIR, CONFIG_PATH } from './config.mjs'
@@ -580,6 +582,16 @@ const server = http.createServer(async (req, res) => {
       }
       try { return json(res, 200, await screen.http(req.method, url.pathname.slice('/api/screen/'.length), body)) } catch (e) { return json(res, e.code >= 400 && e.code < 600 ? e.code : 500, { error: e.message }) }
     }
+    // mac 模块（可选，macOS，pane-remote enable mac）：这台电脑的性能、用 say 念一段话
+    if (url.pathname.startsWith('/api/mac/')) {
+      if (!config.modules.mac) return json(res, 404, { error: 'mac 模块没开（pane-remote enable mac）' })
+      let body = {}
+      if (req.method === 'POST') {
+        if (!String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'json only' })
+        body = JSON.parse((await readBody(req, 16 << 10)) || '{}')
+      }
+      try { return json(res, 200, await macApi.http(req.method, url.pathname.slice('/api/mac/'.length), body)) } catch (e) { return json(res, e.code >= 400 && e.code < 600 ? e.code : 500, { error: e.message }) }
+    }
     if (url.pathname === '/api/config' && req.method === 'GET') {
       return json(res, 200, { presets: config.presets, modules: config.modules })
     }
@@ -744,6 +756,7 @@ push.startMonitor({
 })
 
 const screen = createScreen({ bridge, bridgeProc })
+const macApi = createMac({ bridge })
 
 // WebSocket 升级不经过上面的请求处理，身份和来源要在这里单独查
 server.on('upgrade', (req, socket, head) => {

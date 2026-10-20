@@ -31,7 +31,8 @@ No third-party server is involved: phone and Mac talk over your own Tailscale ne
 | Preview browser | View web pages reachable from the Mac (localhost, intranet) and files (folders, images, video, PDF, Markdown, code) on the phone, with a desktop mode (desktop UA, landscape full screen) | On by default when Chrome is installed; `pane-remote enable preview` |
 | Open URLs on phone | When something on the Mac opens a link while you are using the phone, open it in the phone's preview instead | `pane-remote enable openUrl` |
 | Cursor mapping | View and drive the Cursor IDE from the phone: sessions, messages, to-do / unread, command output, change diffs, built-in browser | `pane-remote enable cursor`, see [docs/en/cursor.md](docs/en/cursor.md) |
-| Screen view | View and control the Mac's screen (one display or a single window) from the phone: tap, drag, scroll, trackpad mode, typing (CJK included), multi-finger gestures, launching apps in the background. Uses macOS's built-in Screen Sharing, transcoded on the Mac before it travels | `pane-remote enable screen`, see [docs/en/screen.md](docs/en/screen.md) |
+| Screen view | View and control the Mac's screen (one display or a single window) from the phone: tap, drag, scroll, trackpad mode, typing (CJK included), multi-finger gestures, launching apps in the background. Signs in through macOS's built-in Screen Sharing; the picture is captured with ScreenCaptureKit and transcoded on the Mac before it travels. Also closes windows, quits apps, resizes windows, opens the keyboard on text fields and types on the lock screen | `pane-remote enable screen`, see [docs/en/screen.md](docs/en/screen.md) |
+| This Mac | The Mac's performance on the phone (CPU, memory, top processes), and have the Mac read text aloud with the built-in say | `pane-remote enable mac`, see [docs/en/mac.md](docs/en/mac.md) |
 | Relay mode | When the Mac itself can't run Tailscale, relay through a server in your tailnet | See [docs/en/relay.md](docs/en/relay.md) |
 | Persistent panes | Panes survive closing the WezTerm window and stay reachable from the phone | See [docs/en/advanced.md](docs/en/advanced.md) |
 
@@ -81,7 +82,7 @@ The language choice is saved in the config, so later `pane-remote` commands use 
 pane-remote doctor            # self-check; every problem comes with a fix
 pane-remote status            # is the service running
 pane-remote restart | logs
-pane-remote enable preview    # turn modules on / off: preview, openUrl, cursor, screen
+pane-remote enable preview    # turn modules on / off: preview, openUrl, cursor, screen, mac
 pane-remote disable openUrl
 pane-remote init              # re-run after changing config, renaming the Mac or adding a Claude config dir (keeps existing config)
 pane-remote uninstall         # stop the service, remove tailscale serve, restore hooks; --purge also deletes config and data
@@ -147,7 +148,7 @@ pane-remote update --rollback  # go back to the version before the last update
 install.sh          one-step installer
 bin/pane-remote     command entry (lib/cli.mjs)
 server/             server (backend for the phone UI)
-agent/              Mac-side scripts: bridge (the only entry to WezTerm), hooks, transcript parsing, preview browser, Cursor adapter, screen view (screen/)
+agent/              Mac-side scripts: bridge (the only entry to WezTerm), hooks, transcript parsing, preview browser, Cursor adapter, screen view (screen/), This Mac (mac/)
 web/                phone UI source (Svelte); build output goes to public/
 relay/              helper commands for relay mode
 scripts/audit.mjs   pre-release audit: personal info, internal addresses and secrets

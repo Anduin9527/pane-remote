@@ -112,4 +112,12 @@ export default {
   窗口关掉了: 'The window was closed',
   '这个窗口录不到（可能最小化了）': "This window can't be captured (it may be minimized)",
   '看不懂 uTools 的唤出快捷键 {spec}': "Can't parse uTools's show hotkey {spec}",
+  '这个窗口不能改大小': "This window can't be resized",
+  '只有看窗口时才能改大小': 'Resizing works only in window view',
+  'mousectl 没回应': "mousectl didn't answer",
+  '系统进程不能退出': "System processes can't be quit",
+  'no close button': 'This window has no close button',
+  // ---- mac 模块（server/mac.mjs、agent/mac） ----
+  'mac 模块没开（pane-remote enable mac）': 'The mac module is off (pane-remote enable mac)',
+  没有要念的字: 'Nothing to say',
 } as Record<string, string>

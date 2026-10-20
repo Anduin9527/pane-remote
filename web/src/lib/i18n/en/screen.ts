@@ -44,4 +44,35 @@ export default {
   // App.svelte 顶栏的入口
   '看电脑屏幕': "View the computer's screen",
   '屏幕加载失败，刷新页面再试': 'Failed to load the screen view. Reload the page and try again',
+  // 关窗口 / 退出 app
+  关闭这个窗口: 'Close this window',
+  退出: 'Quit',
+  '确认退出？': 'Quit? Tap again',
+  强制退出: 'Force quit',
+  '确认强制退出？': 'Force quit? Tap again',
+  强制退出后它还在运行: 'It is still running after force quit',
+  // 顶栏：画面来源、更多
+  看哪个画面: 'Which screen to view',
+  显示器: 'Displays',
+  '选择窗口…': 'Choose a window…',
+  更多: 'More',
+  收起: 'Close',
+  画质: 'Quality',
+  '省流（按点）': 'Data saver (points)',
+  '清晰（按像素，流量约 4 倍）': 'Sharp (pixels, ~4× data)',
+  点到输入框自动弹键盘: 'Open keyboard on text fields',
+  '整块屏（取消放大）': 'Fit whole screen',
+  '屏幕共享正在启动，第一次连接要多等几秒…': 'Screen Sharing is starting up; the first connection takes a few more seconds…',
+  // 键盘
+  更多按键: 'More keys',
+  打字: 'Type',
+  '横过来显示时不会自动弹键盘，竖着用才行': "Auto keyboard doesn't work in the sideways view; use it upright",
+  // 改窗口大小
+  调整窗口大小: 'Resize window',
+  适合手机: 'Fit phone',
+  占满: 'Fill',
+  左半: 'Left half',
+  右半: 'Right half',
+  '窗口改成了 {w}×{h}': 'Window is now {w}×{h}',
+  没改成: "Didn't work",
 } as Record<string, string>

@@ -26,6 +26,7 @@ const DEFAULTS = {
     openUrl: false, // 电脑上打开网址时，人在用手机就转到手机预览（会接管 open 命令）
     cursor: false, // Cursor IDE 映射：会话 / 消息 / 改动 / 内置浏览器（Cursor 要带调试端口启动，必要时会重启 Cursor）
     screen: false, // 看屏幕（只限 macOS）：手机上看 / 操作电脑屏幕，走系统自带的屏幕共享，要装 mousectl 并授权（docs/screen.md）
+    mac: false, // 这台电脑（只限 macOS）：手机上看性能（CPU、内存、占用最多的进程），让电脑用自带的 say 念一段话（docs/mac.md）
   },
   // 新建 pane 时可选的启动命令
   presets: [

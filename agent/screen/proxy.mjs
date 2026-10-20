@@ -12,7 +12,8 @@
 //   Mac 这头：固定 32 位 RGB、只要 ZRLE / Raw，解到裁好的画面缓冲里，记下变了的区域，一帧收完马上再要下一帧（增量）
 //   手机这头：手机要一帧（FramebufferUpdateRequest）才发一帧，只发变了的区域；手机网慢就自然跳帧，不在路上堆积
 //   鼠标坐标按缩放和裁剪换回整张画面的坐标；键盘、剪贴板原样转
-//   自定义消息 250：换屏 / 换清晰度（不用重新认证）；252：只看某个窗口（画面来自 mousectl）；253：把之前的前台 app 切回来
+//   自定义消息 250：换屏 / 换清晰度（不用重新认证）；252：只看某个窗口（画面来自 mousectl）；253：把之前的前台 app 切回来；
+//   247：改窗口大小（mousectl 用辅助功能直接设，不拖、不切前台；结果用「[z]{…}」回给手机）；254：探测手指下面是不是输入框（结果用 DesktopName「[k]{…}」回给手机，手机据此弹键盘）
 //   换屏或刚连上时，整块画面收齐了才发给手机，并在这一帧末尾带一个 DesktopName，手机据此知道「画面到了」
 //
 // 每块屏在整张画面里的位置不能按系统的屏幕坐标直接换算（多屏、有负坐标的排布下，整张宽度会比按 2 倍算的少一截，
@@ -27,7 +28,7 @@ import net from 'node:net'
 import zlib from 'node:zlib'
 import fs from 'node:fs'
 import path from 'node:path'
-import { spawn, execFileSync } from 'node:child_process'
+import { spawn, execFile, execFileSync } from 'node:child_process'
 import sharp from 'sharp'
 
 sharp.concurrency(4)
@@ -66,6 +67,13 @@ class Reader {
 }
 
 const MAC_PORT = Number(process.env.VNC_PROXY_PORT || 5900) // 测试时指到假服务器
+// 连之前先把显示器叫醒：系统日志显示，登录成功后屏幕共享会先「唤醒主显示器」，碰上显示器在低功耗状态时
+// 唤醒过程中各块屏重新配置，它的采集进程这一轮就没开始采集（display index not found），整场黑屏；下一个连接正常。
+// 所以抢在它前面用 caffeinate -u（声明用户在操作）叫醒显示器，等一下再连，让唤醒不落在会话里
+// 实测：叫醒后马上连，第一帧有了但之后不再更新（唤醒跟采集初始化又撞上了），比黑屏更糟。默认不做，靠黑屏重连兜底
+if (process.env.VNC_PROXY_WAKE === '1') {
+  try { execFileSync('/usr/bin/caffeinate', ['-u', '-t', '2'], { stdio: 'ignore', timeout: 4000 }) } catch {}
+}
 const mac = net.connect(MAC_PORT, '127.0.0.1')
 mac.setNoDelay(true)
 const fromMac = new Reader(), fromPhone = new Reader()
@@ -427,8 +435,8 @@ const T0 = Date.now()
 let blackChecks = 0
 setInterval(() => {
   if (win || !fresh || !fb.length || blackChecks < 0) return
-  if (litRatio() > 0.01) { blackChecks = -1; return }
-  if (++blackChecks < 2 || Date.now() - T0 > 15000) return
+  if (litRatio() > 0.01) { blackChecks = -1; flush(); return }
+  if (++blackChecks < 3 || Date.now() - T0 > 15000) return
   blackChecks = -1
   log('picture stays black (cold screen sharing session), asking the phone to reconnect')
   const nm = Buffer.from('[r]'), l = Buffer.alloc(4); l.writeUInt32BE(nm.length)
@@ -463,14 +471,35 @@ function stopWindow() {
 }
 /** 回到看整块屏 */
 let failNote = '' // 窗口录不到退回看屏时，下一次 DesktopName 带上原因：「[x]原因」
+let displayRetries = 0
 function backToScreens(why) {
-  if (why) log('window mode ended:', why)
+  if (why) log(`${win?.kind === 'display' ? 'display' : 'window'} stream ended:`, why)
+  if (win?.kind === 'display') {
+    // 整块屏的录制断了（mousectl 重启之类）：先重试 3 次，都不行才退回屏幕共享
+    if (displayRetries < 3) {
+      displayRetries++
+      stopWindow()
+      setTimeout(() => { if (!win) { log(`display stream retry ${displayRetries}`); showScreen(); flush() } }, 1000)
+      return
+    }
+    sckFailed = true; failNote = ''
+  }
+  else failNote = why === 'window closed' ? '窗口关掉了' : /^error: /.test(why || '') ? why.slice(7) : ''
   stopWindow()
-  failNote = why === 'window closed' ? '窗口关掉了' : /^error: /.test(why || '') ? why.slice(7) : ''
-  layout()
-  macRequest(false)
+  showScreen()
   flush()
 }
+// 看整块屏：优先让 mousectl 用 ScreenCaptureKit 录这块显示器（跟看窗口同一条路，自己比较帧差）。
+// 苹果的屏幕共享实测会出两种毛病：冷启动第一个连接整场黑屏；有时第一帧之后就不再推增量更新（新旧代理都一样）。
+// 屏幕共享的连接仍然要：登录认证靠它，mousectl 不在或录不了时退回它
+let sckFailed = process.env.VNC_PROXY_NO_SCK === '1'
+function showScreen() {
+  if (mousectl && !sckFailed) { startWindow(`s${view.index}`, view.hi, { kind: 'display', taken: true }); return }
+  layout()
+  macRequest(false)
+}
+/** mousectl 是异步连上的：开始时最多等它半秒 */
+async function waitMousectl() { for (let i = 0; i < 10 && !mousectl; i++) await sleep(50) }
 function startWindow(id, hi, keep = null) {
   stopWindow()
   // 窗口第一帧到之前别再把屏幕的画面发给手机
@@ -478,9 +507,19 @@ function startWindow(id, hi, keep = null) {
   const c = net.connect(MOUSE_SOCK)
   const w = { id, hi, sock: c, x: 0, y: 0, w: 0, h: 0, W: 0, H: 0, pid: 0, taken: false, prev: 0, polling: false, ...keep }
   win = w
-  ask('w list').then((l) => { try { w.pid = JSON.parse(l).windows.find((x) => x.id === id)?.pid || 0 } catch {} })
+  if (!w.kind) ask('w list').then((l) => { try { w.pid = JSON.parse(l).windows.find((x) => x.id === id)?.pid || 0 } catch {} })
   const r = new Reader()
   c.on('connect', () => c.write(`w stream ${id} ${hi ? 1 : 0}\n`))
+  // 整块屏：4 秒还没收到画面尺寸就不等了，这一场改用屏幕共享。旧版 mousectl 不认「s<序号>」，什么都不回
+  // （没用 --create-cert 时更新不会重编 mousectl），没给「屏幕录制」授权时也可能这样
+  if (w.kind === 'display') setTimeout(() => {
+    if (win !== w || w.W) return
+    log('display stream gave no picture in 4 s (old mousectl or no screen recording permission), using screen sharing')
+    sckFailed = true
+    stopWindow()
+    showScreen()
+    flush()
+  }, 4000)
   c.on('data', (d) => r.push(d))
   c.on('close', () => r.end())
   c.on('error', (e) => log('window stream error', e.code))
@@ -494,7 +533,8 @@ function startWindow(id, hi, keep = null) {
           if (win !== w) continue
           crop = { x: 0, y: 0, w: w.W, h: w.H }; s = 1
           resetBuffer()
-          log(`window ${id} ${w.W}x${w.H}${hi ? ' sharp' : ''}`)
+          log(`${w.kind === 'display' ? 'display' : 'window'} ${id} ${w.W}x${w.H}${hi ? ' sharp' : ''} (screen capture)`)
+          if (w.kind === 'display') displayRetries = 0
         } else if (t === 2) {
           const b = await r.need(8)
           const x = u16(b, 0), y = u16(b, 2), rw = u16(b, 4), rh = u16(b, 6)
@@ -517,13 +557,21 @@ function startWindow(id, hi, keep = null) {
           // 窗口不在屏幕上（别的桌面 / 台前调度收起来），mousectl 退成定时截图：告诉手机
           w.polling = (await r.need(1))[0] === 1
           // 拿不到实时画面（别的桌面、台前调度收起）：直接切到前台再重新录（人多半不在电脑前，抢前台无所谓）
-          if (w.polling && win === w && !w.raised) {
+          if (w.polling && win === w && !w.raised && w.kind !== 'display') {
             w.raised = true
             log(`window ${w.id} not on screen, bringing it forward`)
             await takeOver()
             await sleep(500)
             if (win === w) startWindow(w.id, w.hi, { taken: w.taken, prev: w.prev, raised: true })
             return
+          }
+          // 切到前台以后还是只有截图（实测偶尔会这样，截图是旧画面，看着像卡住）：隔 3 秒重开实时录制，最多 3 次
+          if (w.polling && win === w && w.raised && w.kind !== 'display' && (w.retries || 0) < 3) {
+            setTimeout(() => {
+              if (win !== w || !w.polling) return
+              log(`window ${w.id} still has no live frames, retrying (${(w.retries || 0) + 1})`)
+              startWindow(w.id, w.hi, { taken: w.taken, prev: w.prev, raised: true, retries: (w.retries || 0) + 1 })
+            }, 3000)
           }
           if (win === w && fresh) { announce = true; flush() }
         } else if (t === 4) {
@@ -551,6 +599,78 @@ async function takeOver() {
   log(`window ${w.id} taken over`)
   await sleep(200) // 等切桌面、窗口提上来
 }
+// ---------- 探测输入框（手机据此自动弹键盘） ----------
+// 两个只读信号，都不碰 app 本身：① 系统当前的鼠标指针是不是 I 形（各种 app 在输入框上都会换成它，微信、Electron 也一样）；
+// ② 辅助功能里焦点控件的角色（原生 app 才有，还能给出输入光标的位置）。
+// 手指刚按下：先把光标挪过去（不点），等前台 app 换好指针再看形状；点完之后：形状和焦点都看
+const sendName = (str) => { const nm = Buffer.from(str), l = Buffer.alloc(4); l.writeUInt32BE(nm.length); const hdr = Buffer.alloc(4); hdr[0] = 0; hdr.writeUInt16BE(1, 2); toPhone(Buffer.concat([hdr, rectHeader(0, 0, 0, 0, -307), l, nm])) }
+function globalOf(px, py) {
+  const x = crop.x + px * s + (s >> 1), y = crop.y + py * s + (s >> 1)
+  if (win) { if (!win.w) return null; const k = win.W / win.w; return { x: win.x + x / k, y: win.y + y / k } }
+  if (!viewDisp) return null
+  const k = viewDisp.pw / viewDisp.w
+  return { x: viewDisp.x + (x - viewRect.x) / k, y: viewDisp.y + (y - viewRect.y) / k }
+}
+function phoneOf(gx, gy) {
+  let x, y
+  if (win) { const k = win.W / win.w; x = (gx - win.x) * k; y = (gy - win.y) * k }
+  else { const k = viewDisp.pw / viewDisp.w; x = viewRect.x + (gx - viewDisp.x) * k; y = viewRect.y + (gy - viewDisp.y) * k }
+  return { x: Math.round((x - crop.x) / s), y: Math.round((y - crop.y) / s) }
+}
+async function probeFocus(mode, px, py) {
+  if (!mousectl) { log('focus probe: no mousectl'); return }
+  const g = globalOf(px, py)
+  if (!g) { log('focus probe: no mapping'); return }
+  if (mode === 0) {
+    if (win && !win.taken) return // 窗口还在后台时不挪用户的光标
+    mousectl.write(`p ${g.x.toFixed(1)} ${g.y.toFixed(1)} 0\n`)
+    await sleep(80)
+  }
+  let f
+  const raw = await ask('f')
+  try { f = JSON.parse(raw) } catch { log(`focus probe ${mode}: mousectl gave ${raw ? 'bad' : 'no'} answer`); return }
+  const textRole = /^(AXTextField|AXTextArea|AXComboBox|AXSearchField)$/.test(f.role || '')
+  const text = mode === 0 ? !!f.ibeam : !!(f.ibeam || textRole || f.secure)
+  const out = { m: mode, t: text, x: px, y: py }
+  if (mode === 1 && f.caret && (textRole || f.ibeam)) { const c = phoneOf(f.caret.x, f.caret.y + f.caret.h); out.cx = c.x; out.cy = c.y }
+  log(`focus probe ${mode}: text=${text} via ${f.ibeam ? 'ibeam' : textRole ? f.role : f.secure ? 'secure' : '-'}${out.cx != null ? ' caret' : ''}`)
+  sendName('[k]' + JSON.stringify(out))
+}
+
+// ---------- 锁屏：键盘改走屏幕共享 ----------
+// 锁屏时密码框是系统的安全输入：不接受粘贴，普通进程（mousectl）发的按键也进不去；屏幕共享是系统服务，它注入的能进。
+// 所以每秒看一次锁没锁，锁着的时候文字和按键都逐个 keysym 交给屏幕共享
+let screenLocked = false
+setInterval(() => {
+  execFile('/usr/sbin/ioreg', ['-n', 'Root', '-d1'], { timeout: 2000 }, (err, out) => {
+    if (err) return
+    const v = /"IOConsoleLocked" = Yes/.test(out)
+    if (v !== screenLocked) { screenLocked = v; log(`screen ${v ? 'locked: keyboard goes through screen sharing' : 'unlocked'}`) }
+  })
+}, 1000).unref()
+/** 一段文字逐字按键发给屏幕共享 */
+function typeViaMac(text) {
+  for (const ch of text) {
+    const cp = ch.codePointAt(0), sym = ch === '\n' ? 0xff0d : cp < 0x100 ? cp : 0x01000000 | cp
+    for (const down of [1, 0]) { const k = Buffer.from([4, down, 0, 0, 0, 0, 0, 0]); k.writeUInt32BE(sym, 4); toMac(k) }
+  }
+}
+
+// ---------- 改窗口大小 ----------
+const PLACE_MODES = ['check', 'size', 'fill', 'left', 'right', 'aspect']
+async function placeWin(mode, a, b) {
+  const reply = (o) => sendName('[z]' + JSON.stringify({ m: mode, ...o }))
+  const m = PLACE_MODES[mode]
+  if (!m) return
+  if (!mousectl || !win || win.kind === 'display' || !win.w) return reply({ ok: false, err: '只有看窗口时才能改大小' })
+  const k = win.W / win.w // 画面像素 / 点
+  const args = m === 'size' ? ` ${Math.round(a / k)} ${Math.round(b / k)}` : m === 'aspect' ? ` ${a} ${b}` : ''
+  const r = await ask(`w place ${win.id} ${m}${args}`)
+  const mm = /^ok (-?\d+) (-?\d+) (\d+) (\d+)/.exec(r)
+  log(`window ${win?.id} place ${m}${args} → ${mm ? `${mm[3]}x${mm[4]}` : r || 'no answer'}`)
+  reply(mm ? { ok: true, pw: Number(mm[3]), ph: Number(mm[4]) } : { ok: false, err: r.replace(/^error: /, '') || 'mousectl 没回应' })
+}
+
 // 键盘：窗口模式下还没切到前台时，直接发给那个 app 的进程（不抢前台）
 const keyCmd = (code, flags, down) => (win && !win.taken && win.pid ? `K ${win.pid} ${code} ${flags} ${down ? 1 : 0}\n` : `k ${code} ${flags} ${down ? 1 : 0}\n`)
 const textCmd = (text) => (win && !win.taken && win.pid ? `T ${win.pid} ${Buffer.from(text).toString('base64')}\n` : `t ${Buffer.from(text).toString('base64')}\n`)
@@ -613,6 +733,8 @@ async function jpegRect(r) {
 }
 async function flush() {
   if (!phoneWants || flushing || !fresh || (!dirty.length && !sendSize && !announce)) return
+  // 刚连上 15 秒内画面还是全黑：先不发（手机一直显示「正在启动」），等画面出来或者让手机重连
+  if (!win && blackChecks >= 0 && Date.now() - T0 < 15000 && litRatio() <= 0.01) return
   flushing = true; phoneWants = false
   const rects = dirty; dirty = []
   const parts = []
@@ -620,7 +742,7 @@ async function flush() {
   parts.push(...(await Promise.all(rects.map(jpegRect))))
   if (announce) {
     // 窗口模式报「[w]窗口号」，手机据此知道现在看的是窗口还是屏（窗口关了自动退回看屏时也能知道）
-    const nm = Buffer.from(win ? `[w]${win.id}${win.polling ? 'p' : win.raised ? 'f' : ''}` : failNote ? `[x]${failNote}` : name || 'Mac')
+    const nm = Buffer.from(win && win.kind !== 'display' ? `[w]${win.id}${win.polling ? 'p' : win.raised ? 'f' : ''}` : failNote ? `[x]${failNote}` : name || 'Mac')
     failNote = ''
     const l = Buffer.alloc(4); l.writeUInt32BE(nm.length)
     parts.push(Buffer.concat([rectHeader(0, 0, 0, 0, -307), l, nm]))
@@ -646,15 +768,12 @@ async function phoneLoop() {
       flush()
     } else if (t === 4) {
       const b = await fromPhone.need(7)
-      if (!mousectl || !keyToMousectl(b[0] === 1, u32(b, 3))) toMac(Buffer.concat([Buffer.from([4]), b]))
+      if (screenLocked || !mousectl || !keyToMousectl(b[0] === 1, u32(b, 3))) toMac(Buffer.concat([Buffer.from([4]), b]))
     } else if (t === 251) {
       // 一段文字：[251, 长度 u32, UTF-8]。有 mousectl 就让它粘贴进去，没有就逐字按键发给屏幕共享
       const text = (await fromPhone.need(u32(await fromPhone.need(4)))).toString('utf8')
-      if (mousectl) mousectl.write(textCmd(text))
-      else for (const ch of text) {
-        const cp = ch.codePointAt(0), sym = cp < 0x100 ? cp : 0x01000000 | cp
-        for (const down of [1, 0]) { const k = Buffer.from([4, down, 0, 0, 0, 0, 0, 0]); k.writeUInt32BE(sym, 4); toMac(k) }
-      }
+      if (mousectl && !screenLocked) mousectl.write(textCmd(text))
+      else typeViaMac(text)
     } else if (t === 5) {
       const b = await fromPhone.need(5)
       const half = s > 1 ? s >> 1 : 0
@@ -663,6 +782,13 @@ async function phoneLoop() {
         // 窗口模式：按下任何键（含滚轮）先把窗口切到前台，之后按窗口位置换成全局点；没切过去之前光标移动不管（别在后台乱挪用户的光标）
         if (!mousectl || !win.w) continue
         if (b[0] && !win.taken) await takeOver()
+        else if (b[0] && win.polling && win.kind !== 'display') {
+          // 只有截图的时候点它：再切一次前台、重开实时录制（截图是旧画面）
+          const w = win
+          await ask(`a ${w.id}`)
+          await sleep(300)
+          if (win === w) startWindow(w.id, w.hi, { taken: true, prev: w.prev, raised: true })
+        }
         if (!win?.taken) continue
         const k = win.W / win.w
         mousectl.write(`p ${(win.x + x / k).toFixed(1)} ${(win.y + y / k).toFixed(1)} ${b[0]}\n`)
@@ -679,8 +805,7 @@ async function phoneLoop() {
       const b = await fromPhone.need(2)
       view = { index: b[0], hi: b[1] === 1 }
       stopWindow()
-      layout()
-      macRequest(false)
+      showScreen()
       flush()
     } else if (t === 252) {
       // 看某个窗口：[252, 窗口号 u32, 清晰 0/1, 先切到前台 0/1]（台前调度收起来的窗口只剩缩略图大小，得先切出来）
@@ -690,6 +815,15 @@ async function phoneLoop() {
         if (b[5] === 1) { await takeOver(); await sleep(500); if (win) startWindow(win.id, win.hi, { taken: win.taken, prev: win.prev }) }
       }
       else log('window mode needs mousectl')
+    } else if (t === 247) {
+      // 改窗口大小：[247, 方式 0=查能不能改 1=宽×高（画面像素）2=占满 3=左半 4=右半 5=按比例, a u16, b u16]
+      const b = await fromPhone.need(5)
+      placeWin(b[0], u16(b, 1), u16(b, 3))
+    } else if (t === 254) {
+      // 探测输入框：[254, 时机 0=手指刚按下 1=点完之后, x u16, y u16]（手机画面坐标）
+      const b = await fromPhone.need(5)
+      log(`focus probe ${b[0]} requested at ${u16(b, 1)},${u16(b, 3)}${win ? ` (window ${win.taken ? 'taken' : 'background'})` : ''}`)
+      probeFocus(b[0], u16(b, 1), u16(b, 3))
     } else if (t === 253) {
       // 把之前的前台 app 切回来
       if (win?.prev) { mousectl?.write(`r ${win.prev}\n`); log('restored front app') }
@@ -712,9 +846,10 @@ try {
   const se = Buffer.alloc(4 + 4 * ENCODINGS.length); se[0] = 2; se.writeUInt16BE(ENCODINGS.length, 2)
   ENCODINGS.forEach((e, i) => se.writeInt32BE(e, 4 + 4 * i))
   toMac(se)
-  macRequest(false)
+  await waitMousectl()
+  showScreen()
   const loops = Promise.all([macLoop(), phoneLoop()])
-  if (!cached) {
+  if (!cached && !win) {
     // 先按估算的位置出画面，画面到了再在后台校准，算出来了换成准确的
     const t0 = Date.now()
     while (!fresh && Date.now() - t0 < 8000) await sleep(100)

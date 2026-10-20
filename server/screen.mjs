@@ -4,6 +4,8 @@
 //   GET  /api/screen/apps       装了的 app，标出在运行的
 //   POST /api/screen/launch {bundle}  后台打开一个 app，不抢前台
 //   POST /api/screen/summon {bundle}  唤出一个 app 的窗口（只有菜单栏图标的 app：按它的唤出快捷键或点菜单栏图标）
+//   POST /api/screen/close {id}       按这个窗口自己的关闭按钮（辅助功能）
+//   POST /api/screen/quit {bundle, force}  退出 app / 强制退出（手机上要点两次确认；系统进程 mousectl 不让退）
 //   WS   /api/screen/vnc?view=屏序号,清晰   手机上的 noVNC ⇄ bridge 的 screen（电脑上的转码代理 agent/screen/proxy.mjs）⇄ 屏幕共享
 // 画面在电脑上裁剪、缩放、压成 JPEG 再过来，这里只把 bridge 进程的 stdin/stdout 跟 WebSocket 对接；
 // 登录用的是屏幕共享自己的认证（ARD，凭据在手机上加密），服务端看不到密码。
@@ -26,6 +28,20 @@ export function createScreen({ bridge, bridgeProc }) {
       const id = String(body?.bundle ?? '')
       if (!/^[A-Za-z0-9.-]{1,200}$/.test(id)) throw err('bad bundle id', 400)
       const r = (await bridge(`screen-${action} ${id}`)).trim()
+      if (r !== 'ok') throw err(r.replace(/^error: /, '') || 'failed', 502)
+      return { ok: true }
+    }
+    if (method === 'POST' && action === 'close') {
+      const id = Number(body?.id)
+      if (!(Number.isInteger(id) && id > 0 && id < 1e10)) throw err('bad window id', 400)
+      const r = (await bridge(`screen-close ${id}`)).trim()
+      if (r !== 'ok') throw err(r.replace(/^error: /, '') || 'failed', 502)
+      return { ok: true }
+    }
+    if (method === 'POST' && action === 'quit') {
+      const id = String(body?.bundle ?? '')
+      if (!/^[A-Za-z0-9.-]{1,200}$/.test(id)) throw err('bad bundle id', 400)
+      const r = (await bridge(`${body?.force === true ? 'screen-forcequit' : 'screen-quit'} ${id}`)).trim()
       if (r !== 'ok') throw err(r.replace(/^error: /, '') || 'failed', 502)
       return { ok: true }
     }

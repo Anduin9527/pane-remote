@@ -40,6 +40,8 @@
   import Terminal from '@lucide/svelte/icons/square-terminal'
   import Globe from '@lucide/svelte/icons/globe'
   import Monitor from '@lucide/svelte/icons/monitor'
+  import Gauge from '@lucide/svelte/icons/gauge'
+  import MacSheet from '$lib/mac/MacSheet.svelte'
   import { onSendError, type CreateTarget, type Pane } from '$lib/api'
   import { prefs } from '$lib/prefs.svelte'
   import { pushStatus } from '$lib/push'
@@ -63,6 +65,8 @@
   // 看屏幕模块：全屏盖在最上面，不算一个视图（关掉回到原来的页面）；noVNC 比较大，打开时才加载
   let screenOpen = $state(false)
   let ScreenView = $state<typeof import('$lib/screen/ScreenView.svelte').default | null>(null)
+  // mac 模块：这台电脑的性能、念一段话（底部面板）
+  let macOpen = $state(false)
   async function openScreen() {
     try { ScreenView ??= (await import('$lib/screen/ScreenView.svelte')).default } catch { toast.error(t('屏幕加载失败，刷新页面再试')); return }
     screenOpen = true
@@ -201,6 +205,9 @@
     {#if appConfig.modules.screen}
       <button class="grid h-7 w-8 place-items-center rounded-md text-muted-foreground" aria-label={t('看电脑屏幕')} onclick={openScreen}><Monitor class="size-4" /></button>
     {/if}
+    {#if appConfig.modules.mac}
+      <button class="grid h-7 w-8 place-items-center rounded-md text-muted-foreground" aria-label={t('这台电脑：性能、念出来')} onclick={() => (macOpen = true)}><Gauge class="size-4" /></button>
+    {/if}
   </div>
   {#if update.available}
     <button class="flex-none rounded-full bg-primary px-2.5 text-[12px] leading-6 font-semibold text-primary-foreground active:opacity-80" onclick={() => location.reload()}>{t('更新')}</button>
@@ -312,6 +319,9 @@
 <ClaudeSheet bind:open={claudeOpen} />
 <CronSheet bind:open={cronOpen} />
 <Reader bind:open={readerOpen} onpreview={() => (mode = 'preview')} />
+{#if appConfig.modules.mac}
+  <MacSheet bind:open={macOpen} />
+{/if}
 {#if ScreenView && appConfig.modules.screen}
   <ScreenView bind:open={screenOpen} />
 {/if}
