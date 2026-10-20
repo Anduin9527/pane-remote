@@ -104,6 +104,7 @@
               <span class="min-w-0 flex-1 truncate font-medium">{x.title}</span>
               <span class={cn('flex-none text-xs', x.status === 'open' ? 'text-warn' : x.status === 'fixing' ? 'text-primary' : 'text-muted-foreground')}>{STATUS[x.status]}</span>
             </span>
+            {#if x.ai?.summary}<span class="truncate text-[13px]">{x.ai.summary}</span>{/if}
             <span class="truncate text-xs text-muted-foreground">{SOURCE[x.source] || x.source} · {x.component}{x.count > 1 ? ` · ${t('{n} 次', { n: x.count })}` : ''} · {ago(x.last)}{x.muted ? ` · ${t('不再提醒')}` : ''}</span>
             {#if x.fix?.state}<span class="truncate text-xs text-primary">{FIX_STATE[x.fix.state] || x.fix.state}{x.fix.pane != null ? ` · #${x.fix.pane}` : ''}{x.fix.last?.note ? ` · ${x.fix.last.note}` : ''}</span>{/if}
           </button>
@@ -120,6 +121,16 @@
             <p class="font-semibold">{cur.title}</p>
             <p class="text-xs text-muted-foreground">{SOURCE[cur.source] || cur.source} · {cur.component} · {cur.kind} · {STATUS[cur.status]}{cur.regressed ? ` · ${t('修好后又出现')}` : ''}</p>
             <p class="text-xs text-muted-foreground">{t('{n} 次，第一次 {first}，最近 {last}', { n: cur.count, first: time(cur.first), last: time(cur.last) })}</p>
+            {#if cur.ai?.summary}
+              <div class="mt-1 rounded-lg bg-primary/5 px-2.5 py-2 text-[13px]">
+                <p>{cur.ai.summary}</p>
+                {#if cur.ai.cause}<p class="mt-0.5 text-xs text-muted-foreground">{t('可能原因：{c}', { c: cur.ai.cause })}</p>{/if}
+                {#if cur.ai.duplicateOf}<button class="mt-0.5 text-xs text-primary" onclick={() => openDetail(cur?.ai?.duplicateOf || '')}>{t('可能和另一个问题重复，点开看')}</button>{/if}
+                <p class="mt-0.5 text-[11px] text-muted-foreground">{t('AI 分类：{agent} · {model}', { agent: cur.ai.agent || '?', model: cur.ai.model || '?' })}{cur.ai.severity ? ` · ${cur.ai.severity}` : ''}</p>
+              </div>
+            {:else if cur.ai?.error || cur.ai?.skipped}
+              <p class="text-[11px] text-muted-foreground">{t('AI 分类没做：{why}', { why: tr(cur.ai.skipped || cur.ai.error || '') })}</p>
+            {/if}
             {#if cur.reporter?.pane != null}<button class="justify-self-start text-xs text-primary" onclick={() => goPane(cur?.reporter?.pane ?? undefined)}>{t('报告方：{agent} · #{pane}', { agent: cur.reporter.agent || '?', pane: cur.reporter.pane })}</button>{/if}
           </section>
           {#if cur.fix}
@@ -146,6 +157,7 @@
             {#if cur.status === 'open' || cur.status === 'fixed'}<Button size="sm" variant="secondary" disabled={!!busy} onclick={() => act('resolve')}>{t('已解决')}</Button>{/if}
             {#if cur.status === 'open'}<Button size="sm" variant="secondary" disabled={!!busy} onclick={() => act('ignore')}>{t('忽略')}</Button>{/if}
             {#if cur.status !== 'open' && cur.status !== 'fixing'}<Button size="sm" variant="secondary" disabled={!!busy} onclick={() => act('reopen')}>{t('重新打开')}</Button>{/if}
+            {#if incidents.config?.triage?.enabled}<Button size="sm" variant="ghost" disabled={!!busy} onclick={() => act('triage')}>{busy === 'triage' ? t('分类中…') : t('AI 重新分类')}</Button>{/if}
             <Button size="sm" variant="ghost" disabled={!!busy} onclick={() => act(cur?.muted ? 'unmute' : 'mute')}>{cur.muted ? t('恢复提醒') : t('这类不再提醒')}</Button>
           </div>
           <section class="grid gap-2">
@@ -182,6 +194,22 @@
             <p class="text-xs text-muted-foreground">{t('还没有。在某个 agent 会话的「会话」面板里点「设为修复会话」。')}</p>
           {/if}
         </section>
+        {#if incidents.config.triage}
+        <section class="grid gap-2">
+          <span class="flex items-center gap-2 text-sm font-medium">
+            {t('AI 分类')}
+            <span class="text-xs font-normal text-muted-foreground">{t('今天 {n}/{max} 次', { n: incidents.config.triageUsage?.n ?? 0, max: incidents.config.triage.daily })}</span>
+          </span>
+          <div class="flex flex-wrap gap-1.5">
+            <button class={chip(incidents.config.triage.enabled)} onclick={() => fixer({ triage: { enabled: !incidents.config?.triage?.enabled } })}>{incidents.config.triage.enabled ? t('开') : t('关')}</button>
+            {#each [['auto', t('自动')], ['claude', 'Claude Haiku'], ['codex', 'Codex'], ['cursor-agent', 'Cursor']] as [v, l] (v)}
+              <button class={chip(incidents.config.triage.agent === v)} disabled={!incidents.config.triage.enabled} onclick={() => fixer({ triage: { agent: v as 'auto', model: '' } })}>{l}</button>
+            {/each}
+          </div>
+          <p class="text-xs text-muted-foreground">{t('只给第一次出现的新问题用便宜模型分一次类（Claude 用 Haiku，Codex 用账号里最轻的模型，Cursor 用 Composer Fast）：判断严重程度、是不是重复、要不要推，写一句摘要。走你 agent 的订阅额度，每次约 5 千到 1 万 token，每天有上限。')}</p>
+          <p class="text-xs text-muted-foreground">{t('中转模式下服务端经 ssh 读不到钥匙串里的 Claude / Cursor 登录：要用它们，在电脑终端里先跑 claude setup-token（或在 Cursor 后台建 API key），再在 pane-remote 目录跑 agent/pane-agent triage-token claude（或 cursor）粘贴进去。没配的话自动模式会换 Codex。')}</p>
+        </section>
+        {/if}
         <section class="grid gap-2">
           <span class="text-sm font-medium">{t('新开时用哪个 agent')}</span>
           <div class="flex flex-wrap gap-1.5">

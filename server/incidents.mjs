@@ -27,7 +27,7 @@ const AGENTS = ['claude', 'codex', 'cursor-agent']
 let deps = null // { dataDir, notify, bridge, manage, injectCommand, claudeCommand, defaultClaude, isTestPane, paneTitle, listPanes }
 let FILE = ''
 let list = []
-let cfg = { fixer: 'auto', agent: 'auto', bound: null }
+let cfg = { fixer: 'auto', agent: 'auto', bound: null, triage: null, triageUsage: { day: '', n: 0 } }
 let saveTimer = null
 const pushedAt = [] // 最近一小时推过的时间
 
@@ -42,7 +42,9 @@ export function initIncidents(d) {
     list = Array.isArray(j.incidents) ? j.incidents : []
     if (j.config) cfg = { ...cfg, ...j.config }
   } catch {}
-  setInterval(() => tick().catch((e) => console.log(`incidents tick: ${e.message}`)), 15000)
+  for (const r of early.splice(0)) record(r)
+  if (!cfg.triage) cfg.triage = { enabled: !!d.triageDefault, agent: 'auto', model: '', daily: 20 }
+  setInterval(() => tick().catch((e) => console.error(`incidents: tick ${e.message}`, e)), 15000)
 }
 
 function save(sync = false) {
@@ -52,7 +54,7 @@ function save(sync = false) {
       fs.mkdirSync(path.dirname(FILE), { recursive: true })
       fs.writeFileSync(FILE + '.tmp', JSON.stringify({ incidents: list, config: cfg }))
       fs.renameSync(FILE + '.tmp', FILE)
-    } catch (e) { console.log(`incidents save: ${e.message}`) }
+    } catch (e) { console.error(`incidents: save ${e.message}`, e) }
   }
   if (sync) write()
   else saveTimer = setTimeout(write, 500)
@@ -73,6 +75,31 @@ export function normalize(s) {
 // 测试来的单独算：不会累加到同样内容的真问题上、也不会因此触发推送
 const fingerprint = (r) => crypto.createHash('sha1').update([r.test ? 'test' : '', r.source, r.component, r.kind, normalize(r.msg || r.title)].join('|')).digest('hex').slice(0, 12)
 
+/** 网络 / 电脑睡着连不上：环境问题，不算 pane-remote 的问题 */
+export const isOffline = (m) => /Connection refused|Connection timed out|connect to host|kex_exchange|Connection closed|Connection reset|timed out|No route to host|Network is unreachable|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH/i.test(String(m))
+
+/**
+ * 按日志级别统一捕获：服务端任何地方 console.error 都记成问题报告（网络类除外）。
+ * 新代码出错时用 console.error 就会被抓到，不用另写规则。第一个参数当「模块: 说明」，Error 对象的 stack 进详情
+ */
+export function captureConsoleErrors() {
+  const orig = console.error.bind(console)
+  let inside = false
+  console.error = (...args) => {
+    orig(...args)
+    if (inside) return
+    inside = true
+    try {
+      const err = args.find((a) => a instanceof Error)
+      const text = args.map((a) => (a instanceof Error ? a.message : typeof a === 'string' ? a : (() => { try { return JSON.stringify(a) } catch { return String(a) } })())).join(' ').slice(0, 2000)
+      if (!isOffline(text)) {
+        const m = /^([\w.-]{2,30})[:：]/.exec(text)
+        record({ source: 'server', component: 'log', kind: m ? m[1] : 'error', msg: text, detail: err?.stack, severity: err instanceof TypeError || err instanceof ReferenceError ? 'high' : 'normal' })
+      }
+    } catch {} finally { inside = false }
+  }
+}
+
 /** 程序错误（要记）和正常的业务拒绝（参数不对、找不到 pane 之类，不记）的分界 */
 export function isProgramError(e) {
   if (!e) return false
@@ -85,8 +112,9 @@ export function isProgramError(e) {
  * 记一条。r: { source, component, kind, title?, msg, detail?, ctx?, severity?: 'high'|'normal'|'low', reporter? }
  * 返回这条 incident（已经存在的就累加）
  */
+const early = [] // 初始化之前记的（比如启动时扩展加载失败），初始化后补上
 export function record(r) {
-  if (!deps) return null
+  if (!deps) { if (early.length < 50) early.push(r); return null }
   r = { severity: 'normal', ...r }
   if (r.ctx?.pane != null && deps.isTestPane(r.ctx.pane)) r.test = true
   // 正在修某个问题的会话自己报的：算进那个问题的修复过程，不新开、不推送（不然会越修越多）
@@ -104,6 +132,7 @@ export function record(r) {
       severity: r.severity, count: 0, first: t, last: t, recent: [], samples: [], status: 'open', muted: false, notified: null, reporter: r.reporter || null, fix: null, test: !!r.test }
     list.unshift(inc)
     trim()
+    if (!inc.test && inc.source !== 'user') queueTriage(inc)
   } else if (inc.status === 'fixed' || inc.status === 'resolved') {
     // 修好了又出现：重新打开，按严重的处理（第一次就推）
     inc.status = 'open'
@@ -134,7 +163,8 @@ function maybeNotify(inc) {
   if (inc.muted || inc.status === 'ignored' || inc.fix?.state === 'running' || inc.fix?.state === 'queued' || inc.test || inc.source === 'user') return
   const t = now()
   const first = !inc.notified
-  const hit = (inc.severity === 'high' && first) || THRESHOLDS.some((n) => inc.count >= n && (inc.notified?.atCount || 0) < n)
+  // AI 判成噪音 / 重复的：前面几个阈值不推，到 10 次以上才推
+  const hit = (inc.severity === 'high' && first) || THRESHOLDS.some((n) => inc.count >= n && (inc.notified?.atCount || 0) < n && !(inc.aiQuiet && n < 10))
   if (!hit) return
   if (inc.notified && t - inc.notified.t < COOLDOWN) return
   while (pushedAt.length && t - pushedAt[0] > 3600000) pushedAt.shift()
@@ -142,7 +172,7 @@ function maybeNotify(inc) {
   pushedAt.push(t)
   inc.notified = { t, atCount: inc.count }
   const where = { server: '服务端', phone: '手机端', mac: '电脑端', agent: 'agent 报告' }[inc.source] || inc.source
-  push({ title: `${inc.regressed && t - inc.regressed < 60000 ? '问题又出现了' : 'pane-remote 发现问题'}：${inc.title}`, body: `${where} · ${inc.component}${inc.count > 1 ? ` · 第 ${inc.count} 次` : ''}。点开看看要不要修`, incident: inc.id })
+  push({ title: `${inc.regressed && t - inc.regressed < 60000 ? '问题又出现了' : 'pane-remote 发现问题'}：${inc.title}`, body: `${inc.ai?.summary ? `${inc.ai.summary} · ` : ''}${where} · ${inc.component}${inc.count > 1 ? ` · 第 ${inc.count} 次` : ''}。点开看看要不要修`, incident: inc.id })
 }
 function push(p) {
   deps.notify({ ...p, tag: p.incident ? `incident-${p.incident}` : 'incident' }).then((r) => console.log(`notify(incident) ${p.title} → ${JSON.stringify(r)}`), () => {})
@@ -151,6 +181,69 @@ function push(p) {
 function note(inc, u) {
   inc.fix = inc.fix || { state: 'running', started: now(), updates: [] }
   inc.fix.updates = [...(inc.fix.updates || []), { t: now(), ...u }].slice(-40)
+}
+
+// ---------- AI 分类：只给新指纹，用便宜模型（Haiku / Codex 轻量模型 / Cursor Composer Fast），每天有上限 ----------
+// 判严重程度、是不是和已有问题重复、要不要推，写一句给手机看的摘要。跑在 Mac 上（pane-agent triage），用你 agent 的订阅额度
+const triageQueue = []
+let triageBusy = false
+function queueTriage(inc) {
+  if (!cfg.triage?.enabled || !deps.bridgeSlow) return
+  triageQueue.push(inc.id)
+  runTriage().catch((e) => console.error(`incidents: triage ${e.message}`, e))
+}
+const today = () => new Date().toLocaleDateString('sv') // YYYY-MM-DD，本地时间
+async function runTriage() {
+  if (triageBusy) return
+  triageBusy = true
+  try {
+    while (triageQueue.length) {
+      const id = triageQueue.shift() // 先取出来再找：写在 find 的回调里会每比较一个就取走一个
+      const inc = list.find((x) => x.id === id)
+      if (!inc || inc.ai) continue
+      const u = cfg.triageUsage.day === today() ? cfg.triageUsage : (cfg.triageUsage = { day: today(), n: 0 })
+      if (u.n >= (cfg.triage.daily || 20)) { inc.ai = { skipped: '今天的 AI 分类次数用完了' }; save(); continue }
+      u.n++
+      const agents = cfg.triage.agent !== 'auto' ? [cfg.triage.agent] : await triageOrder()
+      const others = list.filter((x) => x.id !== inc.id && !x.test && x.status !== 'resolved').slice(0, 15).map((x) => `- ${x.id}: [${x.component}/${x.kind}] ${x.title}`).join('\n')
+      const s = inc.samples[0] || {}
+      const prompt = [
+        `New incident ${inc.id} (first seen ${new Date(inc.first).toISOString()}, ${inc.count} time(s)).`,
+        `source=${inc.source} component=${inc.component} kind=${inc.kind} rule-severity=${inc.severity}`,
+        `title: ${inc.title}`, '', 'message:', String(s.msg || '').slice(0, 1500), s.detail ? `\ndetail:\n${String(s.detail).slice(0, 1500)}` : '',
+        s.ctx ? `\ncontext: ${JSON.stringify(s.ctx).slice(0, 300)}` : '', '', 'Other known incidents:', others || '(none)', '',
+        'Decide: is this a real pane-remote bug the user should hear about, environment noise (network, sleep, user typo), or a duplicate of one above?',
+        'Reply JSON: {"severity":"high|normal|low","duplicate_of":"<id from the list or empty>","push":true|false,"summary":"<one short sentence in Chinese for a phone notification>","likely_cause":"<one short sentence in Chinese>"}',
+      ].join('\n')
+      // 自动：按 Claude → Codex → cursor-agent 试，登录不上的（经 ssh 读不到钥匙串、没配令牌）换下一家，6 小时内先跳过它
+      let r = { ok: false, err: '没有可用的 agent' }
+      for (const agent of agents) {
+        try { r = JSON.parse(await deps.bridgeSlow(`incident-triage ${b64(JSON.stringify({ agent, model: cfg.triage.agent !== 'auto' ? cfg.triage.model : '', wrapper: deps.defaultClaude(), prompt }))}`)) } catch (e) { r = { ok: false, err: e.message, agent } }
+        if (r.ok) break
+        if (r.auth) authFail.set(agent, now())
+        else break // 不是登录问题（超时、输出不对）：不换家，免得一个问题烧好几份额度
+      }
+      if (!r.ok) { inc.ai = { error: String(r.err || 'failed').slice(0, 200), agent: r.agent, auth: !!r.auth, at: now() }; save(); continue }
+      const o = r.result || {}
+      const sev = ['high', 'normal', 'low'].includes(o.severity) ? o.severity : null
+      const dup = typeof o.duplicate_of === 'string' && list.some((x) => x.id === o.duplicate_of && x.id !== inc.id) ? o.duplicate_of : ''
+      inc.ai = { severity: sev, duplicateOf: dup || undefined, push: o.push !== false, summary: String(o.summary || '').slice(0, 200), cause: String(o.likely_cause || '').slice(0, 200), agent: r.agent, model: r.model, ms: r.ms, at: now() }
+      if (dup || (sev === 'low' && o.push === false)) inc.aiQuiet = true
+      if (sev === 'high' && inc.severity !== 'high') { inc.severity = 'high'; maybeNotify(inc) }
+      console.log(`incident ${inc.id} triaged by ${r.agent}/${r.model} in ${r.ms}ms: ${sev}${dup ? ` dup of ${dup}` : ''} push=${o.push !== false}`)
+      save()
+    }
+  } finally {
+    triageBusy = false
+  }
+}
+const authFail = new Map() // agent → 最近一次登录失败的时间
+async function triageOrder() {
+  let avail = AGENTS
+  try { const a = JSON.parse((await deps.bridge('agent available')) || '[]'); if (Array.isArray(a) && a.length) avail = a } catch {}
+  const order = ['claude', 'codex', 'cursor-agent'].filter((a) => avail.includes(a))
+  const fresh = order.filter((a) => now() - (authFail.get(a) || 0) > 6 * 3600000)
+  return fresh.length ? fresh : order
 }
 
 // ---------- 来自电脑端（events.jsonl kind=incident）----------
@@ -321,13 +414,13 @@ async function tick() {
 
 // ---------- API ----------
 const summary = (x) => ({ id: x.id, title: x.title, source: x.source, component: x.component, kind: x.kind, severity: x.severity, count: x.count, first: x.first, last: x.last,
-  status: x.status, muted: x.muted, test: x.test, fix: x.fix ? { mode: x.fix.mode, state: x.fix.state, pane: x.fix.pane, agent: x.fix.agent, last: x.fix.updates?.at(-1) } : null, lastMsg: x.samples[0]?.msg?.slice(0, 200) })
+  status: x.status, muted: x.muted, test: x.test, ai: x.ai?.summary ? { summary: x.ai.summary, severity: x.ai.severity, duplicateOf: x.ai.duplicateOf } : undefined, fix: x.fix ? { mode: x.fix.mode, state: x.fix.state, pane: x.fix.pane, agent: x.fix.agent, last: x.fix.updates?.at(-1) } : null, lastMsg: x.samples[0]?.msg?.slice(0, 200) })
 const visible = (x, test) => test || !x.test
 export const openCount = () => list.filter((x) => !x.test && (x.status === 'open' || x.status === 'fixing') && !x.muted).length
 
 export async function api(method, sub, body, query) {
   const test = query?.has?.('test')
-  if (method === 'GET' && sub === '') return { open: openCount(), config: cfg, incidents: query?.has?.('summary') ? undefined : list.filter((x) => visible(x, test)).slice(0, 100).map(summary) }
+  if (method === 'GET' && sub === '') return { open: openCount(), config: { ...cfg, triageUsage: cfg.triageUsage.day === today() ? cfg.triageUsage : { day: today(), n: 0 } }, incidents: query?.has?.('summary') ? undefined : list.filter((x) => visible(x, test)).slice(0, 100).map(summary) }
   if (sub === 'config') {
     if (method === 'GET') return cfg
     const next = { ...cfg }
@@ -338,6 +431,14 @@ export async function api(method, sub, body, query) {
       const b = body.bound
       if (!/^[0-9a-zA-Z-]{8,64}$/.test(String(b.session)) || !AGENTS.includes(b.agent) || typeof b.cwd !== 'string' || !b.cwd.startsWith('/') || /['\n]/.test(b.cwd)) throw new Error('bad bound session')
       next.bound = { session: b.session, agent: b.agent, cwd: b.cwd, configDir: String(b.configDir || ''), label: String(b.label || '').slice(0, 80), at: now() }
+    }
+    if (body.triage && typeof body.triage === 'object') {
+      const t = { ...cfg.triage }
+      if (typeof body.triage.enabled === 'boolean') t.enabled = body.triage.enabled
+      if (['auto', ...AGENTS].includes(body.triage.agent)) t.agent = body.triage.agent
+      if (typeof body.triage.model === 'string' && /^[\w.:-]{0,60}$/.test(body.triage.model)) t.model = body.triage.model
+      if (Number.isInteger(body.triage.daily) && body.triage.daily >= 0 && body.triage.daily <= 200) t.daily = body.triage.daily
+      next.triage = t
     }
     if (next.fixer === 'bound' && !next.bound) throw new Error('先绑定一个会话')
     cfg = next
@@ -359,6 +460,7 @@ export async function api(method, sub, body, query) {
   if (method === 'POST' && m[2]) {
     const a = body.action
     if (a === 'fix') return { ok: true, fix: await fix(inc.id, { mode: ['bound', 'new'].includes(body.mode) ? body.mode : undefined, force: body.force === true }) }
+    if (a === 'triage') { if (!cfg.triage?.enabled) throw new Error('AI 分类没开'); inc.ai = null; triageQueue.push(inc.id); await runTriage(); return { ok: true, ai: inc.ai } }
     if (a === 'cancel-fix') { if (inc.fix) { inc.fix.state = 'cancelled'; note(inc, { status: 'cancelled', note: '手机上取消' }) } inc.status = 'open'; save(); return { ok: true } }
     if (a === 'ignore') inc.status = 'ignored'
     else if (a === 'resolve') inc.status = 'resolved'

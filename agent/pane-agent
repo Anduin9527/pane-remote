@@ -532,9 +532,190 @@ def incident(component, kind, msg, severity="normal"):
         pass
 
 
+def canary(nonce):
+    """定时自检（服务端每 10 分钟经 bridge 调一次）：写一条 canary 事件（服务端要在 20 秒内读到），
+    冒烟启动一次 MCP 服务（initialize + tools/list，不调任何工具），看看装了哪些 agent"""
+    out = {"agents": available(), "mcp": {"ok": False}}
+    try:
+        with open(os.path.join(HOME, ".local/state/pane-remote/events.jsonl"), "a") as f:
+            f.write(json.dumps({"t": time.time(), "kind": "canary", "nonce": nonce}) + "\n")
+        out["event"] = True
+    except OSError as e:
+        out["event"] = False
+        out["eventErr"] = str(e)
+    launcher = os.path.join(PLUGIN, "bin/mcp")
+    msgs = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "canary", "version": "1"}}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}]
+    try:
+        # 用一个不存在的 pane 号：MCP 不会把它当成哪个真 pane，也不写 live 标记以外的东西
+        r = subprocess.run([launcher], input="".join(json.dumps(m) + "\n" for m in msgs), capture_output=True, text=True, timeout=15,
+                           env={**os.environ, "WEZTERM_PANE": "999999", "PANE_REMOTE_AGENT": "canary"})
+        res = [json.loads(l) for l in r.stdout.splitlines() if l.strip().startswith("{")]
+        tools = next((x["result"]["tools"] for x in res if x.get("id") == 2 and "result" in x), [])
+        names = [t["name"] for t in tools]
+        out["mcp"] = {"ok": "report_incident" in names and "ask_phone" in names, "tools": len(names), "err": (r.stderr or "")[-300:]}
+    except Exception as e:
+        out["mcp"] = {"ok": False, "err": str(e)[:300]}
+    return out
+
+
+# ---------- AI 分类（问题报告的新指纹）：用便宜模型、不给工具、不加载 hooks / MCP，只要一段 JSON ----------
+TRIAGE_DIR = os.path.join(STATE, "triage")
+# 「不要用工具」必须写明：cursor-agent 的 ask 模式能读文件，不写的话它会跑去翻 pane-remote 的代码，一分钟都回不来
+TRIAGE_SYS = ("You triage error reports for pane-remote, a phone remote for terminal coding agents. Do not use any tools, do not read files or search: "
+              "answer only from the report text. Reply with one JSON object only, no prose, no code fence.")
+CHEAP = re.compile(r"mini|nano|lite|luna|small|flash|haiku|low", re.I)
+
+
+def cheap_codex_model():
+    """Codex：从账号的模型缓存里挑一个轻量的（名字带 mini / luna / lite 之类），挑不到就用列表最后一个"""
+    try:
+        d = json.load(open(os.path.join(HOME, ".codex/models_cache.json")))
+        ms = [m for m in (d.get("models", d) if isinstance(d, dict) else d) if isinstance(m, dict) and m.get("visibility", "list") == "list"]
+        slugs = [m.get("slug") or m.get("id") for m in ms if m.get("slug") or m.get("id")]
+        return next((x for x in slugs if CHEAP.search(x)), slugs[-1] if slugs else "")
+    except Exception:
+        return ""
+
+
+def cheap_cursor_model():
+    """cursor-agent：从 --list-models 里挑（Composer Fast 优先，其次 flash / mini / low），结果缓存一天"""
+    cache = os.path.join(TRIAGE_DIR, "cursor-models.txt")
+    try:
+        if time.time() - os.path.getmtime(cache) < 86400:
+            text = open(cache).read()
+        else:
+            raise OSError
+    except OSError:
+        text = subprocess.run(["cursor-agent", "--list-models"], capture_output=True, text=True, timeout=30, env=agent_env()).stdout
+        os.makedirs(TRIAGE_DIR, exist_ok=True)
+        open(cache, "w").write(text)
+    ids = [l.split(" - ")[0].strip() for l in text.splitlines() if " - " in l]
+    return next((x for x in ids if re.search(r"composer.*fast", x)), next((x for x in ids if CHEAP.search(x)), "auto"))
+
+
+# 经 ssh 调用时 macOS 钥匙串是锁着的：Claude Code、cursor-agent 存在钥匙串里的登录读不到。
+# 要用它们做 AI 分类，就把长期令牌放进这个文件（pane-agent triage-token 写，权限 600）：
+#   CLAUDE_CODE_OAUTH_TOKEN=…（claude setup-token 生成）  CURSOR_API_KEY=…（Cursor 后台生成）
+# Codex 的登录在 ~/.codex/auth.json，经 ssh 也能用，不需要这个
+TRIAGE_ENV = os.path.join(HOME, ".config/pane-remote/triage-env")
+TRIAGE_KEYS = ("CLAUDE_CODE_OAUTH_TOKEN", "CURSOR_API_KEY")
+
+
+def triage_tokens():
+    out = {}
+    try:
+        for line in open(TRIAGE_ENV):
+            k, _, v = line.strip().partition("=")
+            if k in TRIAGE_KEYS and v:
+                out[k] = v
+    except OSError:
+        pass
+    return out
+
+
+def agent_env():
+    path = os.pathsep.join([os.path.join(HOME, ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"])
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE_CODE_", "CLAUDECODE", "WEZTERM_PANE", "PANE_REMOTE_INCIDENT"))}
+    return {**env, "PATH": path, **triage_tokens()}
+
+
+def save_triage_token(kind):
+    """pane-agent triage-token claude|cursor：从键盘读一个令牌（不回显、不打印），写进 triage-env（600）"""
+    import getpass
+    key = {"claude": "CLAUDE_CODE_OAUTH_TOKEN", "cursor": "CURSOR_API_KEY"}.get(kind)
+    if not key:
+        sys.exit("usage: pane-agent triage-token claude|cursor")
+    tok = getpass.getpass(f"粘贴 {key}（不会显示）：").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_\-.]{20,400}", tok):
+        sys.exit("看起来不像令牌，没保存")
+    cur = triage_tokens()
+    cur[key] = tok
+    os.makedirs(os.path.dirname(TRIAGE_ENV), exist_ok=True)
+    fd = os.open(TRIAGE_ENV + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write("".join(f"{k}={v}\n" for k, v in cur.items()))
+    os.replace(TRIAGE_ENV + ".tmp", TRIAGE_ENV)
+    print(f"已保存到 {TRIAGE_ENV}（只有你能读）")
+
+
+def triage(req):
+    """req: {agent, wrapper?, model?, prompt}。返回 {ok, result(JSON), agent, model, ms, err}"""
+    agent = req.get("agent") if req.get("agent") in AGENTS else "claude"
+    prompt = str(req.get("prompt", ""))[:12000]
+    model = str(req.get("model") or "")
+    if model and not re.fullmatch(r"[\w.:-]{1,60}", model):
+        return {"ok": False, "err": "bad model"}
+    os.makedirs(TRIAGE_DIR, exist_ok=True)
+    out_file = os.path.join(TRIAGE_DIR, f"out-{os.getpid()}.txt")
+    if agent == "claude":
+        wrapper = req.get("wrapper") or "claude"
+        if not WRAPPER_RE.fullmatch(wrapper):
+            return {"ok": False, "err": "bad wrapper"}
+        env_part, _, exe = wrapper.rpartition(" ")
+        model = model or "haiku"
+        cmd = [exe, "-p", "--model", model, "--system-prompt", TRIAGE_SYS, "--setting-sources", "project", "--strict-mcp-config", "--tools", "",
+               "--no-session-persistence", "--permission-mode", "default", "--output-format", "json", prompt]
+        extra_env = dict(kv.split("=", 1) for kv in env_part.split() if "=" in kv) if env_part else {}
+        extra_env = {k: os.path.expandvars(v.strip('"')) for k, v in extra_env.items()}
+    elif agent == "codex":
+        model = model or cheap_codex_model()
+        cmd = ["codex", "exec", "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--disable", "hooks", "-c", "mcp_servers={}",
+               *(["-m", model] if model else []), "-c", "model_reasoning_effort=low", "-o", out_file, f"{TRIAGE_SYS}\n\n{prompt}"]
+        extra_env = {}
+    else:
+        model = model or cheap_cursor_model()
+        cmd = ["cursor-agent", "-p", "--trust", "--mode", "ask", "--model", model, "--output-format", "text", f"{TRIAGE_SYS}\n\n{prompt}"]
+        extra_env = {}
+    t0 = time.time()
+    try:
+        r = subprocess.run(cmd, cwd=TRIAGE_DIR, capture_output=True, text=True, timeout=100, env={**agent_env(), **extra_env}, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "err": "timeout", "agent": agent, "model": model}
+    ms = int((time.time() - t0) * 1000)
+    text = r.stdout
+    if agent == "claude":
+        try:
+            d = json.loads(text)
+            if d.get("is_error"):
+                msg = str(d.get("result"))[:300]
+                return {"ok": False, "err": msg, "auth": bool(re.search(r"Not logged in|/login|keychain|token", msg, re.I)), "agent": agent, "model": model, "ms": ms}
+            text = d.get("result") or ""
+        except ValueError:
+            pass
+    elif agent == "codex":
+        try:
+            text = open(out_file).read()
+        except OSError:
+            text = ""
+        finally:
+            try:
+                os.unlink(out_file)
+            except OSError:
+                pass
+    m = re.search(r"\{.*\}", text, re.S)
+    try:
+        result = json.loads(m.group(0)) if m else None
+    except ValueError:
+        result = None
+    if not isinstance(result, dict):
+        raw = re.sub(r"\x1b\[[0-9;]*m", "", text or r.stderr or "no output")[-300:]
+        auth = bool(re.search(r"Not logged in|keychain is locked|/login|API key|authenticat|unauthori", raw, re.I))
+        return {"ok": False, "err": raw, "auth": auth, "agent": agent, "model": model, "ms": ms}
+    return {"ok": True, "result": result, "agent": agent, "model": model, "ms": ms}
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     pane = sys.argv[2] if len(sys.argv) > 2 else ""
+    if cmd == "triage-token":
+        return save_triage_token(pane)
+    if cmd == "triage":
+        return print(json.dumps(triage(json.loads(base64.b64decode(pane).decode())), ensure_ascii=False))
+    if cmd == "canary":
+        if not re.fullmatch(r"[a-z0-9]{8,24}", pane):
+            sys.exit("bad nonce")
+        return print(json.dumps(canary(pane)))
     if cmd == "available":
         return print(json.dumps(available()))
     if cmd == "locate":

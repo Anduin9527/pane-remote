@@ -44,6 +44,8 @@
 #   mac-say-stop            停掉正在念的
 #   agent <inspect|snapshot|restart|restart-status> <pane> [base64 JSON]  pane 里 agent 的 pane-remote 插件：状态、重启前快照、重启并注入（见 agent/pane-agent）
 #   agent <available|locate <会话ID>>  装了哪些 agent（JSON）；某个会话正在哪个 pane、忙不忙（JSON）
+#   incident-triage <base64 JSON>  问题报告的 AI 分类：便宜模型（Haiku / Codex 轻量模型 / Cursor Composer Fast），输出 JSON
+#   canary <随机串>        定时自检：写一条 canary 事件，冒烟启动 MCP 服务，输出结果（JSON）
 #   incident-brief <id> <base64 文本>  写问题报告的简报给修复的 agent 读，输出文件路径
 #   incident-repo           pane-remote 仓库在电脑上的目录（修自己的问题时在这里开 agent）
 #   agent-answer <id> <base64 JSON>  手机对 agent 提问的回答，写给 Mac 上等着的 MCP 服务（见 agent/plugin/mcp.mjs）
@@ -359,6 +361,16 @@ PY
       exec "$HERE/pane-agent" restart "$pane" "$extra"
     fi
     exec "$HERE/pane-agent" "$sub" "$pane"
+    ;;
+  incident-triage)
+    # 问题报告的 AI 分类：用便宜模型给新问题判严重程度、是否重复、要不要推（见 agent/pane-agent triage）
+    [[ -n "${pane:-}" && ${#pane} -le 40000 && "$pane" =~ ^[A-Za-z0-9+/=]+$ ]] || fail "bad payload"
+    exec "$HERE/pane-agent" triage "$pane"
+    ;;
+  canary)
+    # 定时自检：写 canary 事件、冒烟启动 MCP（见 agent/pane-agent canary）
+    [[ "$pane" =~ ^[a-z0-9]{8,24}$ ]] || fail "bad nonce"
+    exec "$HERE/pane-agent" canary "$pane"
     ;;
   incident-brief)
     # 问题报告的简报：写到 ~/.local/state/pane-remote/incidents/<id>.md，输出路径（修复的 agent 读它）

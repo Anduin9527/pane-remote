@@ -18,7 +18,30 @@ pane-remote 本身没有模型能力。程序判断不了「结果对不对」�
 | agent | 注入了插件的 agent 用 `report_incident` 报：调用「成功」了但结果不对、通知没到手机、你说 pane-remote 哪里不对劲。这是程序自己判断不了的部分 |
 | 你 | 手机上「问题报告 → 报告一个问题」，自动带上当前 pane 和手机信息 |
 
+规则之外还有三样不需要模型的「通用」手段，新功能不用另写规则也能被覆盖到：
+
+- **按日志级别捕获**：服务端任何地方 `console.error(...)` 都会记成问题报告（网络、电脑睡着这类除外）。写新代码时出错就用 `console.error('模块: 说明', err)`，模块名会成为问题的类型。
+- **定时自检**：每 10 分钟走一遍关键链路：pane 列表、读一个 pane 的画面、冒烟启动 MCP 服务（只列工具，不调用）、电脑上装了哪些 agent、事件通道（电脑写一条，服务端要在 25 秒内读到）。电脑睡着时跳过。新功能要纳入自检，就在 `server/server.mjs` 的 `canary()` 里加一步。
+- **静默 catch 检查**：`node scripts/silent-catch.mjs` 列出把错误吞掉的地方（`catch {}`、`.catch(() => {})`、`except: pass`）。这些地方出错了谁都不知道。确实可以忽略的，在同一行或上一行写 `ignore: 理由`。
+
 去重靠「指纹」：来源 + 模块 + 类型 + 规整过的消息（去掉数字、ID、构建文件名、家目录）。修好的问题又出现，会重新打开，并按严重处理。
+
+## AI 分类（可选，默认关）
+
+只给**第一次出现的新问题**用便宜模型分一次类：判断严重程度、是不是和已有问题重复、要不要推，写一句中文摘要（推送和列表里显示它）。判成严重的会立刻推；判成重复或低噪音的，要到第 10 次才推。重复出现、测试的、你自己报告的都不分类。
+
+| agent | 用的模型 | 说明 |
+|---|---|---|
+| Claude Code | Haiku | 不给工具、不加载 hooks / MCP、换成一句话的系统提示，每次约 1 万 token、5 秒左右 |
+| Codex | 账号里最轻的模型（从 `~/.codex/models_cache.json` 挑名字带 mini / luna / lite 的） | `codex exec` 只读、关掉 hooks 和 MCP，约 5 千 token、15 秒左右 |
+| cursor-agent | Composer Fast（从 `--list-models` 挑） | ask 模式（只读），约 15 秒 |
+
+- 在手机上「问题报告 → 设置 → AI 分类」打开，或在配置里写 `"incidentTriage": true`。
+- 「自动」按 Claude → Codex → cursor-agent 的顺序试，登录不上的换下一家；也可以固定某一家。
+- 每天默认最多 20 次，详情页可以「AI 重新分类」。
+- 用的是你 agent 的订阅额度，不另外产生 API 费用。
+
+**中转模式要注意**：服务端经 ssh 调电脑，ssh 会话里 macOS 钥匙串是锁着的，Claude Code 和 cursor-agent 存在钥匙串里的登录读不到（Codex 的登录在文件里，没问题）。要用它们，在电脑终端里先跑 `claude setup-token`（或在 Cursor 后台建 API key），再在 pane-remote 目录跑 `agent/pane-agent triage-token claude`（或 `cursor`）粘贴进去。令牌存在 `~/.config/pane-remote/triage-env`（权限 600），不会打印。本机模式不需要这一步。
 
 ## 什么时候推送
 

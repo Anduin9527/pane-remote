@@ -57,11 +57,14 @@ let sending = false
 let onError: (msg: string) => void = () => {}
 export function onSendError(fn: (msg: string) => void) { onError = fn }
 
-// 每次尝试最多等 8 秒（服务端调 bridge 自己有 10 秒超时，但正常几百毫秒）。iOS 主屏应用切后台、换网络后，
-// 在途的请求有时既不成功也不失败，一直挂着；不设超时的话后面所有按键都卡在它后面，界面却照常刷新
-const SEND_TIMEOUT = 8000
-// 网络断了（Load failed）或超时就带同一个 rid 重发，服务端按 rid 去重，不会发两遍；最多试 3 次
-const RETRY_WAIT = [700, 1800]
+// 每次尝试最多等 6 秒（正常几百毫秒）。iOS 主屏应用切后台、换网络后，在途的请求有时既不成功也不失败，一直挂着；
+// 不设超时的话后面所有按键都卡在它后面，界面却照常刷新
+const SEND_TIMEOUT = 6000
+// 网络断了（Load failed）或超时就带同一个 rid 重发，服务端按 rid 去重，不会发两遍。
+// iPhone 唤醒 / 换网络后 Tailscale 线路要十几秒才恢复，所以间隔逐渐拉长、总共试到 20 秒；
+// 再不行就放弃并提示（不在网络恢复后补发：卡了很久的按键突然发出去反而危险）
+const RETRY_WAIT = [300, 1000, 2000, 3000, 4000, 5000]
+const SEND_WINDOW = 20000
 let sendingSince = 0
 let inflight: AbortController | null = null
 const dropped = new WeakSet<AbortController>() // 手动重连主动放弃的请求：不报「发送超时」
@@ -76,13 +79,15 @@ async function pump() {
   const { pane, data } = outbox.shift()!
   const rid = Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
   let ctl: AbortController | null = null
+  const started = Date.now()
   try {
+    await warming // 刚切回前台：等预热请求先把断掉的连接试出来
     for (let attempt = 0; ; attempt++) {
       sendingSince = Date.now()
       ctl = new AbortController()
       inflight = ctl
       const c = ctl
-      const timer = setTimeout(() => c.abort(), SEND_TIMEOUT)
+      const timer = setTimeout(() => c.abort(), Math.max(1500, Math.min(SEND_TIMEOUT, started + SEND_WINDOW - Date.now())))
       try {
         const r = await fetch('api/send', {
           method: 'POST',
@@ -96,13 +101,16 @@ async function pump() {
       } catch (e) {
         if (dropped.has(c)) return
         const why = c.signal.aborted ? 'timeout' : (e as Error).message
-        report('send-fail', `${why} attempt=${attempt + 1} len=${data.length}`)
         if (attempt === 0) onNetFail()
-        if (attempt >= RETRY_WAIT.length) {
+        const wait = RETRY_WAIT[attempt]
+        // 中间的失败只记日志（send-retry）；整个窗口都失败了才算一次发送失败（会记成问题报告）
+        if (wait == null || Date.now() + wait - started > SEND_WINDOW) {
+          report('send-fail', `${why} attempt=${attempt + 1} after=${Math.round((Date.now() - started) / 1000)}s len=${data.length}`)
           onError(c.signal.aborted ? t('发送超时，这一下可能没发出去，看一眼再决定要不要重发') : tr((e as Error).message))
           break
         }
-        await sleep(RETRY_WAIT[attempt])
+        report('send-retry', `${why} attempt=${attempt + 1} len=${data.length}`)
+        await sleep(wait)
         if (dropped.has(c)) return
       } finally {
         clearTimeout(timer)
@@ -113,9 +121,26 @@ async function pump() {
     pump()
   }
 }
+// 切回前台的预热：后台超过 5 秒再回来，先发一个最轻的请求（最多试 3 次、6 秒内），断掉的旧连接在它身上暴露，
+// 之后的按键走新连接。预热期间按的键排在后面等它（pump 里 await warming）
+let warming: Promise<void> = Promise.resolve()
+let hiddenAt = 0
+async function warmup() {
+  const end = Date.now() + 6000
+  for (let i = 0; i < 3 && Date.now() < end; i++) {
+    const c = new AbortController()
+    const timer = setTimeout(() => c.abort(), Math.max(800, Math.min(2500, end - Date.now())))
+    try { const r = await fetch('api/ping', { cache: 'no-store', signal: c.signal }); if (r.ok) return } catch {} finally { clearTimeout(timer) }
+    await sleep(400)
+  }
+}
+// iPhone 主屏应用从后台回来常常整页重新加载：加载时也预热一次
+warming = warmup()
 // 回到前台时，挂起期间计时器可能没跑：发现卡住的请求直接放弃，接着发后面的
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && sending && Date.now() - sendingSince > SEND_TIMEOUT) inflight?.abort()
+  if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return }
+  if (sending && Date.now() - sendingSince > SEND_TIMEOUT) inflight?.abort()
+  if (hiddenAt && Date.now() - hiddenAt > 5000) warming = warmup()
 })
 
 /** 手动重连时清空发送队列：放弃卡住的请求和还没发出去的输入（卡了很久的按键突然一起发出去反而危险），返回丢掉了几个 */

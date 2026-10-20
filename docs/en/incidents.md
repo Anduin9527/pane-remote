@@ -18,7 +18,30 @@ pane-remote itself has no model. A program cannot judge whether a result "looks 
 | agent | agents with the plugin call `report_incident`: a call "succeeded" with the wrong result, a notification never reached the phone, you said pane-remote misbehaved. This is the part a program cannot judge |
 | you | "Problems → Report a problem" on the phone, with the current pane and phone details attached |
 
+Beyond the rules, three model-free generic techniques cover new features without new rules:
+
+- **Error-level capture**: any `console.error(...)` on the server becomes an incident (network and Mac-asleep errors excluded). In new code, log failures with `console.error('module: what happened', err)`; the module name becomes the incident kind.
+- **Canary every 10 minutes**: pane list, reading one pane, a smoke start of the MCP server (list tools only), which agents are installed, and the event channel (the Mac writes one event, the server must read it within 25 s). Skipped while the Mac is asleep. To cover a new feature, add a step to `canary()` in `server/server.mjs`.
+- **Silent-catch audit**: `node scripts/silent-catch.mjs` lists places that swallow errors (`catch {}`, `.catch(() => {})`, `except: pass`), which nobody would ever notice failing. Mark the ones that are genuinely fine with `ignore: reason` on the same or previous line.
+
 Deduplication uses a fingerprint: source + component + kind + the message normalized (numbers, IDs, build file names and home directories removed). A fixed problem that comes back is reopened and treated as severe.
+
+## AI triage (optional, off by default)
+
+Only **new** problems are triaged, once, with a cheap model: severity, whether it duplicates a known problem, whether to push, and a one-line summary (shown in pushes and the list). Severe ones push immediately; duplicates or low-noise ones wait until the 10th occurrence. Repeats, test incidents and your own reports are never triaged.
+
+| agent | model | notes |
+|---|---|---|
+| Claude Code | Haiku | no tools, no hooks / MCP, a one-line system prompt; about 10k tokens and 5 s per call |
+| Codex | the lightest model on your account (picked from `~/.codex/models_cache.json` by mini / luna / lite in the name) | read-only `codex exec` with hooks and MCP off; about 5k tokens, ~15 s |
+| cursor-agent | Composer Fast (picked from `--list-models`) | ask mode (read-only), ~15 s |
+
+- Turn it on in "Problems → settings → AI triage" on the phone, or set `"incidentTriage": true` in the config.
+- "Auto" tries Claude → Codex → cursor-agent and moves on when an agent can't log in; you can also pin one.
+- 20 calls per day by default; "Re-triage with AI" on the detail page.
+- Uses your agent subscription, no separate API bill.
+
+**Relay mode**: the server reaches the Mac over ssh, where the macOS keychain is locked, so Claude Code and cursor-agent logins stored there can't be read (Codex keeps its login in a file and works). To use them, run `claude setup-token` in a Mac terminal (or create an API key in Cursor), then `agent/pane-agent triage-token claude` (or `cursor`) in the pane-remote folder and paste it. The token goes to `~/.config/pane-remote/triage-env` (mode 600) and is never printed. Local mode doesn't need this.
 
 ## When it pushes
 

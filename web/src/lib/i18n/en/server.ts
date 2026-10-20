@@ -24,6 +24,8 @@ export default {
   "找不到 pane-remote 仓库目录": "Can't find the pane-remote repo",
   "先绑定一个会话": "Bind a session first",
   "写一句是什么问题": "Describe the problem in one line",
+  "今天的 AI 分类次数用完了": "Today's AI triage quota is used up",
+  "AI 分类没开": "AI triage is off",
   '找不到这个会话': 'Session not found',
   '这个 agent 不支持分叉会话': "This agent doesn't support forking sessions",
   '{agent} 不支持分叉会话': "{agent} doesn't support forking sessions",

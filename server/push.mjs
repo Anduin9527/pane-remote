@@ -167,12 +167,16 @@ async function pushFor(pane, isWatching, payload, why) {
 
 // hook（电脑上的 pane-event）记下的事件：回合结束、需要操作、用户发了新输入
 let eventsOffset = null
-async function readEvents(bridge, isWatching, onOpen, onAgent, onIncident) {
+let lastEventsRead = 0
+/** 扫描循环最近 10 秒内读过事件（自检据此判断该不该等 canary 事件） */
+export const eventsFresh = () => Date.now() - lastEventsRead < 10000
+async function readEvents(bridge, isWatching, onOpen, onAgent, onIncident, onCanary) {
   const out = await bridge(`events ${eventsOffset ?? 0}`)
   const nl = out.indexOf('\n')
   const size = Number(out.slice(0, nl < 0 ? undefined : nl))
   const first = eventsOffset === null
   eventsOffset = size
+  lastEventsRead = Date.now()
   if (first || nl < 0) return // 刚启动：只记下位置，不补推以前的事件
   for (const line of out.slice(nl + 1).split('\n')) {
     if (!line.trim()) continue
@@ -181,6 +185,7 @@ async function readEvents(bridge, isWatching, onOpen, onAgent, onIncident) {
     if (ev.kind === 'open') { onOpen?.(ev.msg); continue }
     if (ev.kind === 'agent') { onAgent?.(ev); continue }
     if (ev.kind === 'incident') { onIncident?.(ev); continue }
+    if (ev.kind === 'canary') { onCanary?.(ev.nonce); continue }
     // agent 的提问、问题报告这类事件该在几秒内被读到：晚了 1 分钟以上说明扫描卡住过
     if (ev.t && Date.now() / 1000 - ev.t > 60 && (ev.kind === 'stop' || ev.kind === 'notify')) problem({ component: 'monitor', kind: 'events-late', title: '事件读得太晚', msg: `event ${ev.kind} read ${Math.round(Date.now() / 1000 - ev.t)}s late` })
     const pane = String(ev.pane)
@@ -197,7 +202,7 @@ async function readEvents(bridge, isWatching, onOpen, onAgent, onIncident) {
   }
 }
 
-export function startMonitor({ bridge, isWatching, active, onOpen, onAgent, onIncident }) {
+export function startMonitor({ bridge, isWatching, active, onOpen, onAgent, onIncident, onCanary }) {
   let busy = false
   setInterval(async () => {
     // 有推送订阅、或手机最近在用（要看状态列表）才扫，不然不打扰电脑
@@ -239,7 +244,7 @@ export function startMonitor({ bridge, isWatching, active, onOpen, onAgent, onIn
         state.set(pane, st)
       }
       for (const k of state.keys()) if (!seen.has(k)) state.delete(k)
-      await readEvents(bridge, isWatching, onOpen, onAgent, onIncident).catch((e) => { console.log(`events: ${e.message}`); if (!offline(e.message)) problem({ component: 'monitor', kind: 'events', msg: `events: ${e.message}` }) })
+      await readEvents(bridge, isWatching, onOpen, onAgent, onIncident, onCanary).catch((e) => { console.log(`events: ${e.message}`); if (!offline(e.message)) problem({ component: 'monitor', kind: 'events', msg: `events: ${e.message}` }) })
     } catch (e) {
       console.log(`monitor: ${e.message}`)
       if (!offline(e.message)) problem({ component: 'monitor', kind: 'scan', msg: `monitor: ${e.message}` })

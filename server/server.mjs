@@ -8,6 +8,7 @@
 //   POST /api/send {pane, data, rid?}  把 data 原样发进 pane（方向键、回车等用控制序列）
 //   POST /api/pane/{spawn|split|kill|title|focus}  管理：新标签页/拆分（可带启动命令，或带 resume 恢复某个 Claude 会话）、关闭、改标题、电脑上切过去
 //   GET  /api/push/key、POST /api/push/subscribe|unsubscribe|status|test  推送订阅（见 push.mjs）
+//   GET  /api/ping               最轻的请求：手机切回前台时预热连接
 //   GET  /api/states             每个 pane 的状态：waiting / running / idle、等待的问题、有没有未读；agent 在手机上问的问题（asks）也挂在对应 pane 上
 //   GET  /api/agent?pane=N        pane 里的 agent：会话、忙/闲、有没有注入 pane-remote 插件
 //   GET|POST /api/agent/restart   重启并注入：POST {pane, inject?, force?} 开始（先存快照，见 agent/pane-agent），GET ?pane=N 看进度
@@ -34,6 +35,7 @@ import { execFile, spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import * as push from './push.mjs'
 import * as incidents from './incidents.mjs'
+incidents.captureConsoleErrors() // 越早越好：启动阶段（扩展加载）的 console.error 也要抓到
 import { initCursor, cursorStream, cursorCmd, cursorSummary } from './cursor.mjs'
 import { createScreen } from './screen.mjs'
 import { createMac } from './mac.mjs'
@@ -75,13 +77,13 @@ function bridgeProc(command, stdio) {
     ? spawn('ssh', [...SSH_ARGS, command], { stdio })
     : spawn(BRIDGE, [], { stdio, env: { ...BRIDGE_ENV, SSH_ORIGINAL_COMMAND: command } })
 }
-function bridge(command) {
+function bridge(command, timeout = 10000) {
   return new Promise((resolve, reject) => {
     const done = (err, stdout, stderr) => {
       if (err) reject(new Error((stderr || err.message).trim().split('\n').pop()))
       else resolve(stdout)
     }
-    const opts = { maxBuffer: 8 << 20, timeout: 10000 }
+    const opts = { maxBuffer: 8 << 20, timeout }
     if (RELAY) execFile('ssh', [...SSH_ARGS, command], opts, done)
     else execFile(BRIDGE, [], { ...opts, env: { ...BRIDGE_ENV, SSH_ORIGINAL_COMMAND: command } }, done)
   })
@@ -106,7 +108,7 @@ setInterval(() => {
 let macDirs = { at: 0, list: [] }
 async function allDirs() {
   if (Date.now() - macDirs.at > 5 * 60000) {
-    try { macDirs = { at: Date.now(), list: JSON.parse(await bridge('dirs')) } } catch (e) { console.log(`dirs: ${e.message}`) }
+    try { macDirs = { at: Date.now(), list: JSON.parse(await bridge('dirs')) } } catch (e) { console.error(`dirs: ${e.message}`) }
   }
   const now = Math.floor(Date.now() / 1000)
   const merged = {}
@@ -480,7 +482,7 @@ let lastApi = 0
 const viewing = () => [...watchers.values()].some((w) => w.clients.size > 0)
 function phoneInUse() { return viewing() || !!previews.chrome.client || !!previews.cursor.client || Date.now() - lastApi < 120000 }
 setInterval(() => {
-  if (phoneInUse()) bridge('awake').catch((e) => console.log(`awake: ${e.message}`))
+  if (phoneInUse()) bridge('awake').catch((e) => console.error(`awake: ${e.message}`))
 }, 60000)
 
 // ---------- 预览 ----------
@@ -789,6 +791,8 @@ const server = http.createServer(async (req, res) => {
       if (action === 'test') return json(res, 200, await push.notify({ title: 'Pane Remote', body: '测试通知：能看到这条说明推送通了', tag: 'test' }))
       return json(res, 404, { error: 'not found' })
     }
+    // 手机切回前台时先打一下：iOS 唤醒后旧连接常常已经断了，让它先暴露出来，不让你按的第一个键去试错
+    if (url.pathname === '/api/ping') return json(res, 200, { ok: 1 })
     if (url.pathname === '/api/log' && req.method === 'POST') {
       // 手机端把报错发回来，记进服务日志
       const body = (await readBody(req, 16 << 10)).slice(0, 4000)
@@ -933,24 +937,52 @@ incidents.initIncidents({
   claudeCommand,
   defaultClaude: () => Object.values(CLAUDE_WRAPPERS)[0] || 'claude',
   isTestPane: testPane,
+  bridgeSlow: (cmd) => bridge(cmd, 130000), // AI 分类：便宜模型也要十几秒
+  triageDefault: config.incidentTriage === true, // AI 分类默认关：会用你 agent 的订阅额度，要用就在手机上打开，或在配置里写 incidentTriage: true
 })
 // 进程级异常：先同步写盘再按原样退出（systemd / launchd 会拉起来）；未处理的 Promise 只记不退
 process.on('uncaughtException', (e) => {
   incidents.record({ source: 'server', component: 'process', kind: 'uncaughtException', msg: e?.message || String(e), detail: e?.stack, severity: 'high' })
   incidents.flush()
-  console.error(e)
+  console.log(e)
   process.exit(1)
 })
 process.on('unhandledRejection', (e) => {
-  console.error('unhandledRejection', e)
+  console.log('unhandledRejection', e) // 下面单独记（带 stack），这里不走 console.error 免得记两遍
   incidents.record({ source: 'server', component: 'process', kind: 'unhandledRejection', msg: e?.message || String(e), detail: e?.stack, severity: 'high' })
 })
 push.onProblem((p) => incidents.record({ source: 'server', ...p }))
+
+// ---------- 定时自检（canary）：每 10 分钟走一遍关键链路，坏了记成问题报告。电脑睡着 / 断网时跳过 ----------
+// 新功能要纳入自检就在这里加一步（和问题报告一样不消耗 token）
+const canaryWaits = new Map()
+async function canary() {
+  const fail = (kind, title, msg) => incidents.record({ source: 'server', component: 'canary', kind, title, msg: String(msg).slice(0, 1000) })
+  let panes
+  try { panes = JSON.parse(await bridge('list')) } catch (e) { if (!incidents.isOffline(e.message)) fail('list', '自检：读不到 pane 列表', e.message); return }
+  const real = panes.find((p) => p.workspace !== 'pane-remote-test')
+  if (real) await bridge(`text ${real.pane_id} 3`).catch((e) => { if (!incidents.isOffline(e.message)) fail('text', '自检：读不到 pane 画面', e.message) })
+  const nonce = crypto.randomBytes(8).toString('hex')
+  const got = new Promise((r) => { canaryWaits.set(nonce, r); setTimeout(() => r(false), 25000) })
+  let r
+  try { r = JSON.parse(await bridge(`canary ${nonce}`)) } catch (e) { canaryWaits.delete(nonce); if (!incidents.isOffline(e.message)) fail('mac', '自检：电脑端自检脚本出错', e.message); return }
+  if (!r.mcp?.ok) fail('mcp', '自检：MCP 服务起不来或工具不全', JSON.stringify(r.mcp))
+  if (!r.agents?.length) fail('agents', '自检：电脑上找不到 Claude / Codex / cursor-agent', JSON.stringify(r))
+  // 事件通道：扫描循环在跑（有推送订阅或手机在用）时，Mac 写的事件应该 20 秒内被读到
+  const fresh = push.eventsFresh()
+  const read = r.event && fresh ? await got : null
+  if (read === false) fail('events', '自检：事件通道不通', `canary event ${nonce} not read within 25s`)
+  canaryWaits.delete(nonce)
+  console.log(`canary: mcp ${r.mcp?.ok ? 'ok' : 'FAIL'} (${r.mcp?.tools ?? 0} tools), agents ${r.agents?.length || 0}, events ${read === null ? 'skipped' : read ? 'ok' : 'FAIL'}`)
+}
+setTimeout(() => canary().catch((e) => console.error(`canary: ${e.message}`, e)), 60000)
+setInterval(() => canary().catch((e) => console.error(`canary: ${e.message}`, e)), 600000)
 
 push.startMonitor({
   onOpen,
   onAgent,
   onIncident: incidents.onMacEvent,
+  onCanary: (nonce) => { canaryWaits.get(nonce)?.(true) },
   bridge,
   isWatching: (pane) => (watchers.get(String(pane))?.clients.size || 0) > 0,
   active: () => viewing() || Date.now() - lastApi < 120000,
