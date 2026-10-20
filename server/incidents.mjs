@@ -70,7 +70,8 @@ export function normalize(s) {
     .trim()
     .slice(0, 200)
 }
-const fingerprint = (r) => crypto.createHash('sha1').update([r.source, r.component, r.kind, normalize(r.msg || r.title)].join('|')).digest('hex').slice(0, 12)
+// 测试来的单独算：不会累加到同样内容的真问题上、也不会因此触发推送
+const fingerprint = (r) => crypto.createHash('sha1').update([r.test ? 'test' : '', r.source, r.component, r.kind, normalize(r.msg || r.title)].join('|')).digest('hex').slice(0, 12)
 
 /** 程序错误（要记）和正常的业务拒绝（参数不对、找不到 pane 之类，不记）的分界 */
 export function isProgramError(e) {

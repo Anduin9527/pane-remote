@@ -797,7 +797,9 @@ const server = http.createServer(async (req, res) => {
       try {
         const c = JSON.parse(body)
         const sev = { error: 'normal', rejection: 'normal', stuck: 'high', 'send-fail': 'low' }[c.kind]
-        if (sev) incidents.record({ source: 'phone', component: c.kind === 'send-fail' ? 'send' : 'web', kind: c.kind, msg: String(c.msg || '').split('\n')[0], detail: String(c.msg || ''), severity: sev, ctx: { ua: String(req.headers['user-agent'] || '').slice(0, 160), ...(Number.isInteger(c.pane) ? { pane: c.pane } : {}) } })
+        // 经本机隧道访问的（自动化测试的浏览器，Host 是 127.0.0.1 / localhost；真手机走 tailscale 不会是这个）只算测试问题，不推送
+        const viaTest = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(String(req.headers.host || ''))
+        if (sev) incidents.record({ test: viaTest, source: 'phone', component: c.kind === 'send-fail' ? 'send' : 'web', kind: c.kind, msg: String(c.msg || '').split('\n')[0], detail: String(c.msg || ''), severity: sev, ctx: { ua: String(req.headers['user-agent'] || '').slice(0, 160), ...(Number.isInteger(c.pane) ? { pane: c.pane } : {}) } })
       } catch {}
       return json(res, 200, { ok: true })
     }
