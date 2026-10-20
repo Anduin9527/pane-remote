@@ -1,4 +1,5 @@
 // 推送通知：定时看所有 pane 最后几行，出现「等你选择/确认」的界面就给订阅过的手机发 Web Push
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import webpush from 'web-push'
@@ -53,9 +54,12 @@ export function unsubscribe(endpoint) {
 }
 export const hasSub = (endpoint) => subs.some((s) => s.endpoint === endpoint)
 
+// Topic（同一个 tag 的新通知替换旧的）：直接用 tag 时，长度除以 4 余 1 的（比如 incident-<12 位>，21 个字符）
+// 苹果当 base64 解不开，回 400 BadWebPushTopic。改成 tag 的哈希：32 位十六进制，长度是 4 的倍数，同一个 tag 还是同一个 Topic
+export const pushTopic = (tag) => (tag ? crypto.createHash('sha256').update(String(tag)).digest('hex').slice(0, 32) : undefined)
 export async function notify(payload) {
   const body = JSON.stringify(payload)
-  const results = await Promise.allSettled(subs.map((s) => webpush.sendNotification(s, body, { TTL: 600, urgency: 'high', topic: payload.tag?.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32) })))
+  const results = await Promise.allSettled(subs.map((s) => webpush.sendNotification(s, body, { TTL: 600, urgency: 'high', topic: pushTopic(payload.tag) })))
   const gone = []
   results.forEach((r, i) => {
     if (r.status === 'rejected') {
@@ -167,17 +171,31 @@ async function pushFor(pane, isWatching, payload, why) {
 
 // hook（电脑上的 pane-event）记下的事件：回合结束、需要操作、用户发了新输入
 let eventsOffset = null
+// 读到 events.jsonl 的哪里，存盘：服务重启后从这里接着读，重启那一刻写进来的问题报告、修复进度、agent 提问不会丢
+// （以前重启后直接跳到文件末尾，「已修复」这类进度会被跳过）。超过 1 天的存档不用（太旧了，当没有）
+const OFFSET_FILE = path.join(DATA, 'events-offset.json')
+let savedOffset = null
+try { const o = JSON.parse(fs.readFileSync(OFFSET_FILE, 'utf8')); if (Date.now() - o.at < 86400000 && Number.isInteger(o.offset)) savedOffset = o.offset } catch {}
+let offsetWritten = -1
+function saveOffset() {
+  if (eventsOffset === offsetWritten) return
+  offsetWritten = eventsOffset
+  try { fs.writeFileSync(OFFSET_FILE, JSON.stringify({ offset: eventsOffset, at: Date.now() })) } catch {}
+}
 let lastEventsRead = 0
 /** 扫描循环最近 10 秒内读过事件（自检据此判断该不该等 canary 事件） */
 export const eventsFresh = () => Date.now() - lastEventsRead < 10000
 async function readEvents(bridge, isWatching, onOpen, onAgent, onIncident, onCanary) {
-  const out = await bridge(`events ${eventsOffset ?? 0}`)
+  const first = eventsOffset === null
+  const resume = first && savedOffset !== null
+  const out = await bridge(`events ${eventsOffset ?? savedOffset ?? 0}`)
   const nl = out.indexOf('\n')
   const size = Number(out.slice(0, nl < 0 ? undefined : nl))
-  const first = eventsOffset === null
   eventsOffset = size
   lastEventsRead = Date.now()
-  if (first || nl < 0) return // 刚启动：只记下位置，不补推以前的事件
+  saveOffset()
+  if ((first && !resume) || nl < 0) return // 第一次启动、没有存档：只记下位置
+  const nowS = Date.now() / 1000
   for (const line of out.slice(nl + 1).split('\n')) {
     if (!line.trim()) continue
     let ev
@@ -186,8 +204,10 @@ async function readEvents(bridge, isWatching, onOpen, onAgent, onIncident, onCan
     if (ev.kind === 'agent') { onAgent?.(ev); continue }
     if (ev.kind === 'incident') { onIncident?.(ev); continue }
     if (ev.kind === 'canary') { onCanary?.(ev.nonce); continue }
-    // agent 的提问、问题报告这类事件该在几秒内被读到：晚了 1 分钟以上说明扫描卡住过
-    if (ev.t && Date.now() / 1000 - ev.t > 60 && (ev.kind === 'stop' || ev.kind === 'notify')) problem({ component: 'monitor', kind: 'events-late', title: '事件读得太晚', msg: `event ${ev.kind} read ${Math.round(Date.now() / 1000 - ev.t)}s late` })
+    // 重启后补读的「做完了 / 等你操作」超过 2 分钟就不补推了（只更新状态），免得一重启就推一串旧通知
+    const stale = resume && ev.t && nowS - ev.t > 120
+    // agent 的提问、问题报告这类事件该在几秒内被读到：晚了 1 分钟以上说明扫描卡住过（补读的不算）
+    if (!resume && ev.t && nowS - ev.t > 60 && (ev.kind === 'stop' || ev.kind === 'notify')) problem({ component: 'monitor', kind: 'events-late', title: '事件读得太晚', msg: `event ${ev.kind} read ${Math.round(Date.now() / 1000 - ev.t)}s late` })
     const pane = String(ev.pane)
     const st = state.get(pane) || blank(Date.now())
     state.set(pane, st)
@@ -195,8 +215,8 @@ async function readEvents(bridge, isWatching, onOpen, onAgent, onIncident, onCan
     if (ev.kind === 'prompt') { st.inputAt = t; continue }
     if (ev.kind === 'stop' || ev.kind === 'failure') {
       st.doneAt = t
-      if (prefs.stop) await pushFor(pane, isWatching, { title: ev.kind === 'failure' ? '出错停下了' : '做完了', body: ev.msg || '轮到你了' }, ev.kind)
-    } else if (ev.kind === 'notify' || ev.kind === 'permission') {
+      if (prefs.stop && !stale) await pushFor(pane, isWatching, { title: ev.kind === 'failure' ? '出错停下了' : '做完了', body: ev.msg || '轮到你了' }, ev.kind)
+    } else if ((ev.kind === 'notify' || ev.kind === 'permission') && !stale) {
       await pushFor(pane, isWatching, { title: '等你操作', body: ev.msg || '需要你确认' }, ev.kind)
     }
   }
