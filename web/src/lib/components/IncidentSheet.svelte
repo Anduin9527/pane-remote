@@ -95,7 +95,8 @@
       <Drawer.Title class="flex-1">{view === 'report' ? t('报告一个问题') : view === 'settings' ? t('修复交给谁') : view === 'detail' ? t('问题详情') : t('问题报告')}</Drawer.Title>
       {#if view === 'list'}<button class="grid size-8 place-items-center rounded-lg active:bg-accent" aria-label={t('修复交给谁')} onclick={() => (view = 'settings')}><Settings class="size-4" /></button>{/if}
     </Drawer.Header>
-    <div data-vaul-no-drag class="grid gap-2.5 overflow-y-auto overscroll-contain p-3 pb-[calc(env(safe-area-inset-bottom)+12px)]">
+    <!-- [&>*]:min-w-0：网格的子元素默认不肯比内容窄，上下文里一长串没空格的 JSON 会把整个面板撑得比屏幕宽 -->
+    <div data-vaul-no-drag class="grid gap-2.5 overflow-x-hidden overflow-y-auto overscroll-contain p-3 pb-[calc(env(safe-area-inset-bottom)+12px)] [&>*]:min-w-0">
       {#if view === 'list'}
         {#each shown as x (x.id)}
           <button class="grid gap-0.5 rounded-xl border bg-card p-3 text-left active:bg-accent" onclick={() => openDetail(x.id)}>
@@ -118,7 +119,7 @@
           <p class="p-5 text-center text-sm text-muted-foreground">…</p>
         {:else}
           <section class="grid gap-1">
-            <p class="font-semibold">{cur.title}</p>
+            <p class="font-semibold [overflow-wrap:anywhere]">{cur.title}</p>
             <p class="text-xs text-muted-foreground">{SOURCE[cur.source] || cur.source} · {cur.component} · {cur.kind} · {STATUS[cur.status]}{cur.regressed ? ` · ${t('修好后又出现')}` : ''}</p>
             <p class="text-xs text-muted-foreground">{t('{n} 次，第一次 {first}，最近 {last}', { n: cur.count, first: time(cur.first), last: time(cur.last) })}</p>
             {#if cur.ai?.summary}
@@ -141,7 +142,7 @@
                 <span class="text-xs font-normal text-muted-foreground">{cur.fix.mode === 'bound' ? t('绑定的会话') : cur.fix.agent ? t('新开 {agent}', { agent: cur.fix.agent }) : ''}</span>
               </span>
               {#each cur.fix.updates || [] as u, i (i)}
-                <p class="text-xs"><span class="text-muted-foreground">{time(u.t)}</span> [{u.status}] {u.note}{#if u.branch} · <span class="font-mono">{u.branch}</span>{/if}{#if u.pr} · <a class="text-primary underline" href={u.pr} target="_blank" rel="noreferrer">PR</a>{/if}</p>
+                <p class="text-xs [overflow-wrap:anywhere]"><span class="text-muted-foreground">{time(u.t)}</span> [{u.status}] {u.note}{#if u.branch} · <span class="font-mono">{u.branch}</span>{/if}{#if u.pr} · <a class="text-primary underline" href={u.pr} target="_blank" rel="noreferrer">PR</a>{/if}</p>
               {/each}
             </section>
           {/if}
@@ -165,7 +166,7 @@
             {#each cur.samples as s, i (i)}
               <details class="rounded-lg border bg-card p-2.5" open={i === 0}>
                 <summary class="text-xs text-muted-foreground">{time(s.t)}</summary>
-                <pre class="mt-1.5 overflow-x-auto font-mono text-[11px] whitespace-pre-wrap">{s.msg}{s.detail && s.detail !== s.msg ? `\n\n${s.detail}` : ''}{s.ctx ? `\n\n${JSON.stringify(s.ctx)}` : ''}</pre>
+                <pre class="mt-1.5 font-mono text-[11px] whitespace-pre-wrap [overflow-wrap:anywhere]">{s.msg}{s.detail && s.detail !== s.msg ? `\n\n${s.detail}` : ''}{s.ctx ? `\n\n${JSON.stringify(s.ctx)}` : ''}</pre>
               </details>
             {/each}
           </section>

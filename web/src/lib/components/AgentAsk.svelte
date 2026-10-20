@@ -44,7 +44,7 @@
       </button>
       <button class="grid size-7 place-items-center rounded-md text-muted-foreground active:bg-accent" aria-label={t('稍后')} onclick={() => (hidden = new Set([...hidden, cur.id]))}><X class="size-4" /></button>
     </div>
-    <p class="mt-1.5 max-h-40 overflow-y-auto text-[14px] whitespace-pre-wrap">{cur.question}</p>
+    <p class="mt-1.5 max-h-40 overflow-y-auto text-[14px] whitespace-pre-wrap [overflow-wrap:anywhere]">{cur.question}</p>
     <div class="mt-2 flex flex-wrap gap-1.5">
       {#each cur.options as o (o)}
         <button

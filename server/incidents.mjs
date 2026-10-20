@@ -404,6 +404,13 @@ async function tick() {
         save()
       }
     }
+    // 排队期间问题已经被解决 / 忽略 / 修好了：不再发给绑定会话
+    if (inc.fix?.state === 'queued' && ['resolved', 'ignored', 'fixed'].includes(inc.status)) {
+      inc.fix.state = 'cancelled'
+      note(inc, { status: 'cancelled', note: `排队期间问题已经${{ resolved: '标成已解决', ignored: '被忽略', fixed: '修好了' }[inc.status]}，不再交给会话` })
+      save()
+      continue
+    }
     if (inc.fix?.state === 'queued' && inc.fix.mode === 'bound' && cfg.bound?.session === inc.fix.session) {
       // 失败就停在 failed，不在下一轮反复开新标签页
       await tryDeliver(inc).catch((e) => { console.log(`incident deliver ${inc.id}: ${e.message}`); inc.fix.state = 'failed'; inc.status = 'open'; note(inc, { status: 'failed', note: `交给绑定会话失败：${e.message}` }) })
@@ -462,6 +469,7 @@ export async function api(method, sub, body, query) {
     if (a === 'fix') return { ok: true, fix: await fix(inc.id, { mode: ['bound', 'new'].includes(body.mode) ? body.mode : undefined, force: body.force === true }) }
     if (a === 'triage') { if (!cfg.triage?.enabled) throw new Error('AI 分类没开'); inc.ai = null; triageQueue.push(inc.id); await runTriage(); return { ok: true, ai: inc.ai } }
     if (a === 'cancel-fix') { if (inc.fix) { inc.fix.state = 'cancelled'; note(inc, { status: 'cancelled', note: '手机上取消' }) } inc.status = 'open'; save(); return { ok: true } }
+    if ((a === 'ignore' || a === 'resolve') && inc.fix?.state === 'queued') { inc.fix.state = 'cancelled'; note(inc, { status: 'cancelled', note: a === 'resolve' ? '标成已解决，取消排队中的修复' : '忽略了，取消排队中的修复' }) }
     if (a === 'ignore') inc.status = 'ignored'
     else if (a === 'resolve') inc.status = 'resolved'
     else if (a === 'reopen') { inc.status = 'open'; inc.notified = null }
