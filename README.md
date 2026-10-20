@@ -78,6 +78,7 @@ cd ~/pane-remote
 pane-remote doctor            # 自检：每一项有问题都会给出修复办法
 pane-remote status            # 服务在不在跑
 pane-remote restart | logs
+pane-remote stop | start      # 停 / 开服务；stop 连预览用的 Chrome 一起关（下次用预览会自动再开）
 pane-remote enable preview    # 开 / 关模块：preview、openUrl、cursor、screen、mac
 pane-remote disable openUrl
 pane-remote init              # 改了配置、换了电脑名、装了新的 Claude 配置目录后重跑一次（保留原有配置）
