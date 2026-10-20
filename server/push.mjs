@@ -139,6 +139,9 @@ export function states() {
 const hash = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h }
 
 let lastList = []
+/** WezTerm 里这个 pane 的信息（标题、workspace），最近一次扫描的结果；不认识就是 undefined */
+export const paneInfo = (pane) => lastList.find((p) => String(p.pane_id) === String(pane))
+export const paneTitle = (pane) => cleanTitle(paneInfo(pane), pane)
 let lastIdle = 1e9
 const cleanTitle = (info, pane) => (info?.title || `pane ${pane}`).replace(/^[⠀-⣿✳✻✽·◐◓◑◒⠂⠐*]+\s*/, '')
 
@@ -158,7 +161,7 @@ async function pushFor(pane, isWatching, payload, why) {
 
 // hook（电脑上的 pane-event）记下的事件：回合结束、需要操作、用户发了新输入
 let eventsOffset = null
-async function readEvents(bridge, isWatching, onOpen) {
+async function readEvents(bridge, isWatching, onOpen, onAgent) {
   const out = await bridge(`events ${eventsOffset ?? 0}`)
   const nl = out.indexOf('\n')
   const size = Number(out.slice(0, nl < 0 ? undefined : nl))
@@ -170,6 +173,7 @@ async function readEvents(bridge, isWatching, onOpen) {
     let ev
     try { ev = JSON.parse(line) } catch { continue }
     if (ev.kind === 'open') { onOpen?.(ev.msg); continue }
+    if (ev.kind === 'agent') { onAgent?.(ev); continue }
     const pane = String(ev.pane)
     const st = state.get(pane) || blank(Date.now())
     state.set(pane, st)
@@ -184,7 +188,7 @@ async function readEvents(bridge, isWatching, onOpen) {
   }
 }
 
-export function startMonitor({ bridge, isWatching, active, onOpen }) {
+export function startMonitor({ bridge, isWatching, active, onOpen, onAgent }) {
   let busy = false
   setInterval(async () => {
     // 有推送订阅、或手机最近在用（要看状态列表）才扫，不然不打扰电脑
@@ -226,7 +230,7 @@ export function startMonitor({ bridge, isWatching, active, onOpen }) {
         state.set(pane, st)
       }
       for (const k of state.keys()) if (!seen.has(k)) state.delete(k)
-      await readEvents(bridge, isWatching, onOpen).catch((e) => console.log(`events: ${e.message}`))
+      await readEvents(bridge, isWatching, onOpen, onAgent).catch((e) => console.log(`events: ${e.message}`))
     } catch (e) {
       console.log(`monitor: ${e.message}`)
     } finally {

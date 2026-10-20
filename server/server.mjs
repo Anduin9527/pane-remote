@@ -8,7 +8,10 @@
 //   POST /api/send {pane, data, rid?}  把 data 原样发进 pane（方向键、回车等用控制序列）
 //   POST /api/pane/{spawn|split|kill|title|focus}  管理：新标签页/拆分（可带启动命令，或带 resume 恢复某个 Claude 会话）、关闭、改标题、电脑上切过去
 //   GET  /api/push/key、POST /api/push/subscribe|unsubscribe|status|test  推送订阅（见 push.mjs）
-//   GET  /api/states             每个 pane 的状态：waiting / running / idle、等待的问题、有没有未读
+//   GET  /api/states             每个 pane 的状态：waiting / running / idle、等待的问题、有没有未读；agent 在手机上问的问题（asks）也挂在对应 pane 上
+//   GET  /api/agent?pane=N        pane 里的 agent：会话、忙/闲、有没有注入 pane-remote 插件
+//   GET|POST /api/agent/restart   重启并注入：POST {pane, inject?, force?} 开始（先存快照，见 agent/pane-agent），GET ?pane=N 看进度
+//   POST /api/agent/answer {id, answer, text?}  回答 agent 用 ask_phone 问的问题（交给 Mac 上等着的 MCP 服务）
 //   GET  /api/claude?pane=N      这个 pane 里 Claude 会话的信息（会话 ID、账号、目录），没有就是 {}
 //   GET  /api/transcript?pane=N  这个 pane 里 Claude 会话最近的对话消息（对话视图用）
 //   POST /api/reconnect {pane}     手动重连：重建这个 pane 的画面通道、清缓存；relay 模式下电脑不通时重建 ssh 共享连接
@@ -332,12 +335,23 @@ async function resumeCommand(dir, id) {
   return `${claudeCommand(s.configDir)} --resume ${id}${s.running ? ' --fork-session' : ''}`
 }
 const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms))
+// 注入 pane-remote 插件：认得的 agent 命令前面加上 with-tools（agent/plugin/bin/with-tools，init 在 Mac 上链接到
+// 下面这个固定位置：中转模式下服务端不知道 Mac 上仓库在哪），各家加载插件的参数由它加；别的命令原样执行
+const WITH_TOOLS = '~/.local/share/pane-remote/with-tools'
+// 启动命令开头可以有环境变量（多账号的 CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude）：with-tools 放在它们后面
+const AGENT_CMD_RE = /^((?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)\s+)*)(\S+)(.*)$/s
+function injectCommand(cmd) {
+  const m = AGENT_CMD_RE.exec(cmd)
+  if (!m || !/^(claude(-[\w-]+)?|codex|cursor-agent)$/.test(m[2])) return cmd
+  return `${m[1]}${WITH_TOOLS} ${m[2]}${m[3]}`
+}
 async function manage(action, b) {
   if (action === 'spawn' || action === 'split') {
     if (typeof b.dir !== 'string' || !b.dir.startsWith('/') || b.dir.length > 1024) throw new Error('bad dir')
     if (b.resume != null && !isSessionId(b.resume)) throw new Error('bad session')
     // 先查好恢复命令再开 pane：会话找不到时不留下一个空 pane
-    const cmd = b.resume != null ? await resumeCommand(b.dir, b.resume) : typeof b.command === 'string' ? b.command.trim() : ''
+    let cmd = b.resume != null ? await resumeCommand(b.dir, b.resume) : typeof b.command === 'string' ? b.command.trim() : ''
+    if (b.inject === true && cmd) cmd = injectCommand(cmd)
     let out
     if (action === 'spawn') {
       if (b.window !== 'new' && !isId(b.window)) throw new Error('bad window')
@@ -364,7 +378,7 @@ async function manage(action, b) {
     const info = JSON.parse((await bridge(`session ${b.pane}`)) || '{}')
     if (!info.session && b.mode === 'fork') throw new Error('这个 pane 里还没找到会话')
     if (info.session && !isSessionId(info.session)) throw new Error('bad session')
-    const command = agentCommand(info, b.mode)
+    const command = b.inject === true ? injectCommand(agentCommand(info, b.mode)) : agentCommand(info, b.mode)
     if (!command) throw new Error(`${info.agent || '这个 agent'} 不支持分叉会话`)
     const pane = (await listPanes()).find((p) => String(p.pane) === String(b.pane))
     const dir = info.cwd || pane?.dir
@@ -709,7 +723,35 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, await dirSessions(dir))
     }
     if (url.pathname === '/api/states' && req.method === 'GET') {
-      return json(res, 200, push.states())
+      return json(res, 200, withAsks(push.states(), url.searchParams.has('test')))
+    }
+    if (url.pathname === '/api/agent' && req.method === 'GET') {
+      const pane = url.searchParams.get('pane')
+      if (!isId(pane)) return json(res, 400, { error: 'bad pane' })
+      return json(res, 200, JSON.parse((await bridge(`agent inspect ${pane}`)) || '{}'))
+    }
+    if (url.pathname === '/api/agent/restart' && req.method === 'GET') {
+      const pane = url.searchParams.get('pane')
+      if (!isId(pane)) return json(res, 400, { error: 'bad pane' })
+      return json(res, 200, JSON.parse((await bridge(`agent restart-status ${pane}`)) || '{}'))
+    }
+    if (url.pathname === '/api/agent/restart' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req, 4 << 10)) || '{}')
+      if (!isId(b.pane)) return json(res, 400, { error: 'bad pane' })
+      // 必须显式确认（手机上点两次才发 confirm: true），误发的请求不会重启任何会话
+      if (b.confirm !== true) return json(res, 400, { error: 'need confirm' })
+      // 用这个会话所在账号的 wrapper 重新打开（不同账号的会话只有同一个 wrapper 找得到）
+      const info = JSON.parse((await bridge(`agent inspect ${b.pane}`)) || '{}')
+      if (!['claude', 'codex', 'cursor-agent'].includes(info.agent) || !info.session) return json(res, 400, { error: '这个 pane 里没有认得的 agent 会话' })
+      if (info.status !== 'idle' && b.force !== true) return json(res, 409, { error: 'agent 正在干活，等这一轮停下再重启' })
+      const opts = { wrapper: claudeCommand(info.configDir), inject: b.inject !== false, force: b.force === true }
+      await bridge(`agent restart ${b.pane} ${b64(JSON.stringify(opts))}`)
+      console.log(`agent restart pane ${b.pane} inject=${opts.inject}`)
+      return json(res, 200, { ok: true })
+    }
+    if (url.pathname === '/api/agent/answer' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req, 8 << 10)) || '{}')
+      return json(res, 200, await answerAsk(b))
     }
     if (url.pathname === '/api/upload' && req.method === 'POST') {
       const name = (url.searchParams.get('name') || 'file').slice(0, 200)
@@ -785,6 +827,64 @@ function onOpen(url) {
     .then((r) => console.log(`notify(open) ${url} → ${JSON.stringify(r)}`))
 }
 
+// ---------- 注入了 pane-remote 插件的 agent（agent/plugin/mcp.mjs）发来的请求 ----------
+// ask：在手机上问一句（推送 + 状态里挂出来，回答经 bridge agent-answer 交回）；cancel：不等了；notify：推一条通知
+const asks = new Map() // id → { id, pane, question, options, confirm, expires, t }
+const agentNotify = { byPane: new Map(), recent: [] }
+const askId = (v) => typeof v === 'string' && /^[0-9a-f]{24}$/.test(v)
+const testPane = (pane) => { const i = push.paneInfo(pane); return !i || i.workspace === 'pane-remote-test' } // 不认识的 pane 也不推
+function onAgent(ev) {
+  const pane = Number.isInteger(ev.pane) ? String(ev.pane) : null
+  if (ev.op === 'cancel') { if (askId(ev.id)) asks.delete(ev.id); return }
+  if (!pane) return
+  if (ev.op === 'ask') {
+    if (!askId(ev.id) || typeof ev.question !== 'string' || !Array.isArray(ev.options)) return
+    const options = ev.options.filter((o) => typeof o === 'string' && o.trim()).map((o) => o.slice(0, 40)).slice(0, 6)
+    if (!options.length) return
+    const fresh = !asks.has(ev.id)
+    asks.set(ev.id, { id: ev.id, pane, question: ev.question.slice(0, 500), options, confirm: !!ev.confirm, expires: Number(ev.expires) || Date.now() / 1000 + 600, t: ev.t })
+    if (!fresh || testPane(pane)) return
+    const title = `${push.paneTitle(pane)} ${ev.confirm ? '要你确认' : '问你'}`
+    push.notify({ title, body: ev.question.slice(0, 200), pane, tag: `ask-${ev.id}` }).then((r) => console.log(`notify(ask) pane ${pane} → ${JSON.stringify(r)}`))
+    return
+  }
+  if (ev.op === 'notify') {
+    // agent 自己决定要推的：不看「人在不在电脑前」，但限频（同一个 pane 20 秒一条、全部每小时 20 条）
+    const now = Date.now()
+    agentNotify.recent = agentNotify.recent.filter((t) => now - t < 3600000)
+    if (testPane(pane) || now - (agentNotify.byPane.get(pane) || 0) < 20000 || agentNotify.recent.length >= 20) return console.log(`notify(agent) pane ${pane} dropped`)
+    agentNotify.byPane.set(pane, now)
+    agentNotify.recent.push(now)
+    const title = `${push.paneTitle(pane)} ${String(ev.title || '').slice(0, 60)}`
+    push.notify({ title, body: String(ev.body || '').slice(0, 300), pane, tag: `agent-${pane}` }).then((r) => console.log(`notify(agent) pane ${pane} → ${JSON.stringify(r)}`))
+  }
+}
+/** 状态里挂上还没答的问题：该 pane 显示成「等你操作」，选项变成按钮（Inbox 里也能直接答） */
+function withAsks(states, includeTest = false) {
+  const now = Date.now() / 1000
+  for (const a of asks.values()) {
+    if (a.expires < now) { asks.delete(a.id); continue }
+    if (!includeTest && testPane(a.pane)) continue // 自动化测试的问题不出现在手机上
+    const s = (states[a.pane] ||= { state: 'idle', prompt: '', choices: [], unread: false })
+    ;(s.asks ||= []).push({ id: a.id, question: a.question, options: a.options, confirm: a.confirm, expires: a.expires })
+    s.state = 'waiting'
+    s.prompt = a.question
+    s.choices = a.options.map((o) => ({ label: o, send: [], ask: { id: a.id, answer: o } }))
+  }
+  return states
+}
+async function answerAsk(b) {
+  const a = askId(b.id) && asks.get(b.id)
+  if (!a) throw new Error('这个问题已经过期或被回答了')
+  const text = typeof b.text === 'string' ? b.text.trim().slice(0, 1000) : ''
+  if (!a.options.includes(b.answer) && !(text && !a.confirm)) throw new Error('bad answer')
+  const answer = a.options.includes(b.answer) ? b.answer : ''
+  await bridge(`agent-answer ${a.id} ${b64(JSON.stringify({ answer, text, t: Date.now() / 1000 }))}`)
+  asks.delete(a.id)
+  console.log(`agent answer pane ${a.pane}: ${answer || '(text)'}`)
+  return { ok: true }
+}
+
 // Cursor 模块：电脑上常驻一个 cursor-agent；做完 / 在等你时推送（遵守「一轮做完也推」开关，人在电脑前不推）
 if (config.modules.cursor) initCursor({
   dataDir: config.dataDir,
@@ -798,6 +898,7 @@ if (config.modules.cursor) initCursor({
 
 push.startMonitor({
   onOpen,
+  onAgent,
   bridge,
   isWatching: (pane) => (watchers.get(String(pane))?.clients.size || 0) > 0,
   active: () => viewing() || Date.now() - lastApi < 120000,

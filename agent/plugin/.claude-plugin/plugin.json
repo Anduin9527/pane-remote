@@ -1,0 +1,8 @@
+{
+  "name": "pane-remote",
+  "version": "1.0.0",
+  "description": "Running under pane-remote: the user drives this terminal from their phone. Tools to notify / ask the user on the phone, open pages in the phone preview, and act on this Mac and its other panes.",
+  "mcpServers": {
+    "pane-remote": { "command": "${CLAUDE_PLUGIN_ROOT}/bin/mcp", "args": [], "env": { "PANE_REMOTE_AGENT": "claude" } }
+  }
+}

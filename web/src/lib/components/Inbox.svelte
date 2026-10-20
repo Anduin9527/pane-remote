@@ -3,7 +3,7 @@
   import * as Drawer from '$lib/components/ui/drawer'
   import { Button } from '$lib/components/ui/button'
   import { toast } from 'svelte-sonner'
-  import { label, sendRaw } from '$lib/api'
+  import { label, sendRaw, answerAsk } from '$lib/api'
   import { ui, select, pollStates, type Choice } from '$lib/session.svelte'
   import { cn } from '$lib/utils'
   import { t, tr } from '$lib/i18n'
@@ -21,7 +21,10 @@
   const name = (id: string) => { const p = ui.panes.find((x) => String(x.pane) === id); return p ? `#${id} ${label(p)}` : `#${id}` }
   $effect(() => { if (open) pollStates() })
 
-  function answer(id: string, c: Choice) {
+  async function answer(id: string, c: Choice) {
+    if (c.ask) {
+      try { await answerAsk(c.ask.id, c.ask.answer) } catch (e) { toast.error(t('没答上：{msg}', { msg: tr((e as Error).message) })); return }
+    }
     for (const s of c.send) sendRaw(id, s, false)
     toast(t('已回答 {name}：{choice}', { name: name(id), choice: tr(c.label) }))
     // 先从列表里拿掉，等下一轮状态刷新确认

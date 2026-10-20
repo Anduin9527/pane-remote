@@ -23,6 +23,7 @@
   import CursorIcon from '$lib/cursor/CursorIcon.svelte'
   import { selectSession as selectCursorSession, cursorSummary } from '$lib/cursor/cursor.svelte'
   import Inbox from '$lib/components/Inbox.svelte'
+  import AgentAsk from '$lib/components/AgentAsk.svelte'
   import Reader from '$lib/components/Reader.svelte'
   import FileText from '@lucide/svelte/icons/file-text'
   import Ellipsis from '@lucide/svelte/icons/ellipsis'
@@ -316,6 +317,7 @@
 <NotifySheet bind:open={notifOpen} bind:on={pushOn} />
 <KeyEditor bind:open={keysOpen} />
 <Inbox bind:open={inboxOpen} oncursor={(id) => { selectCursorSession(id); mode = 'cursor' }} />
+<AgentAsk />
 <ClaudeSheet bind:open={claudeOpen} />
 <CronSheet bind:open={cronOpen} />
 <Reader bind:open={readerOpen} onpreview={() => (mode = 'preview')} />

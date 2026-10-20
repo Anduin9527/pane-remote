@@ -1,0 +1,27 @@
+#!/bin/bash
+# 带着 pane-remote 插件启动 agent：with-tools <agent 命令> [参数...]
+# 按命令名认 agent，加上各家加载插件的参数；认不出就原样执行。手机上新建 / 分叉 / 重启并注入都经过这里，
+# 各家的参数只在这一个地方维护。
+set -u
+# 可能经软链接调用（init 建的 ~/.local/share/pane-remote/with-tools），先解析到真实位置
+P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+[[ $# -ge 1 ]] || { echo "usage: with-tools <agent command> [args...]" >&2; exit 2; }
+cmd=$1; shift
+case "$(basename "$cmd")" in
+  claude|claude-*)
+    exec "$cmd" "$@" --plugin-dir "$P" ;;
+  cursor-agent)
+    exec "$cmd" "$@" --plugin-dir "$P" --approve-mcps ;;
+  codex)
+    # Codex 没有插件目录参数：MCP 用 -c 配进去（WEZTERM_PANE 要显式放行，ask_phone 最长等 30 分钟），
+    # skill 用 developer_instructions 让它自己去读
+    exec "$cmd" "$@" \
+      -c "mcp_servers.pane-remote.command=\"$P/bin/mcp\"" \
+      -c 'mcp_servers.pane-remote.env_vars=["WEZTERM_PANE"]' \
+      -c 'mcp_servers.pane-remote.env={PANE_REMOTE_AGENT="codex"}' \
+      -c 'mcp_servers.pane-remote.tool_timeout_sec=1900' \
+      -c 'mcp_servers.pane-remote.default_tools_approval_mode="approve"' \
+      -c "developer_instructions=\"You are running under pane-remote: the user drives this terminal from a phone. At session start read $P/skills/pane-remote/SKILL.md and follow it.\"" ;;
+  *)
+    exec "$cmd" "$@" ;;
+esac

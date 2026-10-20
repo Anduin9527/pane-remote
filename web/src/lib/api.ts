@@ -39,6 +39,9 @@ export async function fetchSessions(dir: string): Promise<ClaudeSession[]> {
   return parse(await fetch(`api/sessions?dir=${encodeURIComponent(dir)}`, { cache: 'no-store' }))
 }
 
+/** 回答 agent 在手机上问的问题：answer 是选项之一；text 是自由回答（确认类问题不接受） */
+export const answerAsk = (id: string, answer: string, text = '') => postJson('api/agent/answer', { id, answer, text })
+
 export const label = (p: Pane) => p.title || p.tabTitle || `pane ${p.pane}`
 
 export function report(kind: string, msg: unknown) {

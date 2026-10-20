@@ -34,6 +34,7 @@ No third-party server is involved: phone and Mac talk over your own Tailscale ne
 | Cursor mapping | View and drive the Cursor IDE from the phone: sessions, messages, to-do / unread, command output, change diffs, built-in browser | `pane-remote enable cursor`, see [docs/en/cursor.md](docs/en/cursor.md) |
 | Screen view | View and control the Mac's screen (one display or a single window) from the phone: tap, drag, scroll, trackpad mode, typing (CJK included), multi-finger gestures, launching apps in the background. Signs in through macOS's built-in Screen Sharing; the picture is captured with ScreenCaptureKit and transcoded on the Mac before it travels. Also closes windows, quits apps, resizes windows, opens the keyboard on text fields and types on the lock screen | `pane-remote enable screen`, see [docs/en/screen.md](docs/en/screen.md) |
 | This Mac | The Mac's performance on the phone (CPU, memory, top processes), and have the Mac read text aloud with the built-in say | `pane-remote enable mac`, see [docs/en/mac.md](docs/en/mac.md) |
+| Agent tools | Claude Code / Codex / cursor-agent started from the phone load a pane-remote plugin: push when done, ask you on the phone when stuck, open pages in the phone preview; running sessions can "restart and load", with a snapshot before and background work restored after | Available by default, see [docs/en/agent.md](docs/en/agent.md) |
 | Relay mode | When the Mac itself can't run Tailscale, relay through a server in your tailnet | See [docs/en/relay.md](docs/en/relay.md) |
 | Persistent panes | Panes survive closing the WezTerm window and stay reachable from the phone | See [docs/en/advanced.md](docs/en/advanced.md) |
 
@@ -150,7 +151,7 @@ pane-remote update --rollback  # go back to the version before the last update
 install.sh          one-step installer
 bin/pane-remote     command entry (lib/cli.mjs)
 server/             server (backend for the phone UI)
-agent/              Mac-side scripts: bridge (the only entry to WezTerm), hooks, transcript parsing, preview browser, Cursor adapter, screen view (screen/), This Mac (mac/)
+agent/              Mac-side scripts: bridge (the only entry to WezTerm), hooks, transcript parsing, preview browser, Cursor adapter, screen view (screen/), This Mac (mac/), agent plugin (plugin/, pane-agent)
 web/                phone UI source (Svelte); build output goes to public/
 relay/              helper commands for relay mode
 scripts/audit.mjs   pre-release audit: personal info, internal addresses and secrets

@@ -14,6 +14,7 @@ export const prefs = $state({
   fit: load('fit', true),
   enter: load('enter', true),
   lastCmd: load('lastCmd', ''),
+  inject: load('inject', true), // 新开 / 分叉 agent 时注入 pane-remote 插件
   keys: load<Key[] | null>('keys', null), // null = 用默认键位
 })
 
@@ -23,5 +24,6 @@ $effect.root(() => {
   $effect(() => save('fit', prefs.fit))
   $effect(() => save('enter', prefs.enter))
   $effect(() => save('lastCmd', prefs.lastCmd))
+  $effect(() => save('inject', prefs.inject))
   $effect(() => save('keys', $state.snapshot(prefs.keys)))
 })

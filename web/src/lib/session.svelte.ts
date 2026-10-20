@@ -7,8 +7,10 @@ import { t, tr } from './i18n'
 const SHELLS = new Set(['zsh', 'bash', 'sh', 'fish', 'dash', 'ksh', 'tcsh', 'nu', 'login', '-zsh', '-bash'])
 
 export type ClaudeInfo = { agent: 'claude' | 'codex' | 'grok' | 'cursor-agent' | string; status?: string; session: string; transcript: string; configDir: string; cwd: string; t: number }
-export type Choice = { label: string; send: string[]; selected?: boolean }
-export type PaneState = { state: 'waiting' | 'running' | 'done' | 'idle'; prompt: string; choices: Choice[]; unread: boolean }
+export type Choice = { label: string; send: string[]; selected?: boolean; ask?: { id: string; answer: string } }
+/** 注入了 pane-remote 插件的 agent 用 ask_phone 在手机上问的问题；confirm = 允许 / 拒绝 型，不能自由回答 */
+export type AgentAsk = { id: string; question: string; options: string[]; confirm: boolean; expires: number }
+export type PaneState = { state: 'waiting' | 'running' | 'done' | 'idle'; prompt: string; choices: Choice[]; unread: boolean; asks?: AgentAsk[] }
 
 export const ui = $state({
   panes: [] as Pane[],

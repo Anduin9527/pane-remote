@@ -123,6 +123,7 @@
     }
     const command = cmd === '__custom' ? custom.trim() : cmd
     const body: Record<string, unknown> = resume ? { dir: full(dir), resume } : { dir: full(dir), command }
+    body.inject = prefs.inject
     let action: 'spawn' | 'split' = 'spawn'
     if (where === 'split' && target.split) { action = 'split'; body.pane = target.split.pane; body.direction = target.direction }
     else body.window = where === 'new' ? 'new' : Number(where.slice(1))
@@ -175,6 +176,13 @@
           </div>
           {#if cmd === '__custom' && !resume}
             <input bind:value={custom} placeholder={t('例如 cursor-agent、grok、npm run dev')} autocapitalize="off" spellcheck="false" class="h-10 rounded-[10px] border bg-background px-3 font-mono outline-none focus:ring-2 focus:ring-ring" />
+          {/if}
+          {#if cmd || resume || isFork}
+            <!-- 只对认得的 agent 生效（服务端按启动命令判断），别的命令原样执行 -->
+            <label class="flex items-center gap-2 text-[13px]">
+              <input type="checkbox" bind:checked={prefs.inject} class="size-4 accent-primary" />
+              <span>{t('注入 pane-remote 工具')}<span class="ml-1 text-xs text-muted-foreground">{t('手机通知 / 提问、预览、跨 pane')}</span></span>
+            </label>
           {/if}
         </section>
       {/if}

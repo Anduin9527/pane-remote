@@ -1,0 +1,538 @@
+#!/usr/bin/python3
+"""pane-remote：给 pane 里的 agent 加载 pane-remote 插件（见 agent/plugin/），以及「重启并注入」。经 bridge 的 agent 子命令调用。
+
+  pane-agent inspect <pane>               这个 pane 里的 agent：会话、进程、忙/闲、有没有注入（JSON）
+  pane-agent snapshot <pane>              记下重启前还在跑的东西（后台命令、子代理、Monitor、定时任务、task），写到磁盘（JSON）
+  pane-agent restart <pane> <base64 JSON> 后台开始重启：{wrapper, inject, force}，马上返回；进度用 restart-status 看
+  pane-agent restart-status <pane>        重启进度（JSON）
+
+重启的守护：
+  - agent 正在干活（会话状态 busy）时不重启，除非 force
+  - 先把快照写到磁盘，再动进程；快照一直留着
+  - 退出用 Claude 自己的 /exit，等进程（按 PID）真的没了才继续；20 秒还在就停下报错，不杀进程
+  - 在原目录用原来的启动参数 + --resume 原会话 ID 启动（同一时间只有一个进程写这个会话）
+  - 带插件起不来就退回不带插件的普通 resume
+  - 起来以后发一条 [pane-remote restore]，让 agent 按快照恢复：只读的自己重建，会改东西的先问你
+"""
+import base64, glob, importlib.machinery, importlib.util, json, os, re, shlex, subprocess, sys, time
+
+HOME = os.path.expanduser("~")
+STATE = os.path.join(HOME, ".local/state/pane-remote/agent")
+HERE = os.path.dirname(os.path.realpath(__file__))
+PLUGIN = os.path.join(HERE, "plugin")
+# wezterm 路径、持久化 mux 的 socket：pane-remote init 写在 bridge.env 里（和 bridge 读同一个文件）
+WEZTERM, MUX_SOCK = "/opt/homebrew/bin/wezterm", ""
+try:
+    for line in open(os.environ.get("PANE_REMOTE_BRIDGE_ENV") or os.path.join(HOME, ".config/pane-remote/bridge.env")):
+        k, _, v = line.strip().partition("=")
+        if k == "WEZTERM" and v:
+            WEZTERM = v
+        elif k == "MUX_SOCK":
+            MUX_SOCK = v
+except OSError:
+    pass
+
+# 复用 pane-transcript 里认 agent、找会话、读定时任务的代码
+_loader = importlib.machinery.SourceFileLoader("pane_transcript", os.path.join(HERE, "pane-transcript"))
+_spec = importlib.util.spec_from_loader("pane_transcript", _loader)
+pt = importlib.util.module_from_spec(_spec)
+_loader.exec_module(pt)
+
+
+def cli(*args, input=None):
+    env = dict(os.environ)
+    if MUX_SOCK and os.path.exists(MUX_SOCK):
+        env["WEZTERM_UNIX_SOCKET"] = MUX_SOCK
+    else:
+        env.pop("WEZTERM_UNIX_SOCKET", None)
+    r = subprocess.run([WEZTERM, "cli", *(["--no-auto-start"] if MUX_SOCK else []), *args], input=input, capture_output=True, text=True, timeout=10, env=env)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or "wezterm cli failed").strip()[:200])
+    return r.stdout
+
+
+def send(pane, text):
+    cli("send-text", "--pane-id", str(pane), "--no-paste", input=text)
+
+
+def alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def claude_proc(procs):
+    """前台进程里的 Claude 进程：(pid, 会话文件内容)"""
+    for pid, _ in procs:
+        for f in glob.glob(os.path.join(HOME, f".claude*/sessions/{pid}.json")):
+            try:
+                return int(pid), json.load(open(f)), os.path.dirname(os.path.dirname(f))
+            except Exception:
+                pass
+    return None, None, None
+
+
+# 重启时保留的启动参数（其余的——会话选择、提示词之类——都不带）。各家分开：同名参数意思不一样
+KEEP = {
+    "claude": ({"--chrome", "--dangerously-skip-permissions", "--verbose", "--ide", "--no-chrome"},
+               {"--model", "--effort", "--permission-mode", "--add-dir", "--agent", "--fallback-model"}),
+    "codex": ({"--search", "--dangerously-bypass-approvals-and-sandbox", "--yolo", "--full-auto"},
+              {"--model", "-m", "--profile", "-p", "--ask-for-approval", "-a", "--sandbox", "-s"}),
+    "cursor-agent": ({"--force", "-f", "--yolo", "--auto-review", "--trust"}, {"--model", "--sandbox", "--mode"}),
+}
+
+
+def keep_flags(agent, args):
+    bools, values = KEEP.get(agent, (set(), set()))
+    toks = args.split()[1:]
+    out, i = [], 0
+    while i < len(toks):
+        t = toks[i]
+        k = t.split("=", 1)[0]
+        if k in bools and "=" not in t:
+            out.append(t)
+        elif k in values:
+            if "=" in t:
+                out.append(t)
+            elif i + 1 < len(toks) and not toks[i + 1].startswith("-"):
+                out += [t, toks[i + 1]]
+                i += 1
+        i += 1
+    return [x for x in out if re.fullmatch(r"[A-Za-z0-9_./:=@,~+-]+", x)]  # 只带不需要引号的参数
+
+
+def screen_status(pane):
+    """没有状态文件的 agent（Codex、cursor-agent）：看画面底部判断在不在干活 / 等确认"""
+    try:
+        tail = "\n".join(cli("get-text", "--pane-id", str(pane)).rstrip().splitlines()[-12:])
+    except Exception:
+        return "unknown"
+    if re.search(r"esc to interrupt|ctrl\+c to (stop|cancel)|Working \(|Generating|Thinking", tail, re.I):
+        return "busy"
+    if re.search(r"Allow (once|always|command)|Do you want|approve|\(y/n\)|Run this command\?", tail, re.I):
+        return "waiting"
+    return "idle"
+
+
+def codex_sid(cwd, since):
+    """Codex 新版不再一直开着记录文件：取这个目录下、进程启动后还写过的最新 rollout"""
+    files = sorted(glob.glob(os.path.join(HOME, ".codex/sessions/*/*/*/rollout-*.jsonl")), key=os.path.getmtime, reverse=True)[:80]
+    for f in files:
+        if os.path.getmtime(f) < since - 5:
+            break
+        try:
+            with open(f) as fh:
+                meta = json.loads(fh.readline()).get("payload") or {}
+        except Exception:
+            continue
+        if meta.get("cwd") == cwd and meta.get("id"):
+            return meta["id"]
+    return ""
+
+
+def proc_start(pid):
+    out = subprocess.run(["/bin/ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    try:
+        return time.mktime(time.strptime(out, "%a %b %d %H:%M:%S %Y"))
+    except ValueError:
+        return 0
+
+
+def live_injected(pane, pid):
+    """MCP 服务记下的 live/<pane>.json：它的父进程（往上几层）是这个 agent 进程 = 已注入"""
+    try:
+        lv = json.load(open(os.path.join(STATE, "live", f"{pane}.json")))
+    except Exception:
+        return False
+    if not alive(lv.get("pid")):
+        return False
+    p = lv.get("ppid")
+    for _ in range(4):
+        if p == pid:
+            return True
+        out = subprocess.run(["/bin/ps", "-o", "ppid=", "-p", str(p)], capture_output=True, text=True).stdout.strip()
+        if not out.isdigit():
+            return False
+        p = int(out)
+    return False
+
+
+def inspect(pane):
+    procs, cwd = pt.fg_procs(pane)
+    agent = pt.agent_of(procs)
+    out = {"pane": int(pane), "agent": agent, "shellCwd": cwd}
+    if agent == "claude":
+        pid, info, conf = claude_proc(procs)
+        if not info:
+            return out
+        args = next((a for p, a in procs if int(p) == pid), "")
+        out.update(session=info.get("sessionId") or "", pid=pid, status=info.get("status") or "", cwd=info.get("cwd") or cwd,
+                   configDir=conf, startedAt=(info.get("startedAt") or 0) / 1000, flags=keep_flags(agent, args),
+                   injected=live_injected(pane, pid) or "--plugin-dir" in args and "pane-remote" in args)
+    elif agent in ("codex", "cursor-agent"):
+        pid, args = next(((int(p), a) for p, a in procs if agent in os.path.basename(a.split()[0]) or agent in a.split()[0]), (None, ""))
+        if pid is None:
+            pid, args = next(((int(p), a) for p, a in procs if agent in a), (None, ""))
+        if pid is None:
+            return out
+        started = proc_start(pid)
+        if agent == "codex":
+            sid = codex_sid(cwd, started)
+        else:
+            sid = (pt.cursor_session(cwd) or {}).get("session", "")
+        out.update(session=sid, pid=pid, status=screen_status(pane), cwd=cwd, configDir="", startedAt=started,
+                   flags=keep_flags(agent, args), injected=live_injected(pane, pid))
+    return out
+
+
+# ---------- 快照 ----------
+AGENTS = ("claude", "codex", "cursor-agent")
+WITH_TOOLS = os.path.join(PLUGIN, "bin/with-tools")
+WRAPPER_RE = re.compile(r'(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[A-Za-z0-9_./~$-]*"|[A-Za-z0-9_./~$-]+) )*[A-Za-z0-9_.-]{1,40}')
+END = {"completed", "failed", "killed", "stopped", "error", "timeout", "timed_out", "expired", "cancelled", "canceled"}
+KEYS = (b"run_in_background", b'"Monitor"', b"backgroundTaskId", b'"isAsync"', b'"timeoutMs"', b"task-notification", b"Successfully stopped task")
+
+
+def background(transcript, since):
+    """这次进程启动以后开的、还没结束的后台命令 / 异步子代理 / Monitor"""
+    uses, bg, ended = {}, {}, set()
+    with open(transcript, "rb") as f:
+        for raw in f:
+            if not any(k in raw for k in KEYS):
+                continue
+            line = raw.decode("utf8", "replace")
+            for tid, st in re.findall(r"<task-id>([^<]+)</task-id>.*?<status>([^<]+)</status>", line):
+                if st.strip().lower() in END:
+                    ended.add(tid.strip())
+            try:
+                d = json.loads(raw)
+            except Exception:
+                continue
+            ts = pt.iso_ts(d.get("timestamp") or "")
+            content = (d.get("message") or {}).get("content")
+            if isinstance(content, list):
+                for b in content:
+                    if not isinstance(b, dict):
+                        continue
+                    if b.get("type") == "tool_use":
+                        inp = b.get("input") or {}
+                        if inp.get("run_in_background") or b.get("name") == "Monitor":
+                            uses[b.get("id")] = (b.get("name"), inp)
+                    elif b.get("type") == "tool_result" and b.get("tool_use_id") in uses and ts >= since:
+                        name, inp = uses[b["tool_use_id"]]
+                        r = d.get("toolUseResult")
+                        if not isinstance(r, dict) or b.get("is_error"):
+                            continue
+                        if r.get("backgroundTaskId"):
+                            bg[r["backgroundTaskId"]] = {"kind": "bash", "id": r["backgroundTaskId"], "command": inp.get("command", "")[:2000],
+                                                         "description": inp.get("description", ""), "startedAt": ts}
+                        elif r.get("isAsync") and r.get("agentId"):
+                            bg[r["agentId"]] = {"kind": "subagent", "id": r["agentId"], "description": inp.get("description", ""),
+                                                "subagentType": inp.get("subagent_type", ""), "prompt": inp.get("prompt", "")[:4000], "startedAt": ts}
+                        elif r.get("taskId") and name == "Monitor":
+                            exp = None if r.get("persistent") else ts + (r.get("timeoutMs") or 0) / 1000
+                            bg[r["taskId"]] = {"kind": "monitor", "id": r["taskId"], "description": inp.get("description", ""),
+                                               "command": inp.get("command", "")[:2000], "timeoutMs": r.get("timeoutMs"),
+                                               "persistent": bool(r.get("persistent")), "startedAt": ts, "expiresAt": exp}
+            r = d.get("toolUseResult")
+            if isinstance(r, dict) and r.get("task_id") and "Successfully stopped" in str(r.get("message", "")):
+                ended.add(r["task_id"])
+    now = time.time()
+    return [t for k, t in bg.items() if k not in ended and not (t.get("expiresAt") and t["expiresAt"] < now)]
+
+
+def open_tasks(conf, sid):
+    out = []
+    for f in sorted(glob.glob(os.path.join(conf, "tasks", sid, "*.json")), key=lambda p: (len(p), p)):
+        try:
+            t = json.load(open(f))
+        except Exception:
+            continue
+        if isinstance(t, dict) and t.get("status") not in ("completed", "deleted") and t.get("subject"):
+            out.append({"id": t.get("id"), "subject": t.get("subject"), "status": t.get("status")})
+    return out
+
+
+def snapshot(pane, info=None):
+    info = info or inspect(pane)
+    if info.get("agent") not in AGENTS or not info.get("session"):
+        raise RuntimeError("这个 pane 里没有认得的 agent 会话（Claude / Codex / cursor-agent）")
+    snap = {"t": time.time(), "pane": int(pane), "agent": info["agent"], **{k: info[k] for k in ("session", "cwd", "configDir", "flags", "status")},
+            "transcript": "", "background": [], "crons": [], "tasks": []}
+    if info["agent"] == "claude":
+        # Codex、cursor-agent 没有 Claude 这样的后台任务 / 定时任务 / task，只记会话本身
+        transcripts = glob.glob(os.path.join(info["configDir"], "projects", "*", f"{info['session']}.jsonl"))
+        if not transcripts:
+            raise RuntimeError("找不到会话记录")
+        snap["transcript"] = transcripts[0]
+        snap["background"] = background(transcripts[0], info["startedAt"] - 1)
+        try:
+            snap["crons"] = [{k: c.get(k) for k in ("id", "cron", "prompt", "recurring")} for c in pt.crons(pane).get("tasks", [])]
+        except Exception:
+            pass
+        snap["tasks"] = open_tasks(info["configDir"], info["session"])
+    d = os.path.join(STATE, "snapshots")
+    os.makedirs(d, exist_ok=True)
+    base = os.path.join(d, f"{info['session']}-{int(snap['t'])}")
+    with open(base + ".json", "w") as f:
+        json.dump(snap, f, ensure_ascii=False, indent=1)
+    with open(base + ".md", "w") as f:
+        f.write(brief(snap))
+    snap["files"] = {"json": base + ".json", "brief": base + ".md"}
+    # 只留最近 30 份
+    for old in sorted(glob.glob(os.path.join(d, "*.json")), key=os.path.getmtime)[:-30]:
+        for p in (old, old[:-5] + ".md"):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+    return snap
+
+
+def brief(s):
+    """重启后发给 agent 的恢复说明"""
+    L = [f"# [pane-remote restore] 重启前还在跑的东西（{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(s['t']))}）", "",
+         "这个会话刚被手机上的「重启并注入」重启过，用来加载 pane-remote 插件。下面是重启前的快照。",
+         "按 pane-remote skill 里「After a pane-remote restart」的规则处理：", "",
+         "- 只读的自己直接重建：定时任务、Monitor、只读后台命令（看日志、监视、轮询、开发服务器）。",
+         "- 会改东西的（写文件、部署、推送、删除、发消息）和子代理：逐条列出、说明理由，先问用户（人不在电脑前就用 ask_phone）。",
+         "- task 列表跟着会话保留，不要重建；用 TaskList 核对。",
+         "- 最后简短汇报恢复了什么、跳过了什么。", ""]
+    if s["crons"]:
+        L += ["## 定时任务（Claude 恢复会话时一般会自动带上：先 CronList 核对，缺的再按原样建）", ""]
+        for c in s["crons"]:
+            L.append(f"- `{c['cron']}` {'循环' if c.get('recurring') else '一次性'}：{c['prompt']}")
+        L.append("")
+    groups = {"monitor": "Monitor（只读，直接重建）", "bash": "后台命令（自己判断只读还是会改东西）", "subagent": "子代理（要先问用户）"}
+    for kind, title in groups.items():
+        items = [b for b in s["background"] if b["kind"] == kind]
+        if not items:
+            continue
+        L += [f"## {title}", ""]
+        for b in items:
+            started = time.strftime("%H:%M", time.localtime(b["startedAt"])) if b.get("startedAt") else "?"
+            if kind == "subagent":
+                L += [f"- {b['description'] or b['id']}（{b.get('subagentType') or 'general-purpose'}，{started} 开始）", "  原始任务：", "", "  ```", *("  " + x for x in b["prompt"].splitlines()), "  ```"]
+            else:
+                L += [f"- {b.get('description') or b['id']}（{started} 开始{'，常驻' if b.get('persistent') else ''}）", "  ```sh", *("  " + x for x in b["command"].splitlines()), "  ```"]
+        L.append("")
+    if s["tasks"]:
+        L += ["## 没做完的 task（会话里还在，只核对）", ""] + [f"- #{t['id']} [{t['status']}] {t['subject']}" for t in s["tasks"]] + [""]
+    if not (s["crons"] or s["background"] or s["tasks"]):
+        L += ["重启前没有在跑的后台任务、定时任务或没做完的 task，不需要恢复。", ""]
+    return "\n".join(L)
+
+
+# ---------- 重启 ----------
+def status_path(pane):
+    return os.path.join(STATE, "restart", f"{pane}.json")
+
+
+def set_status(pane, **kw):
+    p = status_path(pane)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    try:
+        st = json.load(open(p))
+    except Exception:
+        st = {}
+    st.update(kw, t=time.time())
+    with open(p + ".tmp", "w") as f:
+        json.dump(st, f, ensure_ascii=False)
+    os.replace(p + ".tmp", p)
+
+
+def wait(cond, secs, step=0.3):
+    end = time.time() + secs
+    while time.time() < end:
+        v = cond()
+        if v:
+            return v
+        time.sleep(step)
+    return None
+
+
+def new_session_pid(sid, old_pid):
+    for f in glob.glob(os.path.join(HOME, ".claude*/sessions/*.json")):
+        try:
+            d = json.load(open(f))
+        except Exception:
+            continue
+        if d.get("sessionId") == sid and d.get("pid") != old_pid and alive(d.get("pid")):
+            return d
+    return None
+
+
+def agent_pid(pane, agent, old_pid):
+    """pane 前台里新起来的 agent 进程（不是原来那个）"""
+    try:
+        procs, _ = pt.fg_procs(pane)
+    except Exception:
+        return None
+    if pt.agent_of(procs) != agent:
+        return None
+    for p, a in procs:
+        if int(p) != old_pid and agent in a:
+            return int(p)
+    return None
+
+
+def exit_agent(pane, info):
+    """让 agent 自己退出，等进程（按 PID）没了。不杀进程"""
+    pid = info["pid"]
+    if info["agent"] == "claude":
+        send(pane, "\x03")  # 清掉输入框里没发的字，不然 /exit 会接在后面
+        time.sleep(0.4)
+        send(pane, "/exit")
+        time.sleep(0.25)
+        send(pane, "\r")
+
+        # 有后台任务时 Claude 会问怎么处理：选「退出并停掉」（已经存了快照，起来后重建）。
+        # 绝不选「转到后台再退出」：那样会话还在后台进程里跑，再 resume 就是两个进程写同一个会话
+        def exited():
+            if not alive(pid):
+                return True
+            try:
+                m = re.search(r"(\d)\.\s+Exit and stop tasks", cli("get-text", "--pane-id", str(pane)))
+            except Exception:
+                m = None
+            if m:
+                send(pane, m.group(1))
+                time.sleep(1)
+            return False
+        return wait(exited, 20, 0.5)
+    # Codex、cursor-agent：Ctrl-C 先清掉输入框，输入框空着时再按就退出。不敲任何文字（退出后会落到 shell 里）
+    for _ in range(4):
+        send(pane, "\x03")
+        if wait(lambda: not alive(pid), 1.5, 0.2):
+            return True
+    return wait(lambda: not alive(pid), 15, 0.5)
+
+
+def launch_cmd(info, wrapper, with_plugin):
+    a, sid = info["agent"], info["session"]
+    if a == "claude":
+        env, _, exe = wrapper.rpartition(" ")
+        cmd = [exe, *info["flags"], "--resume", sid]
+    elif a == "codex":
+        cmd = ["codex", "resume", sid, *info["flags"]]
+    else:
+        cmd = ["cursor-agent", "--resume", sid, *info["flags"]]
+    prefix = [shlex.quote(WITH_TOOLS)] if with_plugin else []
+    env = wrapper.rpartition(" ")[0] + " " if a == "claude" and " " in wrapper else ""
+    return f"cd {shlex.quote(info['cwd'])} && {env}{' '.join(prefix + cmd)}"
+
+
+def restart_worker(pane, opts):
+    set_status(pane, step="检查", done=False, error="", warning="", started=time.time())
+    info = inspect(pane)
+    if info.get("agent") not in AGENTS or not info.get("session"):
+        raise RuntimeError("这个 pane 里没有认得的 agent 会话（Claude / Codex / cursor-agent）")
+    # 只有空闲（idle）才重启：busy、shell（在跑命令）、waiting（等你确认）等都算在干活
+    if info["status"] != "idle" and not opts.get("force"):
+        raise RuntimeError(f"agent 正在干活（{info['status'] or '状态未知'}），等这一轮停下再重启")
+    cwd = info["cwd"]
+    if not cwd.startswith("/") or "\n" in cwd:
+        raise RuntimeError("会话目录不对")
+    # wrapper：这个账号的启动命令，可以带环境变量前缀（CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude）
+    wrapper = opts.get("wrapper") or "claude"
+    if not WRAPPER_RE.fullmatch(wrapper) or not re.fullmatch(r"[0-9a-zA-Z-]{8,64}", info["session"]):
+        raise RuntimeError("bad wrapper / session")
+    inject = opts.get("inject", True) and os.path.isfile(WITH_TOOLS)
+
+    set_status(pane, step="保存快照")
+    snap = snapshot(pane, info)
+    set_status(pane, snapshot=snap["files"]["json"], background=len(snap["background"]), crons=len(snap["crons"]), tasks=len(snap["tasks"]))
+
+    set_status(pane, step="退出 agent")
+    if not exit_agent(pane, info):
+        raise RuntimeError(f"{info['agent']}（PID {info['pid']}）20 秒没退出，停在这里没继续；快照已保存")
+    wait(lambda: pt.agent_of(pt.fg_procs(pane)[0]) == "", 5)  # 等 shell 回到前台
+    time.sleep(0.4)
+
+    def launch(with_plugin):
+        send(pane, launch_cmd(info, wrapper, with_plugin))
+        time.sleep(0.1)
+        send(pane, "\r")
+        if info["agent"] == "claude":
+            return wait(lambda: new_session_pid(info["session"], info["pid"]), 30, 0.5)
+        # 没有会话文件的：新进程起来、3 秒后还活着就算成功
+        pid = wait(lambda: agent_pid(pane, info["agent"], info["pid"]), 30, 0.5)
+        if not pid:
+            return None
+        if info["agent"] == "codex":
+            # 对话被别的 Codex 进程（ChatGPT 桌面版 / app-server 后台）占着时没法原地恢复：按它给的 f 分叉一个新会话（上下文都在）
+            def locked():
+                try:
+                    return "open in another app" in cli("get-text", "--pane-id", str(pane))
+                except Exception:
+                    return False
+            if wait(locked, 6, 0.5):
+                send(pane, "f")
+                set_status(pane, warning="这个 Codex 对话被另一个 Codex 应用占着，已改成分叉一个新会话（上下文都在）")
+        time.sleep(3)
+        return {"pid": pid} if alive(pid) else None
+
+    set_status(pane, step="带插件重新打开" if inject else "重新打开")
+    new = launch(inject)
+    if not new and inject:
+        # 带插件没起来：shell 回到前台了就退回普通 resume
+        if pt.agent_of(pt.fg_procs(pane)[0]) == "":
+            set_status(pane, step="带插件没起来，改用普通方式重新打开", warning="插件没加载成功，已按原样恢复会话")
+            inject = False
+            new = launch(False)
+    if not new:
+        raise RuntimeError("新的 agent 进程 30 秒内没起来，去 pane 里看看；快照已保存")
+
+    if snap["background"] or snap["crons"] or snap["tasks"]:
+        set_status(pane, step="发送恢复说明")
+        # 等它启动完、空闲了再发
+        wait(lambda: (new_session_pid(info["session"], info["pid"]) or {}).get("status") == "idle", 20, 0.5)
+        time.sleep(1.5)
+        send(pane, f"[pane-remote restore] 读 {snap['files']['brief']}，按里面和 pane-remote skill 的说明恢复重启前在跑的东西。")
+        time.sleep(0.2)
+        send(pane, "\r")
+    set_status(pane, step="完成", done=True, injected=inject, pid=new.get("pid"))
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    pane = sys.argv[2] if len(sys.argv) > 2 else ""
+    if not pane.isdigit():
+        sys.exit("bad pane")
+    if cmd == "inspect":
+        print(json.dumps(inspect(pane), ensure_ascii=False))
+    elif cmd == "snapshot":
+        s = snapshot(pane)
+        print(json.dumps({"files": s["files"], "background": s["background"], "crons": s["crons"], "tasks": s["tasks"]}, ensure_ascii=False))
+    elif cmd == "restart":
+        opts = json.loads(base64.b64decode(sys.argv[3]).decode()) if len(sys.argv) > 3 else {}
+        try:
+            st = json.load(open(status_path(pane)))
+            if not st.get("done") and not st.get("error") and time.time() - st.get("t", 0) < 90:
+                sys.exit("这个 pane 正在重启")
+        except (OSError, ValueError):
+            pass
+        # 脱离 bridge 在后台跑（bridge 调用有超时；手机断了也要跑完）
+        set_status(pane, step="开始", done=False, error="", warning="", started=time.time())
+        subprocess.Popen([sys.executable, __file__, "_worker", pane, sys.argv[3] if len(sys.argv) > 3 else ""],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(os.path.join(STATE, "restart", f"{pane}.log"), "a"), start_new_session=True)
+        print("started")
+    elif cmd == "_worker":
+        opts = json.loads(base64.b64decode(sys.argv[3]).decode()) if len(sys.argv) > 3 and sys.argv[3] else {}
+        try:
+            restart_worker(pane, opts)
+        except Exception as e:
+            set_status(pane, error=str(e), done=True)
+    elif cmd == "restart-status":
+        try:
+            print(open(status_path(pane)).read())
+        except OSError:
+            print("{}")
+    else:
+        sys.exit("unknown command")
+
+
+if __name__ == "__main__":
+    main()
