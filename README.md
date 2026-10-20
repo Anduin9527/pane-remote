@@ -14,6 +14,7 @@
 - Claude Code / Codex：
   - 对话视图（按会话记录排版，比终端好读）
   - **分叉会话**：带着当前会话的全部上下文在新 pane 里开一个新会话（对话栏「分叉」、pane 菜单、拆分时都能选）
+  - **恢复会话**：新建标签页时列出所选目录最近的 Claude 会话，点一条就在新 pane 里用 `--resume` 接着聊（已经开在某个 pane 里的直接切过去；还开在别处的，比如 Claude 桌面应用，改成带着上下文分叉一个新会话）
   - 同目录新开会话、常用斜杠命令
   - 会话里的定时任务面板：看排期和上次结果，一键立即执行 / 重启 / 停止
   - 焦点跑到后台 agent 列表时提醒并一键回到输入框
@@ -115,7 +116,7 @@ pane-remote update --rollback  # 回到上一次更新之前的版本
 | `serveHosts` | tailscale serve 的主机名（init 自动填） |
 | `port` | 本机服务端口，默认 8787 |
 | `presets` | 新建 pane 时可选的启动命令，比如 `{"label": "Claude Code", "command": "claude"}` |
-| `claudeWrappers` | Claude 配置目录 → 启动命令。用多个 `CLAUDE_CONFIG_DIR` 时，分叉会话要用同一个配置目录启动 |
+| `claudeWrappers` | Claude 配置目录 → 启动命令。用多个 `CLAUDE_CONFIG_DIR` 时，分叉、恢复会话要用同一个配置目录启动 |
 | `modules` | 模块开关 |
 
 ## 安全

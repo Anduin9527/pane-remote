@@ -5,6 +5,7 @@
                                           记录文件大小等于「已知大小」时只回 {size, unchanged: true}（中转据此用缓存，不重新解析）
   pane-transcript crons <pane>            Claude 会话里的定时任务（CronCreate 建的，只活在会话里）：还在的、最近停掉的，
                                           每个任务上次什么时候跑、跑完说了什么、是不是正在跑
+  pane-transcript sessions <目录>         这个目录下最近的 Claude 会话（各配置目录都找，含 Claude 桌面应用开的），给新建页面「恢复会话」用
 只读最后约 2MB；子代理（sidechain）、系统提示、思考过程不显示。
 """
 import glob, json, os, re, subprocess, sys, time
@@ -139,6 +140,115 @@ def session(pane):
     except Exception:
         agent = ""
     return {"agent": agent} if agent else {}
+
+
+def claude_project_dirs(cwd):
+    """各配置目录（~/.claude*）里存这个目录会话记录的文件夹：[(配置目录, 文件夹)]。
+    Claude 把路径里非字母数字的字符都换成 -；太长的截到 200 个字符再接一段哈希，只能按前缀找"""
+    enc = re.sub(r"[^A-Za-z0-9]", "-", cwd)
+    out = []
+    for projects in glob.glob(os.path.expanduser("~/.claude*/projects")):
+        cand = [os.path.join(projects, enc)] if len(enc) <= 200 else glob.glob(os.path.join(projects, glob.escape(enc[:200]) + "*"))
+        out += [(os.path.dirname(projects), d) for d in cand if os.path.isdir(d)]
+    return out
+
+
+def live_claude():
+    """正在运行的 Claude 会话：会话 ID → 所在 pane（不在 WezTerm 里是 None，比如 Claude 桌面应用开着的）"""
+    pids = {}
+    for f in glob.glob(os.path.expanduser("~/.claude*/sessions/*.json")):
+        try:
+            info = json.load(open(f))
+            pids[int(info["pid"])] = info.get("sessionId") or ""
+        except Exception:
+            pass
+    if not pids:
+        return {}
+    ps = subprocess.run(["/bin/ps", "-o", "pid=,tty=,comm=", "-p", ",".join(map(str, pids))], capture_output=True, text=True).stdout
+    try:
+        panes = json.loads(subprocess.run([WEZTERM, "cli", "--no-auto-start", "list", "--format", "json"], capture_output=True, text=True, timeout=5).stdout)
+        ttys = {p["tty_name"].replace("/dev/", ""): p["pane_id"] for p in panes if p.get("tty_name")}
+    except Exception:
+        ttys = {}
+    live = {}
+    for l in ps.splitlines():
+        parts = l.split(None, 2)
+        # 进程号可能已经被别的程序复用：还得是 claude 才算
+        if len(parts) == 3 and "claude" in parts[2].lower() and pids.get(int(parts[0])):
+            live[pids[int(parts[0])]] = ttys.get(parts[1])
+    return live
+
+
+def read_head(path, n):
+    with open(path, "rb") as f:
+        buf = f.read(n + 1)
+    raw = buf.split(b"\n")
+    return raw[:-1] if len(buf) > n else raw  # 文件比 n 长：最后一行不完整，丢掉
+
+
+def session_brief(path):
+    """一个会话记录的摘要：标题（自己起的 > 自动起的 > 第一句话）、所属目录、分支。只读开头和结尾各 256KB。
+    所属目录 = 开会话时的目录（中途搬过家就用新的）；每条消息里的 cwd 会跟着 cd 变，不能用最后那个"""
+    size = os.path.getsize(path)
+    lines = read_head(path, 256 << 10) + (read_tail(path, size, 256 << 10) if size > 256 << 10 else [])
+    custom = ai = first = start = moved = branch = ""
+    for raw in lines:  # 按文件顺序：标题、分支以最后出现的为准
+        if not raw or len(raw) > BIG_LINE:
+            continue
+        try:
+            d = json.loads(raw)
+        except Exception:
+            continue
+        ty = d.get("type")
+        if ty == "custom-title":
+            custom = d.get("customTitle") or custom
+        elif ty == "ai-title":
+            ai = d.get("aiTitle") or ai
+        elif ty == "relocated":
+            moved = d.get("relocatedCwd") or moved
+        elif ty in ("user", "assistant") and not d.get("isSidechain"):
+            start = start or d.get("cwd") or ""
+            branch = d.get("gitBranch") or branch
+            if ty == "user" and not first and not d.get("isMeta"):
+                c = (d.get("message") or {}).get("content")
+                text = c if isinstance(c, str) else "\n".join(x.get("text", "") for x in c if isinstance(x, dict) and x.get("type") == "text") if isinstance(c, list) else ""
+                if "<command-name>" in text or "<local-command" in text:  # /model、/login 这类斜杠命令不算说过话
+                    continue
+                text = clean_user(text)
+                if text and not text.startswith("[Request interrupted"):
+                    first = " ".join(text.split())[:120]
+    return {"title": (custom or ai or first).strip(), "first": first, "cwd": moved or start, "branch": branch}
+
+
+def dir_sessions(cwd, limit=20):
+    """这个目录下最近的 Claude 会话：[{id, title, t, branch, configDir, running, pane}]，新的在前；没说过话的不算"""
+    files = []
+    for conf, d in claude_project_dirs(cwd):
+        for f in glob.glob(os.path.join(d, "*.jsonl")):
+            try:
+                files.append((os.path.getmtime(f), f, conf))
+            except OSError:
+                pass
+    files.sort(reverse=True)
+    live = live_claude() if files else {}
+    out = []
+    for t, f, conf in files[:limit * 2]:
+        sid = os.path.basename(f)[:-len(".jsonl")]
+        if not re.fullmatch(r"[0-9a-zA-Z-]{8,64}", sid):
+            continue
+        try:
+            b = session_brief(f)
+        except Exception:
+            continue
+        if not b["first"] or (b["cwd"] and b["cwd"] != cwd):  # 不同路径可能编码成同一个文件夹名
+            continue
+        item = {"id": sid, "title": b["title"], "t": int(t), "branch": b["branch"], "configDir": conf, "running": sid in live}
+        if live.get(sid) is not None:
+            item["pane"] = live[sid]
+        out.append(item)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def queued_prompt(d):
@@ -633,6 +743,9 @@ def crons(pane):
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     pane = sys.argv[2] if len(sys.argv) > 2 else ""
+    if cmd == "sessions":
+        print(json.dumps(dir_sessions(os.path.normpath(pane)) if pane.startswith("/") else [], ensure_ascii=False))
+        sys.exit()
     if not pane.isdigit():
         sys.exit("bad pane")
     if cmd == "session":

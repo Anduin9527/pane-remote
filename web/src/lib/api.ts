@@ -33,6 +33,12 @@ export const manage = <T = any>(action: ManageAction, body: unknown) => postJson
 
 export type CreateTarget = { window?: number; dir?: string; split?: Pane; direction?: 'right' | 'bottom' }
 
+// 某个目录下最近的 Claude 会话（新建页面「恢复会话」用）。running：还开着；pane：开在哪个 pane（不在 WezTerm 里就没有）
+export type ClaudeSession = { id: string; title: string; t: number; branch: string; configDir: string; running: boolean; pane?: number }
+export async function fetchSessions(dir: string): Promise<ClaudeSession[]> {
+  return parse(await fetch(`api/sessions?dir=${encodeURIComponent(dir)}`, { cache: 'no-store' }))
+}
+
 export const label = (p: Pane) => p.title || p.tabTitle || `pane ${p.pane}`
 
 export function report(kind: string, msg: unknown) {
