@@ -78,4 +78,10 @@ export default {
   右半: 'Right half',
   '窗口改成了 {w}×{h}': 'Window is now {w}×{h}',
   没改成: "Didn't work",
+  "下一次点击是右键（再点换中键）": "Next click is a right click (tap again for middle)",
+  "下一次点击是中键（再点换回左键）": "Next click is a middle click (tap again for left)",
+  "鼠标键：点一下让下一次点击变成右键": "Mouse button: tap to make the next click a right click",
+  "右": "R",
+  "中": "M",
+  "右键": "Right",
 } as Record<string, string>

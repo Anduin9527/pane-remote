@@ -4,8 +4,9 @@
   // 换屏 / 换清晰度发自定义消息 250 给转码代理，不用重新认证；它在整块画面到齐那一帧末尾带个 DesktopName，收到就算加载完。
   // 也能只看某个窗口（252，画面由电脑上的 mousectl 单独录这个窗口，不用切到前台）；第一次点它才切到前台，253 切回原来的前台 app。
   // 两种操作方式：
-  //   直接点：轻点 = 在手指处点击；长按 = 右键；长按后拖 = 按住左键拖；单指滑 = 滚动；双指 = 本地缩放 / 平移
-  //   触控板：手指滑动挪光标，轻点 = 在光标处点击；长按 = 右键；长按后拖 = 拖动；双指滑 = 滚动，双指捏 = 缩放（画面跟着光标走）
+  //   直接点：轻点 = 在手指处点击；长按 / 双指轻点 = 右键；长按后拖 = 按住左键拖；单指滑 = 滚动；双指 = 本地缩放 / 平移
+  //   触控板：手指滑动挪光标，轻点 = 在光标处点击；长按 / 双指轻点 = 右键；长按后拖 = 拖动；双指滑 = 滚动，双指捏 = 缩放（画面跟着光标走）
+  //   底栏的鼠标键按钮：点一下让下一次点击变成右键，再点一下变中键（点完一次自动回到左键）
   // 鼠标都直接走 noVNC 内部的发送（坐标相对画布，它按缩放和视口换算），不派发 DOM 鼠标事件：
   // 合成的 mousedown 会触发它的「鼠标捕获」遮罩，之后整个页面的点击都被吃掉。
   // 「横过来」：竖着拿手机时把整个界面转 90°，所有触摸坐标都先换回界面自己的坐标系（toLocal）。
@@ -13,6 +14,7 @@
   import RFB from '@novnc/novnc'
   import X from '@lucide/svelte/icons/x'
   import Keyboard from '@lucide/svelte/icons/keyboard'
+  import Mouse from '@lucide/svelte/icons/mouse'
   import RotateCw from '@lucide/svelte/icons/rotate-cw'
   import MousePointer2 from '@lucide/svelte/icons/mouse-pointer-2'
   import Hand from '@lucide/svelte/icons/hand'
@@ -496,11 +498,17 @@
   })
 
   // ---------- 手势 ----------
-  type G = 'none' | 'tap' | 'move' | 'hold' | 'drag' | 'two' | 'pinch' | 'scroll2' | 'multi' | 'multiDone'
+  type G = 'none' | 'tap' | 'move' | 'hold' | 'drag' | 'two' | 'pinch' | 'scroll2' | 'twoTap' | 'multi' | 'multiDone'
   let g: G = 'none'
   let sx = 0, sy = 0, lx = 0, ly = 0
   let holdTimer: ReturnType<typeof setTimeout> | undefined
   let pinch = { d: 1, z: 1, fx: 0, fy: 0, mx: 0, my: 0 }
+  // 双指轻点 = 右键（和 Mac 触控板一样）：两指落下后没捏、没滑，很快都抬起
+  let two = { t: 0, moved: false, mid: { x: 0, y: 0 } }
+  // 下一次点击用哪个键：1 左键 / 4 右键 / 2 中键（RFB 的按钮位）；点完一次回到左键
+  let nextBtn = $state(1)
+  // 长按认出来了：手指下面画个圈（iPhone 不支持振动，不然不知道已经是右键了）
+  let holdMark = $state<{ x: number; y: number } | null>(null)
   // 三指 / 四指：跟 Mac 触控板一样的手势，换成系统快捷键发过去（真的多指事件是系统私有格式，模拟不了也不稳）
   let multi = { n: 0, cx: 0, cy: 0, spread: 1, t: 0 }
   const centroid = (ps: { x: number; y: number }[]) => ({ x: ps.reduce((a, p) => a + p.x, 0) / ps.length, y: ps.reduce((a, p) => a + p.y, 0) / ps.length })
@@ -557,6 +565,8 @@
       // 双指中点下面的画面像素：缩放、平移时让它一直在两指中间
       pinch = { d: dist(a, b), z: zoom, fx: pos.x + (m.x - o.x) / s, fy: pos.y + (m.y - o.y) / s, mx: m.x, my: m.y }
       g = pad ? 'two' : 'pinch'
+      two = { t: Date.now(), moved: false, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } }
+      holdMark = null
       lx = m.x; ly = m.y
       return
     }
@@ -565,7 +575,7 @@
     g = 'tap'
     probe0 = null
     if (autoKb && !rotated) { const f = fbOf(target(p)); if (f) sendProbe(0, f) }
-    holdTimer = setTimeout(() => { if (g === 'tap') { g = 'hold'; navigator.vibrate?.(10) } }, 450)
+    holdTimer = setTimeout(() => { if (g === 'tap') { g = 'hold'; navigator.vibrate?.(10); holdMark = stageXY({ x: sx, y: sy }) } }, 450)
   }
   function onMove(e: TouchEvent) {
     if (onOverlay(e)) return
@@ -587,6 +597,7 @@
       const [a, b] = ps
       const m = stageXY({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })
       const ratio = dist(a, b) / pinch.d
+      if (Math.abs(ratio - 1) > 0.06 || Math.hypot(m.x - pinch.mx, m.y - pinch.my) > 10) two.moved = true
       // 触控板模式：先看是捏还是一起滑，定了就不变
       if (g === 'two') {
         if (Math.abs(ratio - 1) > 0.08) g = 'pinch'
@@ -608,8 +619,10 @@
     const p = ps[0]
     if (!p) return
     const far = Math.abs(p.x - sx) > 8 || Math.abs(p.y - sy) > 8
+    // 长按认出来以后手指难免会飘：放宽到 20 像素才算「长按后拖」，不然想点右键却变成了左键拖动
+    const farHold = Math.abs(p.x - sx) > 20 || Math.abs(p.y - sy) > 20
     if (g === 'tap' && far) { clearTimeout(holdTimer); g = 'move' }
-    if (g === 'hold' && far) { g = 'drag'; const t0 = target({ x: sx, y: sy }); sendAt(t0, null); sendAt(t0, 1) }
+    if (g === 'hold' && farHold) { g = 'drag'; holdMark = null; const t0 = target({ x: sx, y: sy }); sendAt(t0, null); sendAt(t0, 1) }
     if (g === 'move') {
       if (pad) moveCursor(p.x - lx, p.y - ly)
       else wheelAt(onCanvas(p.x, p.y), (lx - p.x) * SCROLL, (ly - p.y) * SCROLL)
@@ -632,19 +645,28 @@
       g = 'none'
       return
     }
+    holdMark = null
     if (e.touches.length) {
-      // 两指时抬起一根：剩下那根不再算新手势
-      if (g === 'pinch' || g === 'two' || g === 'scroll2') g = 'none'
+      // 两指时抬起一根：没捏没滑、很快抬起的等另一根也抬起，算双指轻点；否则剩下那根不再算新手势
+      if ((g === 'pinch' || g === 'two') && !two.moved && Date.now() - two.t < 350) g = 'twoTap'
+      else if (g === 'pinch' || g === 'two' || g === 'scroll2') g = 'none'
       return
     }
     if (e.type === 'touchcancel') { if (g === 'drag') sendAt(target({ x: lx, y: ly }), 0); g = 'none'; return }
+    if (g === 'twoTap') {
+      if (Date.now() - two.t < 500) { navigator.vibrate?.(10); clickAt(target(two.mid), 4) }
+      g = 'none'
+      return
+    }
     if (g === 'tap') {
       const tp = target({ x: sx, y: sy })
       const f = autoKb && !rotated ? fbOf(tp) : null
       // 手指按下时问的结果已经到了、而且是输入框：趁还在手势里弹键盘
       if (f && probe0?.t && Date.now() - probe0.at < 2000 && Math.abs(probe0.x - f.x) < 24 && Math.abs(probe0.y - f.y) < 24) openKb(f)
-      clickAt(tp)
-      if (f) { kbTarget = f; setTimeout(() => sendProbe(1, f), 250) }
+      const btn = nextBtn
+      nextBtn = 1
+      clickAt(tp, btn)
+      if (f && btn === 1) { kbTarget = f; setTimeout(() => sendProbe(1, f), 250) }
     }
     else if (g === 'hold') clickAt(target({ x: sx, y: sy }), 4) // RFB 里右键是第 3 位
     else if (g === 'drag') sendAt(target({ x: lx, y: ly }), 0)
@@ -851,6 +873,11 @@
         <button class="h-8 flex-none rounded-lg bg-white/10 px-2 text-[12px] text-white/80 active:bg-white/20" aria-label={t('整块屏')} onclick={resetView}>{zoom.toFixed(1)}×</button>
       {/if}
       <button class={cn(bar, kbOpen && 'bg-white/20')} aria-label={t('键盘')} onclick={toggleKb}><Keyboard class="size-4.5" /></button>
+      <!-- 鼠标键：点一下让下一次点击用右键，再点一下用中键，再点回左键（点完一次自动回到左键） -->
+      <button class={cn(bar, 'relative', nextBtn !== 1 && 'bg-primary text-primary-foreground')} aria-label={nextBtn === 4 ? t('下一次点击是右键（再点换中键）') : nextBtn === 2 ? t('下一次点击是中键（再点换回左键）') : t('鼠标键：点一下让下一次点击变成右键')} onclick={() => (nextBtn = nextBtn === 1 ? 4 : nextBtn === 4 ? 2 : 1)}>
+        <Mouse class="size-4.5" />
+        {#if nextBtn !== 1}<span class="absolute -right-0.5 -bottom-0.5 rounded bg-black/70 px-0.5 text-[9px] leading-3 text-white">{nextBtn === 4 ? t('右') : t('中')}</span>{/if}
+      </button>
       <button class={bar} aria-label={pad ? t('触控板模式（点一下换成直接点）') : t('直接点模式（点一下换成触控板）')} onclick={togglePad}>
         {#if pad}<MousePointer2 class="size-4.5" />{:else}<Hand class="size-4.5" />{/if}
       </button>
@@ -897,6 +924,10 @@
   </div>
 
   <div bind:this={stage} class="relative min-h-0 flex-1 touch-none overflow-hidden">
+    {#if holdMark}
+      <!-- 长按已认出：松手就是右键（手指不要飘太远，飘远了会变成按住左键拖） -->
+      <div class="pointer-events-none absolute z-20 grid size-16 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border-2 border-primary bg-primary/20 text-[11px] font-semibold text-white shadow" style="left:{holdMark.x}px;top:{holdMark.y}px">{t('右键')}</div>
+    {/if}
     <div bind:this={screen} class="absolute inset-0 [&>div]:!overflow-hidden"></div>
     {#if picker}
       <div bind:this={pickerEl} class="absolute inset-0 z-20 flex touch-auto flex-col bg-neutral-950 pt-2">
