@@ -85,5 +85,4 @@ export default {
   "中": "M",
   "右键": "Right",
   '断开连接': "Disconnect",
-  '已断开': "Disconnected",
 } as Record<string, string>
