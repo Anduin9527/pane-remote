@@ -27,7 +27,7 @@ function run(file, args, { env, timeout = 10000, maxBuffer = 16 << 20 } = {}) {
   })
 }
 
-// 连 mux 还是 GUI：mux 在就连 mux（--no-auto-start，绝不顺手拉起空 server），30 秒重判一次
+// 连 mux 还是 GUI：mux 在就连 mux，不在退回 GUI，30 秒重判一次；两边都 --no-auto-start，绝不顺手拉起空 server（它会抢走 mux 的 socket 路径）
 let cliMode = { at: 0, env: null, args: null }
 async function cli(args, opts) {
   if (Date.now() - cliMode.at > 30000) {
@@ -36,7 +36,7 @@ async function cli(args, opts) {
     if (MUX_SOCK && fs.existsSync(MUX_SOCK)) mux = await run(WEZTERM, ['cli', '--no-auto-start', 'list'], { env: muxEnv, timeout: 5000 }).then(() => true, () => false)
     const env = { ...process.env }
     delete env.WEZTERM_UNIX_SOCKET
-    cliMode = mux ? { at: Date.now(), env: muxEnv, args: ['cli', '--no-auto-start'] } : { at: Date.now(), env, args: ['cli'] }
+    cliMode = mux ? { at: Date.now(), env: muxEnv, args: ['cli', '--no-auto-start'] } : { at: Date.now(), env, args: ['cli', '--no-auto-start'] }
   }
   return run(WEZTERM, [...cliMode.args, ...args], { ...opts, env: cliMode.env })
 }

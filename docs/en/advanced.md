@@ -23,6 +23,8 @@ If you want the mux server running from login (without opening a window first), 
 
 Note: when the mux server restarts (e.g. after upgrading WezTerm), all its panes end, just like closing a terminal.
 
+If you write your own launch script, start the mux server with `--daemonize` so it locks its pid file. Started in the foreground it does not, and any later `wezterm cli` call that fails to connect (a wrong socket path without `--no-auto-start`, say) spawns a second, empty server that takes over the `sock` path. The original server keeps running, but nothing can reach it, and the phone only shows an empty zsh.
+
 ## Multiple Claude Code accounts
 
 If you separate accounts with `CLAUDE_CONFIG_DIR` (`~/.claude-work`, `~/.claude-personal`, ...), init installs hooks into every config dir

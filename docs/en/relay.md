@@ -100,6 +100,12 @@ sudo tailscale serve --bg --https=443 http://127.0.0.1:8787
 
 On the phone, open the server's `https://<server-name>.<tailnet>.ts.net/`.
 
+## When the tunnel gets stuck
+
+Every 15 seconds the relay checks that the tunnel port reaches the Mac's sshd. If it fails for 45 seconds in a row while an old sshd session still holds the port (the tunnel's TCP connection died silently and the server never noticed), the relay records that connection's state (in `tunnel-heal.log` in the data directory), ends the old session, and the Mac's next reconnect gets through. This needs passwordless `sudo -n ss` for the user running the relay (finding the port's owner requires root); without it there is just no self-healing, everything else works.
+
+If the Mac runs a proxy such as Clash in TUN mode, the tunnel goes through the proxy's extra layer, and ssh no longer sees the real error when the connection breaks. Consider adding the relay server's IP to the TUN exclusion list (`tun.route-exclude-address` in mihomo); it only affects traffic to that server.
+
 ## Upgrading
 
 Run `pane-remote update` on the Mac (see "Updating" in the README); when server-side files changed, it prints the commands for updating the server at the end. You can also print them any time:

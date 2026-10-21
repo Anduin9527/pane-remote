@@ -80,8 +80,9 @@ if [[ -n "$MUX_SOCK" && -S "$MUX_SOCK" ]] && WEZTERM_UNIX_SOCKET=$MUX_SOCK "$WEZ
   export WEZTERM_UNIX_SOCKET=$MUX_SOCK
   CLI=("$WEZTERM" cli --no-auto-start)
 else
+  # 退回 GUI 也要 --no-auto-start：找不到 GUI 时不带它会拉起一个空 server，抢走 mux 的 socket 路径
   unset WEZTERM_UNIX_SOCKET
-  CLI=("$WEZTERM" cli)
+  CLI=("$WEZTERM" cli --no-auto-start)
 fi
 read -r cmd pane arg extra <<<"${SSH_ORIGINAL_COMMAND:-}"
 

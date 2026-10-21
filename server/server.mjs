@@ -50,6 +50,7 @@ import { apply as applyDelta } from '../host/delta.mjs'
 import zlib from 'node:zlib'
 import crypto from 'node:crypto'
 import { config, APP_DIR, CONFIG_PATH } from './config.mjs'
+import { startTunnelHeal } from './tunnel-heal.mjs'
 
 const PORT = config.port
 const ALLOWED = new Set(config.allowedLogins)
@@ -1113,6 +1114,7 @@ async function canary() {
   const hostState = host.connected ? await host.call('ping', {}, { timeout: 5000 }).then((p) => `ok (pid ${p.pid}, up ${p.uptime}s)`, (e) => `ping failed: ${e.message}`) : `offline${host.lastError ? ` (${host.lastError})` : ''}`
   console.log(`canary: mcp ${r.mcp?.ok ? 'ok' : 'FAIL'} (${r.mcp?.tools ?? 0} tools), agents ${r.agents?.length || 0}, events ${read === null ? 'skipped' : read ? 'ok' : 'FAIL'} via ${push.eventsSource()}, pane-host ${hostState}`)
 }
+if (RELAY) startTunnelHeal({ port: config.relay.port, dataDir: config.dataDir }) // 隧道卡死时自动清掉占着端口的旧会话
 setTimeout(() => canary().catch((e) => console.error(`canary: ${e.message}`, e)), 60000)
 setInterval(() => canary().catch((e) => console.error(`canary: ${e.message}`, e)), 600000)
 

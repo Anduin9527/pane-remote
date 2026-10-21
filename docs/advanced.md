@@ -23,6 +23,8 @@
 
 注意：mux server 重启（比如升级 WezTerm）时，里面的 pane 会全部结束，和关掉终端一样。
 
+自己写常驻脚本时务必用 `--daemonize` 启动 mux server：这样它会锁住 pid 文件。前台启动不锁，之后任何一次连不上的 `wezterm cli`（比如 socket 地址写错、又没加 `--no-auto-start`）都会拉起第二个空 server，把 `sock` 路径抢走；原来的 server 还活着，但谁也连不上它了，手机上只剩一个空的 zsh。
+
 ## 多个 Claude Code 账号
 
 用 `CLAUDE_CONFIG_DIR` 把不同账号分开（`~/.claude-work`、`~/.claude-personal` 之类）时，init 会给每个配置目录都装上 hook，
