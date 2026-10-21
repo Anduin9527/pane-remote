@@ -73,6 +73,19 @@ phone (web/src/lib/components/AgentAsk.svelte, inbox, session sheet)
 
 Restart and load: `POST /api/agent/restart {pane, confirm: true}` → bridge `agent restart` → `agent/pane-agent` (detached from the bridge; progress in `~/.local/state/pane-remote/agent/restart/<pane>.json`).
 
+## Model and reasoning effort
+
+The model chip in the session bar (e.g. "Opus · High") shows the model and reasoning effort the agent in this pane is using. Tap it for a single-column sheet: pick a model at the top, an effort in the segmented row below, then Switch.
+
+- Works for Claude Code, Codex and cursor-agent; with the Cursor module on, Cursor IDE sessions get the same chip.
+- Switching only happens while the agent is idle and its input box is empty (busy → 409; text in the input box is refused too, so a half-typed message is never sent).
+- It drives the agent's own model picker inside the pane (the `MODEL_UI` table in `agent/pane-agent`; if an agent update changes the picker, only that table needs changing):
+  - Claude Code, Codex: changes this session only (the picker's "this session only" choice), not the default for new sessions.
+  - cursor-agent: has no "this session only"; the choice is written to its own config (its design), and the sheet says so.
+  - Cursor IDE: drives the picker under the input box, then reads Cursor's local database to confirm; Cursor also remembers it as the default for new chats.
+- The first read of Claude's model list walks through the picker (10+ seconds); later reads are cached. The sheet has a reload button.
+- API: `GET /api/agent/model?pane=N[&refresh]` (or `?cursor=<session>`), `POST /api/agent/model {pane | cursor, model, effort?}`; failures include `tail` (the end of the screen) to show where it got stuck.
+
 ## Troubleshooting
 
 - No "pane-remote tools" section in the session sheet: the pane's foreground program is not a recognised agent.

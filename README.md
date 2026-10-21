@@ -9,6 +9,9 @@
 
 **基础版**（装完就有）
 
+- **一个会话列表**：WezTerm 的 pane 和（开了 Cursor 模块时）Cursor 的会话合在一起，状态统一标出（等你操作 / 做完了 / 运行中 / 有新内容）；地址就是界面状态（`#/s/p12`、`#/plugin/preview`），推送、待办都直接跳到那个地址，手机的返回手势能用
+- 有 agent 会话的 pane 默认打开对话视图，「原始画面」一键切回终端；每个 pane 各自记住
+- **模型和思考等级**：会话栏的模型芯片一键切换 Claude Code / Codex / cursor-agent 的模型和思考等级（只在 agent 空闲时做，见 [docs/agent.md](docs/agent.md#模型和思考等级)）
 - 所有 WezTerm pane 的实时画面，手机上直接打字、按键（键盘栏、方向摇杆、Ctrl / Shift / Option）、滑动滚动、轻点
 - 新建标签页、拆分、关闭、重命名 pane，在电脑上切到某个 pane；电脑上把 pane 拖窄了，手机上一键调回「适合手机」的宽度（或均分整个标签页）
 - Claude Code / Codex：
@@ -34,6 +37,8 @@
 | 这台电脑 | 手机上看电脑的性能（CPU、内存、占用最多的进程），让电脑用自带的 say 念一段话 | `pane-remote enable mac`，见 [docs/mac.md](docs/mac.md) |
 | Agent 工具 | 从手机上开的 Claude Code / Codex / cursor-agent 加载 pane-remote 插件：做完推送、卡住了在手机上问你、把网页开到手机预览；开着的会话能「重启并注入」，重启前存快照、起来后恢复后台任务 | 默认可用，见 [docs/agent.md](docs/agent.md) |
 | 问题报告 | 服务端、手机、电脑端脚本和 agent 发现的异常收到一处去重计数，推送问你要不要修；一键交给绑定的会话或新开的 agent 修，修完回报 | 默认可用，见 [docs/incidents.md](docs/incidents.md) |
+| 插件平台 | 悬浮按钮打开插件抽屉：预览、这台电脑、看屏幕都是自带的插件，也能跑 uTools / whatevertools 格式的插件（`plugins/` 目录）；插件能用电脑上已登录的 Claude Code / Codex / cursor-agent 做 AI、读你允许的文件夹，每项能力都先在手机上问你 | 默认开；`pane-remote disable plugins` 关掉，见 [docs/plugins.md](docs/plugins.md) |
+| pane-host | 电脑上的常驻服务：对话视图和事件改成推送，插件的 AI、电脑剪贴板、只读文件走它；不在线时自动回到老路 | `init` 装成 LaunchAgent，见 [docs/host.md](docs/host.md) |
 | 中转模式 | 电脑本身跑不了 Tailscale 时，经一台在你 tailnet 里的服务器转发 | 见 [docs/relay.md](docs/relay.md) |
 | 持久化 pane | WezTerm 窗口关了 pane 也不丢，手机照样能连 | 见 [docs/advanced.md](docs/advanced.md) |
 
@@ -82,7 +87,7 @@ pane-remote doctor            # 自检：每一项有问题都会给出修复办
 pane-remote status            # 服务在不在跑
 pane-remote restart | logs
 pane-remote stop | start      # 停 / 开服务；stop 连预览用的 Chrome 一起关（下次用预览会自动再开）
-pane-remote enable preview    # 开 / 关模块：preview、openUrl、cursor、screen、mac
+pane-remote enable preview    # 开 / 关模块：preview、openUrl、cursor、screen、mac、plugins
 pane-remote disable openUrl
 pane-remote init              # 改了配置、换了电脑名、装了新的 Claude 配置目录后重跑一次（保留原有配置）
 pane-remote uninstall         # 停服务、撤掉 tailscale serve、还原 hook；加 --purge 连配置和数据一起删
@@ -101,7 +106,7 @@ pane-remote update --rollback  # 回到上一次更新之前的版本
 - **只从 `origin` 更新，而且必须是 https 地址。** 第一次 `init` / `update` 时把 origin 地址和分支记进配置的 `updateSource`；之后 origin 被改成别的地址就拒绝更新（确实是你自己改的，就同步改 `updateSource`）
 - 你确认之前，不会执行拉下来的任何代码
 - 工作区有改动、或者本地有上游没有的提交时拒绝更新，只做快进合并（`git merge --ff-only`），不会 reset / stash / 覆盖你的改动
-- 只重做改动涉及的步骤：`package.json` / `package-lock.json` 变了重装 npm 依赖（和 `install.sh` 一样的参数；开了看屏幕模块会补装 sharp）；mousectl 的源码或安装脚本变了、并且开了看屏幕模块，重装 mousectl；命令行或 hook 脚本变了，重新合并 hook（只动已经装过的配置文件）和 `bridge.env`；服务端、网页、电脑端脚本变了，重启后台服务
+- 只重做改动涉及的步骤：`package.json` / `package-lock.json` 变了重装 npm 依赖（和 `install.sh` 一样的参数；开了看屏幕模块会补装 sharp）；mousectl 的源码或安装脚本变了、并且开了看屏幕模块，重装 mousectl；命令行或 hook 脚本变了，重新合并 hook（只动已经装过的配置文件）和 `bridge.env`；服务端、网页、插件、电脑端脚本变了，重启后台服务；`host/`、依赖或会话记录解析变了，重启 pane-host
 - 应用后跑一遍 `doctor`：某一步失败、或者比更新前多出了问题，就自动回到旧版本，再用旧版本把这些步骤重做一遍
 - 看屏幕模块：没用 `--create-cert` 建签名证书时，安装脚本不会重编已有的 mousectl，update 会提示你；建了证书之后重编，授权不会掉（见 [docs/screen.md](docs/screen.md)）
 - `install.sh`、`Brewfile` 变了不会自动重跑，update 会提示你看一下改动
@@ -120,6 +125,7 @@ pane-remote update --rollback  # 回到上一次更新之前的版本
 | `presets` | 新建 pane 时可选的启动命令，比如 `{"label": "Claude Code", "command": "claude"}` |
 | `claudeWrappers` | Claude 配置目录 → 启动命令。用多个 `CLAUDE_CONFIG_DIR` 时，分叉、恢复会话要用同一个配置目录启动 |
 | `modules` | 模块开关 |
+| `paneHost` | 连不连电脑上的 pane-host（默认 `true`，见 [docs/host.md](docs/host.md)） |
 
 ## 安全
 
@@ -148,13 +154,16 @@ pane-remote update --rollback  # 回到上一次更新之前的版本
 install.sh          一键安装
 bin/pane-remote     命令入口（lib/cli.mjs）
 server/             服务端（手机网页的后端）
+host/               pane-host：电脑上的常驻服务（对话 / 事件推送、AI 提供方、插件的电脑端能力）
+platform/           插件平台 core（权限、审计、能力表）
+plugins/            插件目录（自带两个示例：hello、ai-demo）
 agent/              电脑这边的脚本：bridge（操作 WezTerm 的唯一入口）、hook、会话记录解析、预览浏览器、Cursor 适配、看屏幕（screen/）、这台电脑（mac/）、agent 插件（plugin/、pane-agent）
 web/                手机网页源码（Svelte），构建产物在 public/
 relay/              中转模式的辅助命令
 scripts/audit.mjs   发布前审计：查个人信息、内网地址和密钥
 ```
 
-改了前端要重新构建：`npm run build`（会在 web/ 里装开发依赖）。
+改了前端要重新构建：`npm run build`（会在 web/ 里装开发依赖）；`cd web && npm run size` 检查首屏体积（上限 150 KB gzip）。测试：`npm test`。
 
 ## 许可证
 

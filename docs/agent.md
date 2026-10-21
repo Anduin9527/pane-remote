@@ -73,6 +73,19 @@ pane-remote 服务（server/server.mjs：onAgent 推送、把问题挂到 /api/s
 
 重启并注入：`POST /api/agent/restart {pane, confirm: true}` → bridge `agent restart` → `agent/pane-agent`（脱离 bridge 在后台跑，进度写到 `~/.local/state/pane-remote/agent/restart/<pane>.json`）。
 
+## 模型和思考等级
+
+会话栏里的模型芯片（形如「Opus · High」）显示这个 pane 里 agent 当前用的模型和思考等级，点开是单列面板：上面选模型，下面一排分段按钮选思考等级，点「切换」。
+
+- Claude Code、Codex、cursor-agent 都支持；开了 Cursor 模块时，Cursor IDE 的会话也有同样的芯片。
+- 只在 agent 空闲、输入框空着时切换（正在干活回 409，输入框里有字也会拒绝，免得把你打了一半的话发出去）。
+- 实现方式是在 pane 里操作 agent 自己的模型选择器（`agent/pane-agent` 的 `MODEL_UI` 表，agent 升级后画面变了只改这里）：
+  - Claude Code、Codex：只改这个会话（选择器里的「只改这个会话」），不动新会话的默认值。
+  - cursor-agent：它没有「只改这个会话」，选定就写进它自己的配置（它的设计），面板里会提示「会改默认」。
+  - Cursor IDE：操作输入框下方的选择器，再从 Cursor 的本地数据库读回确认；Cursor 会同时把它记成新会话的默认模型。
+- 第一次读 Claude 的模型列表要把选择器翻一遍（十几秒），之后读缓存；面板右上角可以重新读取。
+- 接口：`GET /api/agent/model?pane=N[&refresh]`（或 `?cursor=<会话>`）、`POST /api/agent/model {pane | cursor, model, effort?}`；失败时带 `tail`（画面末尾）方便看卡在哪。
+
 ## 排查
 
 - 「会话」面板没有「pane-remote 工具」这一栏：这个 pane 前台不是认得的 agent。

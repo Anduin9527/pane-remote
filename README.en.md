@@ -5,12 +5,15 @@
 View and control the terminals in WezTerm on your Mac from your phone. Claude Code / Codex sessions get a dedicated chat view, push notifications and session management.
 No third-party server is involved: phone and Mac talk over your own Tailscale network, and only your account can open it.
 
-> The phone UI is currently Chinese only. This document quotes UI labels in Chinese with an English gloss.
+> The phone UI is in Chinese or English (follows the phone's language; switch in the ⋯ menu). Some labels below are quoted in Chinese with an English gloss.
 
 ## Features
 
 **Basic** (available right after install)
 
+- **One session list**: WezTerm panes and (with the Cursor module) Cursor sessions in one list with the same status marks (waiting for you / done / running / new content); the address is the UI state (`#/s/p12`, `#/plugin/preview`), so pushes and the inbox jump straight there and the phone's back gesture works
+- Panes with an agent session open in the chat view by default; 「原始画面」 (Raw screen) switches back to the terminal, remembered per pane
+- **Model and reasoning effort**: the model chip in the session bar switches the model and effort of Claude Code / Codex / cursor-agent in one tap (only while the agent is idle; see [docs/en/agent.md](docs/en/agent.md#model-and-reasoning-effort))
 - Live view of every WezTerm pane; type and send keys from the phone (key bar, arrow joystick, Ctrl / Shift / Option), swipe to scroll, tap
 - New tab, split, close and rename panes; focus a pane on the Mac; if a pane got dragged narrow on the Mac, widen it to fit your phone in one tap (or equalize the whole tab)
 - Claude Code / Codex:
@@ -36,6 +39,8 @@ No third-party server is involved: phone and Mac talk over your own Tailscale ne
 | This Mac | The Mac's performance on the phone (CPU, memory, top processes), and have the Mac read text aloud with the built-in say | `pane-remote enable mac`, see [docs/en/mac.md](docs/en/mac.md) |
 | Agent tools | Claude Code / Codex / cursor-agent started from the phone load a pane-remote plugin: push when done, ask you on the phone when stuck, open pages in the phone preview; running sessions can "restart and load", with a snapshot before and background work restored after | Available by default, see [docs/en/agent.md](docs/en/agent.md) |
 | Incident reports | Problems noticed by the server, the phone, Mac-side scripts and agents, deduplicated and counted; pushes asking whether to fix; one tap hands it to a bound session or a new agent, which reports back | Available by default, see [docs/en/incidents.md](docs/en/incidents.md) |
+| Plugin platform | A floating button opens the plugin drawer: Preview, This Mac and Screen are built-in plugins, and uTools / whatevertools format plugins run too (`plugins/`); plugins can use the Claude Code / Codex / cursor-agent signed in on the Mac for AI and read folders you allow, each capability asked on the phone first | On by default; `pane-remote disable plugins` to turn off, see [docs/en/plugins.md](docs/en/plugins.md) |
+| pane-host | Resident service on the Mac: pushes the chat view and events, and backs the plugins' AI, clipboard and read-only files; falls back automatically when offline | Installed as a LaunchAgent by `init`, see [docs/en/host.md](docs/en/host.md) |
 | Relay mode | When the Mac itself can't run Tailscale, relay through a server in your tailnet | See [docs/en/relay.md](docs/en/relay.md) |
 | Persistent panes | Panes survive closing the WezTerm window and stay reachable from the phone | See [docs/en/advanced.md](docs/en/advanced.md) |
 
@@ -86,7 +91,7 @@ pane-remote doctor            # self-check; every problem comes with a fix
 pane-remote status            # is the service running
 pane-remote restart | logs
 pane-remote stop | start      # stop / start the service; stop also closes the preview Chrome (it reopens next time you use preview)
-pane-remote enable preview    # turn modules on / off: preview, openUrl, cursor, screen, mac
+pane-remote enable preview    # turn modules on / off: preview, openUrl, cursor, screen, mac, plugins
 pane-remote disable openUrl
 pane-remote init              # re-run after changing config, renaming the Mac or adding a Claude config dir (keeps existing config)
 pane-remote uninstall         # stop the service, remove tailscale serve, restore hooks; --purge also deletes config and data
@@ -105,7 +110,7 @@ pane-remote update --rollback  # go back to the version before the last update
 - **Updates only come from `origin`, and it must be an https URL.** The first `init` / `update` records the origin URL and branch as `updateSource` in the config; if origin is later changed to a different URL, update refuses (if you changed it on purpose, update `updateSource` too)
 - Nothing from the fetched code runs before you confirm
 - Update refuses when the working tree has local changes or local history has commits upstream doesn't have; it only fast-forwards (`git merge --ff-only`) and never resets, stashes or overwrites your changes
-- Only the affected steps run: `package.json` / `package-lock.json` changed → reinstall npm dependencies (same flags as `install.sh`; sharp is added back when the screen module is on); mousectl source or installer changed and the screen module is on → reinstall mousectl; command line or hook script changed → re-merge the hooks (only in config files that already have them) and `bridge.env`; server, web UI or Mac-side scripts changed → restart the background service
+- Only the affected steps run: `package.json` / `package-lock.json` changed → reinstall npm dependencies (same flags as `install.sh`; sharp is added back when the screen module is on); mousectl source or installer changed and the screen module is on → reinstall mousectl; command line or hook script changed → re-merge the hooks (only in config files that already have them) and `bridge.env`; server, web UI, plugins or Mac-side scripts changed → restart the background service; `host/`, dependencies or transcript parsing changed → restart pane-host
 - After applying, `doctor` runs: if a step fails or there are new problems compared with before the update, it rolls back to the old version automatically and redoes those steps with the old version
 - Screen module: without a signing certificate from `--create-cert`, the installer won't rebuild an existing mousectl and update tells you so; with the certificate it rebuilds and the permissions survive (see [docs/en/screen.md](docs/en/screen.md))
 - Changes to `install.sh` or `Brewfile` are not re-run automatically; update points you to the diff
@@ -124,6 +129,7 @@ pane-remote update --rollback  # go back to the version before the last update
 | `presets` | Launch commands offered when creating a pane, e.g. `{"label": "Claude Code", "command": "claude"}` |
 | `claudeWrappers` | Claude config dir → launch command. With several `CLAUDE_CONFIG_DIR`s, forks and resumes must start with the same config dir |
 | `modules` | Module switches |
+| `paneHost` | Whether to connect to pane-host on the Mac (default `true`, see [docs/en/host.md](docs/en/host.md)) |
 
 ## Security
 
@@ -152,6 +158,9 @@ pane-remote update --rollback  # go back to the version before the last update
 install.sh          one-step installer
 bin/pane-remote     command entry (lib/cli.mjs)
 server/             server (backend for the phone UI)
+host/               pane-host: resident service on the Mac (pushed chat / events, AI providers, plugins' Mac-side capabilities)
+platform/           plugin platform core (permissions, audit, capability table)
+plugins/            plugin folder (two samples: hello, ai-demo)
 agent/              Mac-side scripts: bridge (the only entry to WezTerm), hooks, transcript parsing, preview browser, Cursor adapter, screen view (screen/), This Mac (mac/), agent plugin (plugin/, pane-agent)
 web/                phone UI source (Svelte); build output goes to public/
 relay/              helper commands for relay mode
@@ -159,7 +168,7 @@ scripts/audit.mjs   pre-release audit: personal info, internal addresses and sec
 docs/               extra docs (Chinese); docs/en/ has the English versions
 ```
 
-After changing the frontend, rebuild with `npm run build` (installs dev dependencies in web/).
+After changing the frontend, rebuild with `npm run build` (installs dev dependencies in web/); `cd web && npm run size` checks the first-screen size (limit 150 KB gzip). Tests: `npm test`.
 
 ## License
 

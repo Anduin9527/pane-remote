@@ -73,7 +73,7 @@ pane-remote relay tunnel <用户>@<服务器>
 
 ```bash
 # 在电脑上：把服务端拷过去（只需要 server/、public/、package*.json）
-rsync -a server public package.json package-lock.json <用户>@<服务器>:pane-remote/
+rsync -a server host platform plugins public package.json package-lock.json <用户>@<服务器>:pane-remote/
 scp ~/.ssh/pane_remote_bridge <用户>@<服务器>:.ssh/
 # 在服务器上：
 cd ~/pane-remote && npm ci --omit=dev

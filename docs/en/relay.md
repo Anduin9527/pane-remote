@@ -73,7 +73,7 @@ It reconnects automatically (launchd). To remove it: `pane-remote relay tunnel-o
 
 ```bash
 # On the Mac: copy the server over (only server/, public/, package*.json are needed)
-rsync -a server public package.json package-lock.json <user>@<server>:pane-remote/
+rsync -a server host platform plugins public package.json package-lock.json <user>@<server>:pane-remote/
 scp ~/.ssh/pane_remote_bridge <user>@<server>:.ssh/
 # On the server:
 cd ~/pane-remote && npm ci --omit=dev
