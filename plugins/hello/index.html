@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hello</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #fff; --fg: #111; --muted: #666; --line: #ddd; --accent: #2563eb; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #eee; --muted: #999; --line: #333; } }
+    body { margin: 0; padding: 16px; font: 14px/1.5 system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); }
+    h1 { font-size: 18px; margin: 0 0 4px; }
+    p { margin: 4px 0; color: var(--muted); }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+    button { height: 36px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--fg); font: inherit; }
+    button:active { background: var(--accent); color: #fff; }
+    code, #log { font: 12px ui-monospace, monospace; }
+    #log { white-space: pre-wrap; border-top: 1px solid var(--line); margin-top: 12px; padding-top: 8px; max-height: 40vh; overflow: auto; }
+  </style>
+</head>
+<body>
+  <h1>Hello 插件</h1>
+  <p>载入编号 <code id="load"></code> · 进入 <code id="enter">—</code></p>
+  <p>计数（dbStorage）：<code id="count">0</code></p>
+  <div class="row">
+    <button id="inc">计数 +1</button>
+    <button id="notify">通知</button>
+    <button id="copy">复制</button>
+    <button id="report">报告问题</button>
+    <button id="throw">抛个错</button>
+    <button id="shared">共享存储</button>
+    <button id="ask">问我</button>
+    <button id="fs">打开电脑上的文件（不支持）</button>
+    <button id="exit">退出</button>
+  </div>
+  <div id="log"></div>
+  <script>
+    const $ = (id) => document.getElementById(id)
+    const log = (s) => { $('log').textContent = `${new Date().toLocaleTimeString()} ${s}\n` + $('log').textContent }
+    // 每次真正载入页面都换一个编号：切后台再切回，编号不变说明没有重载
+    $('load').textContent = Math.random().toString(36).slice(2, 8)
+    const show = () => ($('count').textContent = String(utools.dbStorage.getItem('count') || 0))
+    show()
+    utools.onPluginEnter(({ code, type, payload }) => { $('enter').textContent = `${code} / ${type} / ${typeof payload === 'string' ? payload : JSON.stringify(payload)}`; show() })
+    utools.onPluginOut(() => log('onPluginOut'))
+    $('inc').onclick = () => { utools.dbStorage.setItem('count', (utools.dbStorage.getItem('count') || 0) + 1); show() }
+    $('notify').onclick = () => { utools.showNotification('来自 Hello 的通知'); log('showNotification') }
+    $('copy').onclick = () => { utools.copyText('Hello from pane-remote'); log('copyText') }
+    $('report').onclick = async () => {
+      try { const r = await whatevertools.platform.incident.report({ title: 'Hello 插件测试报告', detail: '用户点了「报告问题」', severity: 'low', test: true }); log('reported ' + r.id) } catch (e) { log('report failed: ' + e.message) }
+    }
+    $('throw').onclick = () => { setTimeout(() => { throw new Error('Hello 插件故意抛出的错误') }) }
+    $('shared').onclick = async () => {
+      try { const n = ((await whatevertools.platform.storage.get('demo', 'hits')) || 0) + 1; await whatevertools.platform.storage.set('demo', 'hits', n); log('shared hits ' + n) } catch (e) { log('shared failed: ' + e.code + ' ' + e.message) }
+    }
+    $('ask').onclick = async () => {
+      try { const r = await whatevertools.platform.agent.ask({ question: 'Hello 插件想问：今天顺利吗？', options: ['顺利', '一般'] }); log('ask → ' + JSON.stringify(r)) } catch (e) { log('ask failed: ' + e.message) }
+    }
+    $('fs').onclick = () => {
+      log('supports(shell.openPath) = ' + whatevertools.supports('shell.openPath'))
+      try { utools.shellOpenPath('/tmp') } catch (e) { log(e.code + ' ' + e.message) }
+    }
+    $('exit').onclick = () => utools.outPlugin()
+  </script>
+</body>
+</html>

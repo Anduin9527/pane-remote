@@ -14,13 +14,18 @@
   "scripts": {
     "build": "cd web && npm ci && npm run build",
     "audit": "node scripts/audit.mjs",
-    "start": "node server/server.mjs"
+    "start": "node server/server.mjs",
+    "test": "node --test host/test/*.test.mjs host/ai/test/unit.test.mjs platform/test/*.test.mjs"
   },
   "dependencies": {
     "@highlightjs/cdn-assets": "^11.12.0",
+    "@whatevertools/compat-utools": "^0.2.1",
+    "@whatevertools/core": "^0.2.1",
+    "@whatevertools/db-file": "^0.2.1",
     "dompurify": "^3.4.17",
     "marked": "^12.0.2",
     "pdfjs-dist": "^4.10.38",
+    "pinyin-pro": "^3.26.0",
     "sharp": "^0.34.5",
     "web-push": "^3.6.7",
     "ws": "^8.22.0"

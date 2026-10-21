@@ -183,46 +183,99 @@ function saveOffset() {
   try { fs.writeFileSync(OFFSET_FILE, JSON.stringify({ offset: eventsOffset, at: Date.now() })) } catch {}
 }
 let lastEventsRead = 0
-/** 扫描循环最近 10 秒内读过事件（自检据此判断该不该等 canary 事件） */
-export const eventsFresh = () => Date.now() - lastEventsRead < 10000
-async function readEvents(bridge, isWatching, onOpen, onAgent, onIncident, onCanary) {
+// pane-host 的 events 订阅生效时为 true：事件由它推（见 attachHost），扫描循环不再轮询 bridge events
+let hostLive = false
+/** 扫描循环最近 10 秒内读过事件，或 pane-host 正在推事件（自检据此判断该不该等 canary 事件） */
+export const eventsFresh = () => hostLive || Date.now() - lastEventsRead < 10000
+/** 事件现在从哪来：host（pane-host 推）/ bridge（轮询） */
+export const eventsSource = () => (hostLive ? 'host' : 'bridge')
+let hooks = {} // startMonitor 传进来的 bridge、isWatching、onOpen…
+async function readEvents() {
   const first = eventsOffset === null
   const resume = first && savedOffset !== null
-  const out = await bridge(`events ${eventsOffset ?? savedOffset ?? 0}`)
+  const from = eventsOffset ?? savedOffset ?? 0
+  const out = await hooks.bridge(`events ${from}`)
+  if (hostLive) return // 等结果的时候 pane-host 连上了：以它为准
   const nl = out.indexOf('\n')
   const size = Number(out.slice(0, nl < 0 ? undefined : nl))
-  eventsOffset = size
+  const done = eventsOffset ?? -1
+  eventsOffset = Math.max(size, eventsOffset ?? 0)
   lastEventsRead = Date.now()
   saveOffset()
   if ((first && !resume) || nl < 0) return // 第一次启动、没有存档：只记下位置
-  const nowS = Date.now() / 1000
+  // 位置往回退了（文件被删了重建，或者旧版 bridge 截断后从头给）：读到的是旧事件，不重放，只记下新位置
+  if (size < from) { eventsOffset = size; saveOffset(); return }
+  let off = from
   for (const line of out.slice(nl + 1).split('\n')) {
-    if (!line.trim()) continue
+    off += Buffer.byteLength(line) + 1
+    if (!line.trim() || off <= done) continue // 已经处理过的（pane-host 断开前推过的）跳过
     let ev
     try { ev = JSON.parse(line) } catch { continue }
-    if (ev.kind === 'open') { onOpen?.(ev.msg); continue }
-    if (ev.kind === 'agent') { onAgent?.(ev); continue }
-    if (ev.kind === 'incident') { onIncident?.(ev); continue }
-    if (ev.kind === 'canary') { onCanary?.(ev.nonce); continue }
-    // 重启后补读的「做完了 / 等你操作」超过 2 分钟就不补推了（只更新状态），免得一重启就推一串旧通知
-    const stale = resume && ev.t && nowS - ev.t > 120
-    // agent 的提问、问题报告这类事件该在几秒内被读到：晚了 1 分钟以上说明扫描卡住过（补读的不算）
-    if (!resume && ev.t && nowS - ev.t > 60 && (ev.kind === 'stop' || ev.kind === 'notify')) problem({ component: 'monitor', kind: 'events-late', title: '事件读得太晚', msg: `event ${ev.kind} read ${Math.round(Date.now() / 1000 - ev.t)}s late` })
-    const pane = String(ev.pane)
-    const st = state.get(pane) || blank(Date.now())
-    state.set(pane, st)
-    const t = Math.round(ev.t * 1000)
-    if (ev.kind === 'prompt') { st.inputAt = t; continue }
-    if (ev.kind === 'stop' || ev.kind === 'failure') {
-      st.doneAt = t
-      if (prefs.stop && !stale) await pushFor(pane, isWatching, { title: ev.kind === 'failure' ? '出错停下了' : '做完了', body: ev.msg || '轮到你了' }, ev.kind)
-    } else if ((ev.kind === 'notify' || ev.kind === 'permission') && !stale) {
-      await pushFor(pane, isWatching, { title: '等你操作', body: ev.msg || '需要你确认' }, ev.kind)
-    }
+    await handleEvent(ev, resume)
   }
 }
 
+/** 处理一条事件。replayed：补读的（服务重启后、或 pane-host 重连后补发的），不算「读晚了」，太旧的不补推 */
+async function handleEvent(ev, replayed) {
+  const { isWatching, onOpen, onAgent, onIncident, onCanary } = hooks
+  if (ev.kind === 'open') return onOpen?.(ev.msg)
+  if (ev.kind === 'agent') return onAgent?.(ev)
+  if (ev.kind === 'incident') return onIncident?.(ev)
+  if (ev.kind === 'canary') return onCanary?.(ev.nonce)
+  const nowS = Date.now() / 1000
+  // 重启后补读的「做完了 / 等你操作」超过 2 分钟就不补推了（只更新状态），免得一重启就推一串旧通知
+  const stale = replayed && ev.t && nowS - ev.t > 120
+  // agent 的提问、问题报告这类事件该在几秒内被读到：晚了 1 分钟以上说明扫描卡住过（补读的不算）
+  if (!replayed && ev.t && nowS - ev.t > 60 && (ev.kind === 'stop' || ev.kind === 'notify')) problem({ component: 'monitor', kind: 'events-late', title: '事件读得太晚', msg: `event ${ev.kind} read ${Math.round(Date.now() / 1000 - ev.t)}s late` })
+  const pane = String(ev.pane)
+  const st = state.get(pane) || blank(Date.now())
+  state.set(pane, st)
+  const t = Math.round(ev.t * 1000)
+  if (ev.kind === 'prompt') { st.inputAt = t; return }
+  if (ev.kind === 'stop' || ev.kind === 'failure') {
+    st.doneAt = t
+    if (prefs.stop && !stale) await pushFor(pane, isWatching, { title: ev.kind === 'failure' ? '出错停下了' : '做完了', body: ev.msg || '轮到你了' }, ev.kind)
+  } else if ((ev.kind === 'notify' || ev.kind === 'permission') && !stale) {
+    await pushFor(pane, isWatching, { title: '等你操作', body: ev.msg || '需要你确认' }, ev.kind)
+  }
+}
+
+/**
+ * 事件改由 pane-host 推（host-client.mjs）：连上就从当前偏移订阅 events 主题（序号就是 bridge events 的逻辑偏移，两条路可以互相接上），
+ * 断了就回到扫描循环里的 bridge 轮询。每次连上都新订阅一次，用的是这边最新的偏移（断开期间 bridge 可能已经往前读了）
+ */
+export function attachHost(host) {
+  let sub = null
+  let queue = Promise.resolve() // 事件按顺序处理（pushFor 是异步的）
+  const open = () => {
+    sub?.close()
+    const since = eventsOffset ?? savedOffset
+    sub = host.subscribe('events', {
+      since,
+      onEvent: (e) => {
+        queue = queue.then(async () => {
+          if (e.event === 'reset') { eventsOffset = e.seq; saveOffset(); return } // 文件重建 / 截掉的补不了：从这里接着收
+          if (eventsOffset !== null && e.seq <= eventsOffset) return
+          eventsOffset = e.seq
+          lastEventsRead = Date.now()
+          saveOffset()
+          await handleEvent(e.data, !!e.replay)
+        }).catch((err) => console.log(`events(host): ${err.message}`))
+      },
+      onStatus: (up, r) => {
+        if (up !== hostLive) console.log(up ? `events: via pane-host (from ${since ?? 'now'})` : 'events: back to bridge polling')
+        hostLive = up
+        if (up && r?.seq != null) queue = queue.then(() => { if (eventsOffset === null || r.seq > eventsOffset) { eventsOffset = r.seq; saveOffset() } })
+      },
+    })
+  }
+  host.on('up', open)
+  host.on('down', () => { if (hostLive) console.log('events: back to bridge polling'); hostLive = false; sub?.close(); sub = null })
+  if (host.connected) open()
+}
+
 export function startMonitor({ bridge, isWatching, active, onOpen, onAgent, onIncident, onCanary }) {
+  hooks = { bridge, isWatching, onOpen, onAgent, onIncident, onCanary }
   let busy = false
   setInterval(async () => {
     // 有推送订阅、或手机最近在用（要看状态列表）才扫，不然不打扰电脑
@@ -264,7 +317,7 @@ export function startMonitor({ bridge, isWatching, active, onOpen, onAgent, onIn
         state.set(pane, st)
       }
       for (const k of state.keys()) if (!seen.has(k)) state.delete(k)
-      await readEvents(bridge, isWatching, onOpen, onAgent, onIncident, onCanary).catch((e) => { console.log(`events: ${e.message}`); if (!offline(e.message)) problem({ component: 'monitor', kind: 'events', msg: `events: ${e.message}` }) })
+      if (!hostLive) await readEvents().catch((e) => { console.log(`events: ${e.message}`); if (!offline(e.message)) problem({ component: 'monitor', kind: 'events', msg: `events: ${e.message}` }) })
     } catch (e) {
       console.log(`monitor: ${e.message}`)
       if (!offline(e.message)) problem({ component: 'monitor', kind: 'scan', msg: `monitor: ${e.message}` })

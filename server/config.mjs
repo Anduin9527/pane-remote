@@ -27,7 +27,10 @@ const DEFAULTS = {
     cursor: false, // Cursor IDE 映射：会话 / 消息 / 改动 / 内置浏览器（Cursor 要带调试端口启动，必要时会重启 Cursor）
     screen: false, // 看屏幕（只限 macOS）：手机上看 / 操作电脑屏幕，走系统自带的屏幕共享，要装 mousectl 并授权（docs/screen.md）
     mac: false, // 这台电脑（只限 macOS）：手机上看性能（CPU、内存、占用最多的进程），让电脑用自带的 say 念一段话（docs/mac.md）
+    plugins: true, // 插件平台：手机上跑插件（plugins/ 目录，docs/plugins.md）；关掉后 /api/plugins 404，自带的预览、这台电脑、看屏幕照常
   },
+  // pane-host（电脑上的常驻服务，docs/host.md）：对话和事件改成推送，插件的 AI、电脑剪贴板、只读文件走它。false = 不连（一切走 bridge）
+  paneHost: true,
   // 新建 pane 时可选的启动命令
   presets: [
     { label: 'Claude Code', command: 'claude' },

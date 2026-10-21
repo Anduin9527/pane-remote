@@ -45,11 +45,21 @@ def main():
     os.makedirs(os.path.dirname(LOG), exist_ok=True)
     try:
         if os.path.getsize(LOG) > MAX:
+            # 截掉的字节数记在新文件第一行 {"base": N}：bridge 按「base + 行头之后的位置」报偏移，
+            # 偏移只增不减，截断后服务端接着读，不会从头把整个文件重放一遍（重推一串旧通知）
             with open(LOG, "rb") as f:
+                head = f.readline()
+                try:
+                    base, hlen = int(json.loads(head)["base"]), len(head)
+                except Exception:
+                    base, hlen = 0, 0
                 f.seek(-MAX // 2, 2)
-                keep = f.read().split(b"\n", 1)[-1]
+                cut = f.tell()
+                rest = f.read()
+            skip, _, keep = rest.partition(b"\n")
+            base += cut + len(skip) + 1 - hlen
             with open(LOG + ".tmp", "wb") as f:
-                f.write(keep)
+                f.write(json.dumps({"base": base}).encode() + b"\n" + keep)
             os.replace(LOG + ".tmp", LOG)
     except FileNotFoundError:
         pass

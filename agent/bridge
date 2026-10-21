@@ -44,11 +44,14 @@
 #   mac-say-stop            停掉正在念的
 #   agent <inspect|snapshot|restart|restart-status> <pane> [base64 JSON]  pane 里 agent 的 pane-remote 插件：状态、重启前快照、重启并注入（见 agent/pane-agent）
 #   agent <available|locate <会话ID>>  装了哪些 agent（JSON）；某个会话正在哪个 pane、忙不忙（JSON）
+#   agent model <pane> [refresh]  pane 里 agent 的模型列表、当前模型和思考等级（JSON）；refresh = 重新读 Claude 的选择器
+#   agent model-set <pane> <base64 JSON>  切模型 / 思考等级：{model, effort?}，agent 空闲时才做（JSON：ok、current 或 error、tail）
 #   incident-triage <base64 JSON>  问题报告的 AI 分类：便宜模型（Haiku / Codex 轻量模型 / Cursor Composer Fast），输出 JSON
 #   canary <随机串>        定时自检：写一条 canary 事件，冒烟启动 MCP 服务，输出结果（JSON）
 #   incident-brief <id> <base64 文本>  写问题报告的简报给修复的 agent 读，输出文件路径
 #   incident-repo           pane-remote 仓库在电脑上的目录（修自己的问题时在这里开 agent）
-#   agent-answer <id> <base64 JSON>  手机对 agent 提问的回答，写给 Mac 上等着的 MCP 服务（见 agent/plugin/mcp.mjs）
+#   agent-answer <id> <base64 JSON>  手机对 agent 提问的回答，写给电脑上等着的 MCP 服务（见 agent/plugin/mcp.mjs）
+#   host                    常驻：连到电脑上的 pane-host（stdin/stdout 按行 JSON-RPC，见 host/protocol.mjs），服务端只占这一条长连接
 #   awake                   让 Mac 2 分钟内不因空闲睡眠（caffeinate -i），并标记「手机在用」；手机在用时中转每分钟调一次
 # 其他任何输入一律拒绝，不会执行 shell。
 set -u
@@ -211,9 +214,15 @@ case "$cmd" in
     [[ "${pane:-}" =~ ^[0-9]{1,9}$ ]] || fail "bad offset"
     f=$HOME/.local/state/pane-remote/events.jsonl
     [[ -f "$f" ]] || { echo 0; exit 0; }
+    # 偏移是「逻辑偏移」：pane-event 截断文件时把截掉的字节数写在第一行 {"base":N}，逻辑偏移 = base + 行头之后的位置，只增不减
     size=$(stat -f %z "$f")
-    off=$pane; (( off > size )) && off=0
-    echo "$size"
+    base=0; hlen=0; head=$(head -n 1 "$f")
+    if [[ "$head" =~ ^\{\"base\":\ ?([0-9]+)\}$ ]]; then base=${BASH_REMATCH[1]}; hlen=$(( ${#head} + 1 )); fi
+    lsize=$(( base + size - hlen ))
+    echo "$lsize"
+    off=$(( pane - base + hlen ))
+    (( off < hlen )) && off=$hlen # 比截掉的部分还旧：读剩下的全部
+    (( off > size )) && off=$size # 比文件还新（文件被删了重建之类）：只报位置，不重放
     (( size > off )) && tail -c +$((off + 1)) "$f" | head -c $((size - off))
     exit 0
     ;;
@@ -354,8 +363,16 @@ PY
       [[ "$pane" =~ ^[0-9a-zA-Z-]{8,64}$ ]] || fail "bad session"
       exec "$HERE/pane-agent" locate "$pane"
     fi
-    [[ "$sub" =~ ^(inspect|snapshot|restart|restart-status)$ ]] || fail "bad agent command"
+    [[ "$sub" =~ ^(inspect|snapshot|restart|restart-status|model|model-set)$ ]] || fail "bad agent command"
     check_pane
+    if [[ "$sub" == model ]]; then
+      [[ -z "${extra:-}" || "$extra" == refresh ]] || fail "bad model command"
+      exec "$HERE/pane-agent" model "$pane" ${extra:+refresh}
+    fi
+    if [[ "$sub" == model-set ]]; then
+      [[ -n "${extra:-}" && ${#extra} -le 512 && "$extra" =~ ^[A-Za-z0-9+/=]+$ ]] || fail "bad payload"
+      exec "$HERE/pane-agent" model-set "$pane" "$extra"
+    fi
     if [[ "$sub" == restart ]]; then
       [[ -n "${extra:-}" && ${#extra} -le 2048 && "$extra" =~ ^[A-Za-z0-9+/=]+$ ]] || fail "bad payload"
       exec "$HERE/pane-agent" restart "$pane" "$extra"
@@ -393,6 +410,11 @@ PY
     mkdir -p "$dir"
     printf '%s' "$arg" | base64 -D > "$dir/.$pane.tmp" && mv "$dir/.$pane.tmp" "$dir/$pane.json"
     echo ok
+    ;;
+  host)
+    # pane-host 的连接器（host/connect.mjs）：stdin/stdout ⇄ pane-host 的 unix socket；pane-host 不在时它会就地拉起一个
+    [[ -x "$NODE" ]] || fail "找不到 node（${NODE}），跑 pane-remote doctor 看看"
+    exec "$NODE" "$HERE/../host/connect.mjs"
     ;;
   awake)
     pidf=$HOME/.cache/pane-remote-caffeinate.pid

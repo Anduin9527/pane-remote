@@ -1,0 +1,19 @@
+{
+  "pluginName": "Hello",
+  "description": "最小的 uTools 风格示例插件：dbStorage、通知、复制、问题报告，验证 pane-remote 插件平台整条链路",
+  "version": "0.1.0",
+  "main": "index.html",
+  "logo": "logo.svg",
+  "features": [
+    {
+      "code": "hello",
+      "explain": "打开 Hello 示例",
+      "cmds": ["你好", "hello", { "type": "regex", "label": "复制这段网址", "match": "/^https?:\\/\\//i" }]
+    },
+    {
+      "code": "echo",
+      "explain": "把输入的文字带进插件",
+      "cmds": [{ "type": "over", "label": "带进 Hello", "minLength": 2, "maxLength": 200 }]
+    }
+  ]
+}

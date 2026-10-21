@@ -12,9 +12,13 @@
 //   GET  /api/states             每个 pane 的状态：waiting / running / idle、等待的问题、有没有未读；agent 在手机上问的问题（asks）也挂在对应 pane 上
 //   GET  /api/agent?pane=N        pane 里的 agent：会话、忙/闲、有没有注入 pane-remote 插件
 //   GET|POST /api/agent/restart   重启并注入：POST {pane, inject?, force?} 开始（先存快照，见 agent/pane-agent），GET ?pane=N 看进度
-//   POST /api/agent/answer {id, answer, text?}  回答 agent 用 ask_phone 问的问题（交给 Mac 上等着的 MCP 服务）
+//   GET  /api/agent/model?pane=N[&refresh] | ?cursor=会话  模型 · 思考等级：{agent, models:[{id,label,efforts}], current:{model,id,effort}, busy, global?}
+//   POST /api/agent/model {pane | cursor, model, effort?}  切换（agent 空闲、输入框空着时才做，见 agent/pane-agent model-set；Cursor 会话见 agent/cursor-agent.mjs model-set，要开 Cursor 模块）；失败带 tail（画面末尾）
+//   POST /api/agent/answer {id, answer, text?}  回答 agent 用 ask_phone 问的问题（交给电脑上等着的 MCP 服务）
 //   GET  /api/claude?pane=N      这个 pane 里 Claude 会话的信息（会话 ID、账号、目录），没有就是 {}
 //   GET  /api/transcript?pane=N  这个 pane 里 Claude 会话最近的对话消息（对话视图用）
+//   GET  /api/transcript/stream?pane=N[&n=条数]  SSE：对话消息的推送（pane-host 盯着会话记录）：full {seq, messages}、delta {seq, drop, keep, tail}、ping；
+//                                pane-host 不在线时回 503，断了推 down 后结束，前端回到轮询 /api/transcript
 //   POST /api/reconnect {pane}     手动重连：重建这个 pane 的画面通道、清缓存；relay 模式下电脑不通时重建 ssh 共享连接
 //   GET  /api/crons?pane=N[&fresh]  这个 pane 里 Claude 会话的定时任务（还在的、最近停掉的、上次结果）
 //   POST /api/pane/claude {pane, mode: fork|new, where: right|bottom|tab}  分叉当前会话 / 同目录新开 Claude
@@ -27,6 +31,7 @@
 //   GET|POST /api/screen/…、WS /api/screen/vnc  看屏幕模块（可选，见 screen.mjs）
 //   GET|POST /api/mac/…                         mac 模块：性能、念一段话（可选，见 mac.mjs）
 //   POST /api/upload?name=…      请求体是文件原始字节（最大 25MB），存到电脑的 ~/Downloads/pane-remote/，返回 {path}
+//   /api/plugins*、/plugins/*、WS /api/platform/ws  插件平台（见 platform/index.mjs）
 // 身份：只认 tailscale serve 注入的 Tailscale-User-Login，且必须在 allowedLogins 里；local 模式还要求 Host 是 serveHosts 之一。
 import http from 'node:http'
 import fs from 'node:fs'
@@ -40,6 +45,8 @@ import { initCursor, cursorStream, cursorCmd, cursorSummary } from './cursor.mjs
 import { createScreen } from './screen.mjs'
 import { createMac } from './mac.mjs'
 import { WebSocketServer } from 'ws'
+import { HostClient } from './host-client.mjs'
+import { apply as applyDelta } from '../host/delta.mjs'
 import zlib from 'node:zlib'
 import crypto from 'node:crypto'
 import { config, APP_DIR, CONFIG_PATH } from './config.mjs'
@@ -88,6 +95,15 @@ function bridge(command, timeout = 10000) {
     else execFile(BRIDGE, [], { ...opts, env: { ...BRIDGE_ENV, SSH_ORIGINAL_COMMAND: command } }, done)
   })
 }
+
+// pane-host（电脑上的常驻服务，见 host/）：经 bridge 的 host 指令保持一条长连接（local 模式是本机子进程，relay 模式是一条 ssh），
+// 对话记录和事件优先走它（推送，不轮询），插件平台的 AI、剪贴板、只读文件也走它；不在线时对话和事件自动回到上面的 bridge 老路。
+// 配置 paneHost: false 或环境变量 PANE_HOST=0 关掉。电脑上的 bridge 还是旧版（不认 host）时 5 分钟才重试一次
+const host = new HostClient({
+  spawn: () => bridgeProc('host', ['pipe', 'pipe', 'pipe']),
+  backoffFor: (err) => (/unsupported command/.test(err) ? 300000 : null),
+})
+if (config.paneHost !== false && process.env.PANE_HOST !== '0') host.start()
 
 // 见过的 pane 目录记下来（重启不丢），新建 pane 时能选回以前开过的目录
 const DIRS_FILE = path.join(config.dataDir, 'dirs.json')
@@ -423,6 +439,9 @@ async function manage(action, b) {
 // 之后只让电脑比一下文件大小，没变就不重新解析（会话记录动辄几十 MB）
 const transcripts = new Map() // pane → { key, n, messages, at, pending }
 async function transcript(pane, n) {
+  // pane-host 正推着这个 pane 的对话（手机开着对话视图）：直接用它的，不再走 bridge
+  const live = liveTranscripts.get(pane)
+  if (live?.messages && live.sub.live && live.n >= n) return live.n === n ? live.messages : live.messages.slice(-n)
   const c = transcripts.get(pane)
   if (c && c.n >= n && Date.now() - c.at < 1500) return c.messages
   if (c?.pending) return c.pending
@@ -436,6 +455,61 @@ async function transcript(pane, n) {
   })()
   if (c) c.pending = job
   try { return await job } finally { if (c) c.pending = null }
+}
+
+// ---------- 对话推送（pane-host） ----------
+// 每个有人看的 pane 一份：订阅 pane-host 的 transcript:<pane>:<条数>，手里留一份全量（新连上的手机先拿全量），
+// 之后的增量原样转给所有手机。最后一个手机走后 60 秒退订。pane-host 断了就结束所有推送（前端回到轮询）
+const liveTranscripts = new Map() // pane → { n, messages, seq, clients: Set<res>, sub, lingerTimer }
+function sse(res, event, data) { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) }
+function openLiveTranscript(pane, n) {
+  const lt = { n, messages: null, seq: 0, clients: new Set(), sub: null, lingerTimer: null }
+  const subscribe = () => {
+    lt.sub?.close()
+    lt.sub = host.subscribe(`transcript:${pane}:${n}`, {
+      since: 0, // 从头要：先来一条 reset 全量
+      onEvent: (e) => {
+        if (e.event === 'reset' || e.data?.full) {
+          lt.messages = e.data?.full || []
+          lt.seq = e.seq
+          for (const c of lt.clients) sse(c, 'full', { seq: lt.seq, messages: lt.messages })
+          return
+        }
+        const next = lt.messages && applyDelta(lt.messages, e.data)
+        if (!next) { lt.messages = null; return subscribe() } // 对不上（不该发生）：重新要全量
+        lt.messages = next
+        lt.seq = e.seq
+        for (const c of lt.clients) sse(c, 'delta', { seq: e.seq, ...e.data })
+      },
+    })
+  }
+  subscribe()
+  liveTranscripts.set(pane, lt)
+  return lt
+}
+function closeLiveTranscript(pane, lt) {
+  clearTimeout(lt.lingerTimer)
+  lt.sub?.close()
+  for (const c of lt.clients) { sse(c, 'down', {}); c.end() }
+  if (liveTranscripts.get(pane) === lt) liveTranscripts.delete(pane)
+}
+host.on('down', () => { for (const [pane, lt] of liveTranscripts) closeLiveTranscript(pane, lt) })
+function transcriptStream(req, res, pane, n) {
+  if (!host.connected) return json(res, 503, { error: 'pane-host offline' })
+  let lt = liveTranscripts.get(pane)
+  if (lt && lt.n !== n) { closeLiveTranscript(pane, lt); lt = null }
+  lt ??= openLiveTranscript(pane, n)
+  clearTimeout(lt.lingerTimer)
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', 'x-accel-buffering': 'no' })
+  res.write('retry: 3000\n\n')
+  if (lt.messages) sse(res, 'full', { seq: lt.seq, messages: lt.messages })
+  lt.clients.add(res)
+  const ping = setInterval(() => res.write('event: ping\ndata: {}\n\n'), 15000)
+  res.on('close', () => {
+    clearInterval(ping)
+    lt.clients.delete(res)
+    if (!lt.clients.size) lt.lingerTimer = setTimeout(() => closeLiveTranscript(pane, lt), 60000)
+  })
 }
 
 // ---------- 定时任务 ----------
@@ -623,6 +697,20 @@ function authorized(req) {
   return SERVE_HOSTS.has(host)
 }
 
+// ---------- 插件平台（platform/，可选模块 plugins，默认开）：依赖是 npm 上的 @whatevertools/*（install.sh 装），没装就只是没有插件功能 ----------
+let platform = null
+if (config.modules.plugins !== false) try {
+  const { createPlatform } = await import('../platform/index.mjs')
+  platform = createPlatform({
+    dataDir: config.dataDir,
+    pluginsDir: process.env.PLUGINS_DIR || path.join(APP_DIR, 'plugins'),
+    WebSocketServer,
+    notify: (p) => push.notify(p).then((r) => { console.log(`notify(plugin) ${p.plugin} → ${JSON.stringify(r)}`); return r }),
+    recordIncident: (r) => incidents.record(r),
+    host, // AI、电脑剪贴板 / 打开网址、只读文件走 pane-host
+  })
+} catch (e) { console.log(`plugins: platform disabled (${e.message})`) }
+
 const server = http.createServer(async (req, res) => {
   if (!authorized(req)) {
     res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
@@ -630,9 +718,15 @@ const server = http.createServer(async (req, res) => {
   }
   const url = new URL(req.url, 'http://x')
   if (url.pathname.includes('/api/')) lastApi = Date.now()
+  // 插件 iframe（sandbox 没有 allow-same-origin）发的请求 Origin 是 null：插件只能经前端的 postMessage 调平台，不许直接碰任何接口
+  if (req.headers.origin === 'null' && url.pathname.includes('/api/')) return json(res, 403, { error: 'bad origin' })
   // 所有会改东西的请求（非 GET）都必须来自本站页面：挡住别的网页借浏览器里的登录身份发表单 / 跨站请求
   if (req.method !== 'GET' && req.method !== 'HEAD' && !sameOrigin(req)) return json(res, 403, { error: 'bad origin' })
   try {
+    // 插件平台（可选模块 plugins，默认开）：插件列表、插件自己的文件
+    if (platform && (url.pathname.startsWith('/plugins/') || url.pathname.startsWith('/api/plugins'))) {
+      if (await platform.handle(req, res, url, async () => JSON.parse((await readBody(req, 64 << 10)) || '{}'))) return
+    }
     // Cursor 模块（可选，pane-remote enable cursor）：映射 Cursor IDE 的会话
     if (url.pathname.startsWith('/api/cursor/')) {
       if (url.pathname === '/api/cursor/summary') return json(res, 200, config.modules.cursor ? cursorSummary() : { conn: 'disabled', waiting: [], unread: 0 })
@@ -715,6 +809,12 @@ const server = http.createServer(async (req, res) => {
       if (!/^\d{1,6}$/.test(pane || '')) return json(res, 400, { error: 'bad pane' })
       return sendTranscript(req, res, await transcript(pane, n))
     }
+    if (url.pathname === '/api/transcript/stream' && req.method === 'GET') {
+      const pane = url.searchParams.get('pane')
+      const n = Math.min(200, Number(url.searchParams.get('n')) || 60)
+      if (!/^\d{1,6}$/.test(pane || '')) return json(res, 400, { error: 'bad pane' })
+      return transcriptStream(req, res, pane, n)
+    }
     if (url.pathname === '/api/reconnect' && req.method === 'POST') {
       const { pane } = JSON.parse((await readBody(req, 1024)) || '{}')
       if (!/^\d{1,6}$/.test(String(pane))) return json(res, 400, { error: 'bad pane' })
@@ -767,6 +867,39 @@ const server = http.createServer(async (req, res) => {
       await bridge(`agent restart ${b.pane} ${b64(JSON.stringify(opts))}`)
       console.log(`agent restart pane ${b.pane} inject=${opts.inject}`)
       return json(res, 200, { ok: true })
+    }
+    if (url.pathname === '/api/agent/model' && req.method === 'GET') {
+      const cursor = url.searchParams.get('cursor')
+      if (cursor) {
+        if (!config.modules.cursor) return json(res, 404, { error: 'Cursor 模块没开（pane-remote enable cursor）' })
+        if (!/^[0-9a-f-]{8,64}$/i.test(cursor)) return json(res, 400, { error: 'bad cursor' })
+        const r = await cursorCmd({ t: 'model', id: cursor })
+        return r.ok ? json(res, 200, r.data || {}) : json(res, 502, { error: r.error || '电脑那边没有回应' })
+      }
+      const pane = url.searchParams.get('pane')
+      if (!isId(pane)) return json(res, 400, { error: 'bad pane' })
+      // Claude 第一次要把选择器翻一遍（十几秒），之后读缓存
+      return json(res, 200, JSON.parse((await bridge(`agent model ${pane}${url.searchParams.has('refresh') ? ' refresh' : ''}`, 40000)) || '{}'))
+    }
+    if (url.pathname === '/api/agent/model' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req, 4 << 10)) || '{}')
+      if (b.cursor != null && !/^[0-9a-f-]{8,64}$/i.test(String(b.cursor))) return json(res, 400, { error: 'bad cursor' })
+      if (!b.cursor && !isId(b.pane)) return json(res, 400, { error: 'bad pane' })
+      if (typeof b.model !== 'string' || !/^[\w .()[\]:@/+-]{1,80}$/.test(b.model)) return json(res, 400, { error: 'bad model' })
+      const effort = b.effort == null ? '' : String(b.effort)
+      if (effort && !/^[a-z]{1,12}$/.test(effort)) return json(res, 400, { error: 'bad effort' })
+      // Cursor IDE 会话：电脑那边打开会话、操作输入框下方的模型选择器，再读回确认
+      if (b.cursor) {
+        if (!config.modules.cursor) return json(res, 404, { error: 'Cursor 模块没开（pane-remote enable cursor）' })
+        const r = await cursorCmd({ t: 'model-set', id: String(b.cursor), model: b.model, effort })
+        if (!r.ok) return json(res, /正在生成|正在切换/.test(r.error || '') ? 409 : 400, { error: r.error || '切换失败' })
+        console.log(`cursor model ${String(b.cursor).slice(0, 8)} → ${b.model}${effort ? ` @${effort}` : ''}`)
+        return json(res, 200, { ok: true, ...(r.data || {}) })
+      }
+      const r = JSON.parse((await bridge(`agent model-set ${b.pane} ${b64(JSON.stringify({ model: b.model, effort }))}`, 40000)) || '{}')
+      if (!r.ok) return json(res, /正在干活|正在切换/.test(r.error || '') ? 409 : 400, { error: r.error || '切换失败', tail: r.tail || '' })
+      console.log(`agent model pane ${b.pane} → ${b.model}${effort ? ` @${effort}` : ''}`)
+      return json(res, 200, r)
     }
     if (url.pathname === '/api/agent/answer' && req.method === 'POST') {
       const b = JSON.parse((await readBody(req, 8 << 10)) || '{}')
@@ -905,6 +1038,8 @@ function withAsks(states, includeTest = false) {
   return states
 }
 async function answerAsk(b) {
+  // 插件在手机上问的（platform.agent.ask）：平台自己收
+  if (askId(b.id) && platform?.answerAsk(b.id, b.answer, b.text)) return { ok: true }
   const a = askId(b.id) && asks.get(b.id)
   if (!a) throw new Error('这个问题已经过期或被回答了')
   const text = typeof b.text === 'string' ? b.text.trim().slice(0, 1000) : ''
@@ -944,6 +1079,7 @@ incidents.initIncidents({
 process.on('uncaughtException', (e) => {
   incidents.record({ source: 'server', component: 'process', kind: 'uncaughtException', msg: e?.message || String(e), detail: e?.stack, severity: 'high' })
   incidents.flush()
+  try { platform?.flush() } catch {}
   console.log(e)
   process.exit(1)
 })
@@ -973,7 +1109,9 @@ async function canary() {
   const read = r.event && fresh ? await got : null
   if (read === false) fail('events', '自检：事件通道不通', `canary event ${nonce} not read within 25s`)
   canaryWaits.delete(nonce)
-  console.log(`canary: mcp ${r.mcp?.ok ? 'ok' : 'FAIL'} (${r.mcp?.tools ?? 0} tools), agents ${r.agents?.length || 0}, events ${read === null ? 'skipped' : read ? 'ok' : 'FAIL'}`)
+  // pane-host 在不在线：只报告（它不在时一切走 bridge 老路，照样能用），不记成问题
+  const hostState = host.connected ? await host.call('ping', {}, { timeout: 5000 }).then((p) => `ok (pid ${p.pid}, up ${p.uptime}s)`, (e) => `ping failed: ${e.message}`) : `offline${host.lastError ? ` (${host.lastError})` : ''}`
+  console.log(`canary: mcp ${r.mcp?.ok ? 'ok' : 'FAIL'} (${r.mcp?.tools ?? 0} tools), agents ${r.agents?.length || 0}, events ${read === null ? 'skipped' : read ? 'ok' : 'FAIL'} via ${push.eventsSource()}, pane-host ${hostState}`)
 }
 setTimeout(() => canary().catch((e) => console.error(`canary: ${e.message}`, e)), 60000)
 setInterval(() => canary().catch((e) => console.error(`canary: ${e.message}`, e)), 600000)
@@ -987,6 +1125,7 @@ push.startMonitor({
   isWatching: (pane) => (watchers.get(String(pane))?.clients.size || 0) > 0,
   active: () => viewing() || Date.now() - lastApi < 120000,
 })
+push.attachHost(host)
 
 const screen = createScreen({ bridge, bridgeProc })
 const macApi = createMac({ bridge })
@@ -996,12 +1135,16 @@ server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, 'http://x')
   const origin = req.headers.origin
   const isScreen = url.pathname === '/api/screen/vnc'
-  const okPath = isScreen ? !!config.modules.screen : url.pathname === '/api/preview' && (url.searchParams.get('source') === 'cursor' ? !!config.modules.cursor : config.modules.preview)
-  if (!authorized(req) || !okPath || (origin && new URL(origin).host !== req.headers.host)) {
+  const platformWs = !!platform && url.pathname === '/api/platform/ws'
+  const okPath = isScreen ? !!config.modules.screen : platformWs || (url.pathname === '/api/preview' && (url.searchParams.get('source') === 'cursor' ? !!config.modules.cursor : config.modules.preview))
+  // Origin 可能是 null（沙盒 iframe）或乱写的：new URL 会抛错，在这里抛就是未捕获异常、整个进程退出
+  const badOrigin = origin && (() => { try { return new URL(origin).host !== req.headers.host } catch { return true } })()
+  if (!authorized(req) || !okPath || badOrigin) {
     socket.end('HTTP/1.1 403 Forbidden\r\n\r\n')
     return
   }
   if (isScreen) return screen.upgrade(req, socket, head, url)
+  if (platformWs) return platform.upgrade(req, socket, head, url)
   const pv = url.searchParams.get('source') === 'cursor' ? previews.cursor : previews.chrome
   pv.wss.handleUpgrade(req, socket, head, (ws) => pv.wss.emit('connection', ws, req))
 })

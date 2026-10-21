@@ -44,7 +44,7 @@ export function initIncidents(d) {
   } catch {}
   for (const r of early.splice(0)) record(r)
   if (!cfg.triage) cfg.triage = { enabled: !!d.triageDefault, agent: 'auto', model: '', daily: 20 }
-  setInterval(() => tick().catch((e) => console.error(`incidents: tick ${e.message}`, e)), 15000)
+  if (!d.noFixer) setInterval(() => tick().catch((e) => console.error(`incidents: tick ${e.message}`, e)), 15000)
 }
 
 function save(sync = false) {
@@ -324,6 +324,7 @@ function deliverText(inc, file) {
 export async function fix(id, opts = {}) {
   const inc = list.find((x) => x.id === id)
   if (!inc) throw new Error('没有这个问题')
+  if (deps.noFixer) throw new Error('这个实例不派修复（noFixer）')
   if (inc.fix && (inc.fix.state === 'running' || inc.fix.state === 'queued') && now() - inc.fix.started < 6 * 3600000 && !opts.force) return inc.fix
   const file = (await deps.bridge(`incident-brief ${inc.id} ${b64(brief(inc))}`)).trim()
   if (!file.startsWith('/') || /['\n]/.test(file)) throw new Error('写问题简报失败')

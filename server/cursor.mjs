@@ -1,6 +1,6 @@
 // Cursor 映射的服务端：管电脑上的 cursor-agent（bridge cursor-ide 常驻），缓存状态，转发给手机。
 //   GET  /api/cursor/stream?id=会话   SSE：status / sessions / messages / delta（手机在看哪个会话就让电脑那边盯哪个）
-//   POST /api/cursor/cmd {t, ...}     launch / restart / open / send / stop / new / choose / refresh，等电脑那边的结果
+//   POST /api/cursor/cmd {t, ...}     launch / restart / open / send / stop / new / choose / refresh / model / model-set，等电脑那边的结果
 // 只缓存：连接状态、会话列表、手机正在看的那个会话的最新消息快照（给后连上的手机）。不落盘。
 import fs from 'node:fs'
 import path from 'node:path'
@@ -148,7 +148,7 @@ export function cursorStream(req, res, url) {
   res.on('close', () => { clearInterval(ping); clients.delete(c); markSeen(id); updateWatch() })
 }
 
-const CMDS = new Set(['launch', 'restart', 'open', 'send', 'stop', 'new', 'choose', 'refresh', 'changes', 'pin', 'archive', 'fork', 'usage'])
+const CMDS = new Set(['launch', 'restart', 'open', 'send', 'stop', 'new', 'choose', 'refresh', 'changes', 'pin', 'archive', 'fork', 'usage', 'model', 'model-set'])
 export function cursorCmd(body) {
   if (!CMDS.has(body?.t)) return Promise.resolve({ ok: false, error: 'unknown command' })
   if (body.id && !/^[0-9a-f-]{8,64}$/i.test(String(body.id))) return Promise.resolve({ ok: false, error: 'bad id' })
@@ -160,10 +160,12 @@ export function cursorCmd(body) {
   if (typeof body.project === 'string') m.project = body.project.slice(0, 500)
   if (typeof body.label === 'string') m.label = body.label.slice(0, 60)
   if (typeof body.on === 'boolean') m.on = body.on
+  if (typeof body.model === 'string') m.model = body.model.slice(0, 80)
+  if (typeof body.effort === 'string') m.effort = body.effort.slice(0, 12)
   if (body.bubble) { if (!/^[0-9a-f-]{8,64}$/i.test(String(body.bubble))) return Promise.resolve({ ok: false, error: 'bad bubble' }); m.bubble = String(body.bubble) }
   return new Promise((resolve) => {
     // 启动 / 重启要等 Cursor 起来，最多 90 秒；其它 20 秒
-    const timer = setTimeout(() => { waiters.delete(req); resolve({ ok: false, error: '电脑那边没有回应' }) }, /launch|restart|new|send|fork/.test(body.t) ? 90000 : 20000)
+    const timer = setTimeout(() => { waiters.delete(req); resolve({ ok: false, error: '电脑那边没有回应' }) }, /launch|restart|new|send|fork|model-set/.test(body.t) ? 90000 : 20000)
     waiters.set(req, { resolve, timer })
     send(m)
   })

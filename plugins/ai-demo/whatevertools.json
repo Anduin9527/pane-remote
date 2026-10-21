@@ -1,0 +1,16 @@
+{
+  "id": "ai-demo",
+  "name": "AI 演示",
+  "version": "0.1.0",
+  "description": "用电脑上已登录的 Claude Code / Codex / cursor-agent 回答问题：选模型和推理等级、流式显示、可附一张图片",
+  "main": "index.html",
+  "logo": "logo.svg",
+  "features": [
+    { "code": "ai", "explain": "打开 AI 演示", "cmds": ["AI 演示", "ai", "问AI"] },
+    { "code": "ask", "explain": "把输入的文字交给 AI", "cmds": [{ "type": "over", "label": "问 AI", "minLength": 2, "maxLength": 2000 }] }
+  ],
+  "permissions": {
+    "ai": { "reason": "用你电脑上的 agent 回答问题（消耗对应账号的额度）" }
+  },
+  "paneRemote": { "keepAlive": 600 }
+}

@@ -1,0 +1,9 @@
+{
+  "id": "hello",
+  "permissions": {
+    "notification": { "reason": "演示：点「通知」时提醒你" },
+    "clipboard.write": { "reason": "演示：点「复制」时把文字写进剪贴板" },
+    "platform.storage": { "reason": "演示：和其他插件共用 demo 存储组" }
+  },
+  "paneRemote": { "keepAlive": 300, "storage": ["demo"] }
+}

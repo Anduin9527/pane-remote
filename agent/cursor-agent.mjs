@@ -6,6 +6,8 @@
 //   watch{id}            手机在看哪个会话（空 = 没人看消息，只保留会话列表监听）
 //   launch / restart     启动 Cursor（没开时）/ 正常退出再带调试端口重开（开着但没调试端口时，要手机那头确认过）
 //   open{id} send{id,text} stop new{project} choose{label} refresh
+//   model{id}            会话用的模型和思考等级 + 可选模型（来自本地数据库）
+//   model-set{id, model, effort}  切换会话的模型 / 思考等级：先打开会话，再操作输入框下方的选择器，最后从数据库读回确认（会话在生成时拒绝）
 // 发（这里 → 服务端）：
 //   status{conn, msg, step?}      conn: not-running | no-debug | launching | connecting | ready | error
 //   sessions{projects, active}    项目 → 会话（id、标题、时间、状态），active = Cursor 里当前打开的
@@ -546,6 +548,176 @@ async function usage() {
   }
 }
 
+// ---------- 模型：会话的在 composerData.modelConfig = {modelName, maxMode, selectedModels:[{modelId, parameters:[{id, value}]}]}；
+// 可选模型来自 Cursor 自己存的设置（applicationUser.availableDefaultModels2 + aiSettings 里的开关），和输入框下方选择器里列的是同一批。
+// 切换走页面上的选择器（menu-popup，base-ui 菜单）：按钮 click 能打开；子菜单（Model / Effort）要悬停才展开；菜单项 click 不认，focus 后发 Enter 才选中。
+// 注意：在会话里选模型，Cursor 会同时把它记成新会话的默认模型（aiSettings.modelConfig.composer），思考等级也会记进这个模型的偏好（modelParameterPreferences）
+const EFFORT_PARAMS = ['reasoning_effort', 'effort', 'reasoning']
+let catalogCache = null, catalogAt = 0
+function catalog() {
+  if (catalogCache && Date.now() - catalogAt < 30000) return catalogCache
+  let v = null
+  try { v = JSON.parse(itemValue('src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser') || 'null') } catch {}
+  const all = v?.availableDefaultModels2
+  if (!Array.isArray(all)) return []
+  const ai = v.aiSettings || {}
+  const on = new Set(ai.modelOverrideEnabled || []), off = new Set(ai.modelOverrideDisabled || [])
+  const prefs = ai.modelParameterPreferences || {}
+  const list = []
+  for (const m of all) {
+    // 选择器里列的：默认开着且没被关掉的，加上在设置里手动打开的；Auto（default）排第一
+    if (!m?.name || !((m.defaultOn && !off.has(m.name)) || on.has(m.name)) || m.supportsAgent === false) continue
+    const defs = m.parameterDefinitions || []
+    const ep = EFFORT_PARAMS.map((k) => defs.find((d) => d.id === k && d.parameterType?.enumParameter)).find(Boolean)
+    const values = ep?.parameterType.enumParameter.values || []
+    const dv = (m.variants || []).find((x) => x.isDefaultNonMaxConfig) || (m.variants || [])[0]
+    const pv = (ps, k) => (ps || []).find((p) => p.id === k)?.value || ''
+    // 默认等级：这个模型上次用的（Cursor 记在偏好里，切过去时会沿用），没有就用 Cursor 给的默认
+    const def = ep ? pv(prefs[m.name]?.parameters, ep.id) || pv(dv?.parameterValues, ep.id) : ''
+    list.push({ id: m.name, label: m.name === 'default' ? 'Auto' : m.clientDisplayName || m.inputboxShortModelName || m.name, efforts: values.map((x) => x.value), default: def, param: ep?.id || '', pname: ep?.name || 'Effort', names: Object.fromEntries(values.map((x) => [x.value, x.displayName || x.value])) })
+  }
+  catalogCache = list; catalogAt = Date.now()
+  return list
+}
+function modelConfigOf(id) {
+  if (!openDb()) throw new Error('读不了 Cursor 的数据库')
+  try { const r = db.prepare("SELECT json_extract(value,'$.modelConfig') AS m FROM cursorDiskKV WHERE key = ?").get(`composerData:${id}`); return r?.m ? JSON.parse(r.m) : null } catch { return null }
+}
+// 会话在不在生成：数据库里的状态 / 生成中的消息，加上页面上的「停止」按钮（当前打开的会话）
+function sessionBusy(id) {
+  let st = '', gen = 0
+  try { const r = db.prepare("SELECT json_extract(value,'$.status') AS s, json_array_length(json_extract(value,'$.generatingBubbleIds')) AS g FROM cursorDiskKV WHERE key = ?").get(`composerData:${id}`); st = r?.s || ''; gen = Number(r?.g) || 0 } catch {}
+  return gen > 0 || /^generating$/i.test(st) || (id === activeId && !!lastLive?.streaming)
+}
+// 刚切过的：Cursor 不会马上把会话的 modelConfig 写进数据库（有时要等到下一次发消息），先记在内存里，数据库对上了再丢掉
+const switched = new Map() // id → { model, effort, at }
+function sessionModel(id) {
+  if (!/^[0-9a-f-]{8,64}$/i.test(id)) throw new Error('bad id')
+  const mc = modelConfigOf(id)
+  const models = catalog()
+  const pub = models.map(({ param, pname, names, ...m }) => m)
+  if (!mc) return { agent: 'cursor-ide', models: pub, current: { model: '', id: '', effort: '' }, global: true, busy: false }
+  const sel = (mc.selectedModels || [])[0] || {}
+  const param = (k) => (sel.parameters || []).find((p) => p.id === k)?.value || ''
+  let model = sel.modelId || mc.modelName || ''
+  let m = models.find((x) => x.id === model)
+  // 参数没记的（刚切过去还没动过等级）就是在用默认等级
+  let effort = (m?.param && param(m.param)) || EFFORT_PARAMS.map(param).find(Boolean) || m?.default || ''
+  let extra = { maxMode: !!mc.maxMode, fast: param('fast') === 'true', context: param('context') }
+  const sw = switched.get(id)
+  if (sw && (sw.model !== model || sw.effort !== effort) && Date.now() - sw.at < 3600000) {
+    model = sw.model; m = models.find((x) => x.id === model); effort = sw.effort; extra = {} // 数据库里的 Fast / 上下文也是旧的，不报
+  } else switched.delete(id)
+  return { agent: 'cursor-ide', models: pub, current: { model: m?.label || model, id: model, effort, ...extra }, global: true, busy: sessionBusy(id) }
+}
+
+// 页面里操作选择器的一步。每一步开头都确认：侧边栏当前会话就是目标会话、选择器属于它（不会点到别的会话）
+const PICKER_JS = (id) => `
+  const id = ${js(id)}
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+  const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 2 && r.height > 2 }
+  const rows = [...document.querySelectorAll('[data-sidebar-item-key^="row:"]')].filter((it) => it.querySelector('[data-active="true"]') || it.getAttribute('data-active') === 'true')
+  if (rows.length !== 1 || rows[0].getAttribute('data-sidebar-item-key') !== 'row:' + id) return 'not-active'
+  // 每个打开的会话标签页各有一个选择器：认离它最近的 data-glass-agent-id；新建还没发过消息的会话没有这一层，这时只有一个看得见的选择器才用
+  const pickers = [...document.querySelectorAll('[data-glass-model-picker-wrapper] button')].filter(vis)
+  const mine = pickers.filter((b) => b.closest('[data-glass-agent-id]')?.getAttribute('data-glass-agent-id') === id)
+  const picker = mine.length === 1 ? mine[0] : !mine.length && pickers.length === 1 && !pickers[0].closest('[data-glass-agent-id]') ? pickers[0] : null
+  if (!picker) return 'no-picker'
+  const popups = () => [...document.querySelectorAll('[role=menu][data-component=menu-popup]')]
+  const close = async () => { for (let i = 0; i < 3 && popups().length; i++) { (popups().at(-1) || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true })); await sleep(200) } }
+  const hover = (el) => { const r = el.getBoundingClientRect(); const o = { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, pointerType: 'mouse', pointerId: 1, isPrimary: true }; for (const t of ['pointerover', 'pointerenter', 'mouseover', 'mouseenter', 'pointermove', 'mousemove']) el.dispatchEvent(t.startsWith('pointer') ? new PointerEvent(t, o) : new MouseEvent(t, o)) }
+  const choose = (el) => { el.scrollIntoView({ block: 'nearest' }); el.focus(); el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true })) }
+  const wait = async (f, n = 15) => { for (let i = 0; i < n; i++) { const v = f(); if (v) return v; await sleep(100) } return null }
+  const label = (el) => el?.querySelector('[data-component=menu-item-content]')?.innerText.trim() || ''
+  // 打开选择器，拿最外层菜单：选了具体模型时是参数页（selected-model-parameters-submenu-menu），选了 Auto 时是 selected-auto-menu
+  const openRoot = async () => {
+    await close()
+    picker.click()
+    return wait(() => popups().find((p) => !p.hasAttribute('data-submenu')))
+  }
+  // 再悬停某个子菜单入口（Model / Effort），等子菜单出来
+  const openSub = async (name, testid) => {
+    const root = await openRoot()
+    if (!root) return null
+    const tr = [...root.querySelectorAll('[data-component=menu-submenu-trigger]')].find((x) => label(x) === name)
+    if (!tr) return 'no-trigger'
+    hover(tr)
+    return (await wait(() => document.querySelector('[data-testid="' + testid + '"]'))) || null
+  }
+  // 读当前值：参数页的 aria-label 是「<模型 id> parameters」，思考等级那一行（Effort / Reasoning，名字看模型）右边是等级的显示名
+  const readCur = async (pname) => {
+    const root = await openRoot()
+    if (!root) return null
+    const name = root.querySelector('[data-component=menu-layout]')?.getAttribute('aria-label') || ''
+    const ef = [...root.querySelectorAll('[data-component=menu-submenu-trigger]')].find((x) => label(x) === pname)
+    return { model: root.getAttribute('data-testid') === 'selected-auto-menu' ? 'default' : name.replace(/ parameters$/, ''), effort: ef?.querySelector('[data-component=menu-submenu-right-section]')?.innerText.trim() || '' }
+  }
+`
+async function pickerStep(id, body) {
+  const r = await evaluate(`(async () => { ${PICKER_JS(id)}\n try { ${body} } finally { await close() } })()`)
+  const ERR = {
+    'not-active': '没能在 Cursor 里切到这个会话，没有动选择器',
+    'no-picker': '没找到这个会话的模型选择器（会话可能还没打开完），再试一次',
+    'no-menu': '模型选择器没有打开（Cursor 可能改版了）',
+    'no-item': 'Cursor 的模型选择器里没有这个模型（可能在 Cursor 设置里关掉了）',
+    'no-effort': '选择器里没有这个思考等级',
+  }
+  if (r && typeof r === 'object') return r
+  if (r !== 'ok') throw new Error(ERR[r] || `切换失败（${r}）`)
+}
+
+let switching = ''
+async function setModel(id, model, effort) {
+  if (!/^[0-9a-f-]{8,64}$/i.test(id)) throw new Error('bad id')
+  if (switching) throw new Error('这个会话正在切换模型')
+  const m = catalog().find((x) => x.id === model)
+  if (!m) throw new Error('Cursor 的模型选择器里没有这个模型（可能在 Cursor 设置里关掉了）')
+  if (effort && !m.efforts.includes(effort)) throw new Error(m.efforts.length ? '这个模型没有这个思考等级' : '这个模型不支持调思考等级')
+  if (!modelConfigOf(id)) throw new Error('读不到这个会话')
+  await needReady()
+  if (sessionBusy(id)) throw new Error('会话正在生成，这一轮停下后再切换')
+  switching = id
+  try {
+    if (id !== activeId) { await openSession(id); await sleep(600) }
+    if (activeId !== id) throw new Error('没能在 Cursor 里切到这个会话，没有动选择器')
+    if (sessionBusy(id)) throw new Error('会话正在生成，这一轮停下后再切换')
+    // 当前值从页面上的选择器读（数据库会晚一拍）
+    const read = async () => (await pickerStep(id, `const c = await readCur(${js(m.pname)}); return c || 'no-menu'`)) || {}
+    const want = effort && m.param ? m.names[effort] || effort : ''
+    let cur = await read()
+    // 1. 模型：Model 子菜单里的 model-item-<id>（Auto 是 auto-mode-select）
+    if (cur.model !== model) {
+      const item = model === 'default' ? '[data-testid=auto-mode-select]' : `[data-testid="model-item-${model}"]`
+      await pickerStep(id, `
+        const sub = await openSub('Model', 'selected-model-list-submenu')
+        if (!sub || sub === 'no-trigger') return 'no-menu'
+        const it = sub.querySelector(${js(item)})
+        if (!it) return 'no-item'
+        choose(it); await sleep(400); return 'ok'`)
+      await sleep(300)
+      cur = await read()
+      if (cur.model !== model) throw new Error('点了切换，但 Cursor 里这个会话的模型没变')
+    }
+    // 2. 思考等级：parameter-submenu-<参数 id> 里按显示名找（Low / Medium / Extra High…）
+    if (want && cur.effort !== want) {
+      await pickerStep(id, `
+        const sub = await openSub(${js(m.pname)}, ${js('parameter-submenu-' + m.param)})
+        if (!sub || sub === 'no-trigger') return sub === 'no-trigger' ? 'no-effort' : 'no-menu'
+        const it = [...sub.querySelectorAll('[role=menuitem]')].find((x) => label(x) === ${js(want)})
+        if (!it) return 'no-effort'
+        choose(it); await sleep(400); return 'ok'`)
+      await sleep(300)
+      cur = await read()
+      if (cur.model !== model || cur.effort !== want) throw new Error('模型切过去了，但思考等级没变')
+    }
+    // 3. 确认过了：数据库还没写的这段时间先用内存里的
+    const names = Object.entries(m.names)
+    switched.set(id, { model, effort: m.param ? names.find(([, n]) => n === cur.effort)?.[0] || effort || m.default : '', at: Date.now() })
+    catalogCache = null
+    return sessionModel(id)
+  } finally { switching = '' }
+}
+
 async function handle(m) {
   switch (m.t) {
     case 'watch': watching = m.id || ''; pump.sent = ''; if (watching) { if (attached) await evaluate('window.__paneRemote?.flush(true)').catch(() => {}); schedule(0) } return
@@ -554,6 +726,8 @@ async function handle(m) {
     case 'restart': return restart()
     case 'refresh': if (attached) return evaluate('window.__paneRemote?.flush(true)'); return
     case 'changes': return changes(String(m.id || ''))
+    case 'model': return sessionModel(String(m.id || ''))
+    case 'model-set': return setModel(String(m.id || ''), String(m.model || ''), m.effort ? String(m.effort) : '')
     case 'open': await needReady(); return openSession(m.id)
     case 'send': {
       const text = String(m.text || '').slice(0, 20000)

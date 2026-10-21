@@ -1,0 +1,13 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/tmp/ai-work","session_id":"00000000-0000-4000-8000-000000000026","model":"Composer 2.5 Fast","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Do not use any tools. Say hi in 3 words."}]},"session_id":"00000000-0000-4000-8000-000000000026"}
+{"type":"thinking","subtype":"delta","text":"I","session_id":"00000000-0000-4000-8000-000000000026","timestamp_ms":1792518315892}
+{"type":"thinking","subtype":"delta","text":" will say hi in three","session_id":"00000000-0000-4000-8000-000000000026","timestamp_ms":1792518315919}
+{"type":"thinking","subtype":"delta","text":" words without using","session_id":"00000000-0000-4000-8000-000000000026","timestamp_ms":1792518315932}
+{"type":"thinking","subtype":"delta","text":" any tools.","session_id":"00000000-0000-4000-8000-000000000026","timestamp_ms":1792518315968}
+{"type":"thinking","subtype":"completed","session_id":"00000000-0000-4000-8000-000000000026","timestamp_ms":1792518315968}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hi"}]},"session_id":"00000000-0000-4000-8000-000000000026","timestamp_ms":1792518315969}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":" there"}]},"session_id":"00000000-0000-4000-8000-000000000026","timestamp_ms":1792518315969}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":" friend"}]},"session_id":"00000000-0000-4000-8000-000000000026","timestamp_ms":1792518315969}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"."}]},"session_id":"00000000-0000-4000-8000-000000000026","timestamp_ms":1792518315969}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hi there friend."}]},"session_id":"00000000-0000-4000-8000-000000000026"}
+{"type":"result","subtype":"success","duration_ms":3715,"duration_api_ms":3715,"is_error":false,"result":"Hi there friend.","session_id":"00000000-0000-4000-8000-000000000026","request_id":"00000000-0000-4000-8000-000000000027","usage":{"inputTokens":10918,"outputTokens":39,"cacheReadTokens":3136,"cacheWriteTokens":0}}

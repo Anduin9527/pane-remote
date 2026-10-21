@@ -5,6 +5,8 @@
   pane-agent snapshot <pane>              记下重启前还在跑的东西（后台命令、子代理、Monitor、定时任务、task），写到磁盘（JSON）
   pane-agent restart <pane> <base64 JSON> 后台开始重启：{wrapper, inject, force}，马上返回；进度用 restart-status 看
   pane-agent restart-status <pane>        重启进度（JSON）
+  pane-agent model <pane> [refresh]       模型 · 思考等级：{agent, models:[{id,label,efforts}], current:{model,effort}, busy}
+  pane-agent model-set <pane> <base64 JSON>  切换：{model, effort?}，只在 agent 空闲、输入框空着时做；回 {ok, current} 或 {ok:false, error, tail}
 
 重启的守护：
   - agent 正在干活（会话状态 busy）时不重启，除非 force
@@ -727,6 +729,535 @@ def triage(req):
     return {"ok": True, "result": result, "agent": agent, "model": model, "ms": ms}
 
 
+# ---------- 模型 · 思考等级：手机上一键切换，替代手打 /model ----------
+# 各家的选择器画面 / 按键都集中在 MODEL_UI 这张表里，agent 升级后画面变了只改这里。实测记录（2026-10）：
+#   Claude Code 2.1.291：打字的 `/model X`、`/effort X` 会顺手改「新会话的默认值」（写 settings.json），所以只用选择器：
+#     /model 回车 → Select model；↑/↓ 选行（光标 ❯，从当前模型 ✔ 开始，到底绕回），←/→ 循环调等级，`s` = 只改这个会话（Enter = 改默认）
+#   Codex 0.163：/model 回车 → Select Model and Effort；数字键直接选中模型 → Select Reasoning Level；这一层 Enter = 改默认、
+#     数字键也等于 Enter，所以只用 ↑/↓ + `s`；max / ultra 在「More reasoning…」里（Enter 进去，同样 ↑/↓ + `s`）
+#   cursor-agent 2026.10：/model 过滤只认显示名（不认 ID），要一个字一个字打；Tab 进参数页（Context / Effort / Fast），
+#     ↑/↓ + Enter 选值，Esc 回列表，Enter 选定。没有「只改这个会话」：选定就写进 ~/.cursor/cli-config.json（它自己的设计）
+EFFORTS = ("minimal", "none", "low", "medium", "high", "xhigh", "max", "ultra")
+MODEL_UI = {
+    "claude": {
+        "open": "/model",
+        "picker": re.compile(r"^\s*Select model\s*$", re.M),
+        # 选择器的一行：「❯ 2.  Opus 5.5 ✔   描述」（行首可能是 ❯ / ↑ / ↓）
+        "row": re.compile(r"^\s*([❯↑↓]?)\s*(\d+)\.\s+(.+?)(?:\s+✔)?(?:\s{2,}.*)?$"),
+        "cursor": "❯",
+        "effort_line": re.compile(r"^\s*\S\s+(?:(\w+) effort|(Effort not supported))", re.M),
+        "effort_labels": {"low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max"},
+        "next_effort": "\x1b[C",
+        "session_key": "s",
+        "done": re.compile(r"Set model to `?(.+?)`? for this session only(?: with `?(\w+)`? effort)?"),
+        # 输入框上方那条线右端：「● high · /effort」
+        "status_effort": re.compile(r"[○◐●◉◈]\s+(low|medium|high|xhigh|max)\s+·\s+/effort"),
+        "placeholder": re.compile(r'^Try "'),
+        "input": ("❯",),
+    },
+    "codex": {
+        "open": "/model",
+        "picker": re.compile(r"Select Model and Effort"),
+        "row": re.compile(r"^\s*(›?)\s*(\d+)\.\s+(.+?)(?:\s+\((?:current|default)\))*(?:\s{2,}.*)?$"),
+        "cursor": "›",
+        "effort_picker": re.compile(r"Select Reasoning Level for"),
+        "more_picker": re.compile(r"Advanced Reasoning"),
+        "effort_labels": {"minimal": "Minimal", "none": "None", "low": "Low", "medium": "Medium", "high": "High", "xhigh": "Extra high", "max": "Max", "ultra": "Ultra"},
+        "more_label": "More reasoning…",
+        "session_key": "s",
+        "done": re.compile(r"Model changed to (\S+)(?: (\w+))? for this session only"),
+        # 输入框下面的状态行：「  GPT-6-Luna low · /path」（刚启动时是 slug；快速档后面多个 fast）
+        "status": re.compile(r"^\s{1,3}(\S+) (minimal|none|low|medium|high|xhigh|max|ultra)(?: \w+)? · ", re.M),
+        "input": ("›", "»"),  # 输入框提示符（ultra 档是 »）
+        "placeholder": re.compile(r"^(Ask Codex to do anything|Find and fix a bug in @filename|Explain this codebase|Write tests for @filename|Improve documentation in @filename|Summarize recent commits|Implement \{feature\}|Use /skills to list available skills|Run /review on my current changes)$"),
+    },
+    "cursor-agent": {
+        "open": "/model",
+        "picker": re.compile(r"^\s*(Available models|Models matching)", re.M),
+        "row": re.compile(r"^\s*(→?)\s+(\S.*?)(?:\s{2,}.*)?$"),
+        "editor": re.compile(r"— Edit Parameters"),
+        "effort_section": re.compile(r"^\s*(Effort|Reasoning(?: Effort)?)\s*$"),
+        "effort_labels": {"low": "Low", "medium": "Medium", "high": "High", "xhigh": "Extra High", "max": "Max", "minimal": "Minimal", "none": "None"},
+        "placeholder": re.compile(r"^(Plan, search, build anything|Add a follow-up)"),
+        "input": ("→",),
+    },
+}
+MODEL_DIR = os.path.join(STATE, "model")
+UP, DOWN, ESC = "\x1b[A", "\x1b[B", "\x1b"
+BRAILLE = re.compile(r"[⠀-⣿]")
+
+
+def screen(pane):
+    """可见区（不含回滚），去掉 Codex 输入框上闪动的盲文点"""
+    return BRAILLE.sub(" ", cli("get-text", "--pane-id", str(pane)))
+
+
+def wait_screen(pane, rx, secs=3.0):
+    return wait(lambda: rx.search(screen(pane)), secs, 0.15)
+
+
+def wait_done(pane, rx, model, effort, secs=4.0):
+    """等确认回显：画面上可能还留着上一次的回显，所以只看最后一条，而且要对得上这次选的模型 / 等级"""
+    def ok():
+        ms = list(rx.finditer(screen(pane)))
+        m = ms[-1] if ms else None
+        got, want = norm(m.group(1)) if m else "", norm(model)
+        # Claude 选「Default」时回显的是「Opus 5.5 (default)」
+        if m and (got == want or want == "default" and got.endswith("(default)")) and (not effort or (m.group(2) or "").lower() == effort):
+            return m
+    return wait(ok, secs, 0.15)
+
+
+def norm(s):
+    return re.sub(r"\s+", " ", (s or "").replace("✔", "")).strip().lower()
+
+
+def picker_rows(text, ui):
+    """选择器里的行：[(光标在不在这行, 序号, 名字)]"""
+    out = []
+    for line in text.splitlines():
+        m = ui["row"].match(line)
+        if m and m.group(2):
+            out.append((m.group(1) == ui["cursor"], int(m.group(2)), m.group(3).strip()))
+    return out
+
+
+def claude_label(mid):
+    """claude-opus-5-5[1m] → Opus 5.5（选择器里的写法）"""
+    m = re.match(r"claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?", mid or "")
+    if not m:
+        return mid or ""
+    return f"{m.group(1).capitalize()} {m.group(2)}" + (f".{m.group(3)}" if m.group(3) else "")
+
+
+def claude_current(pane, info):
+    """当前模型：transcript 里最后一次切换（或最后一条回复用的模型）；等级：输入框上方那条线"""
+    model = effort = ""
+    files = glob.glob(os.path.join(info.get("configDir") or HOME + "/.claude*", "projects", "*", f"{info.get('session')}.jsonl"))
+    if files:
+        with open(files[0], "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - (2 << 20)))
+            lines = f.read().decode("utf8", "replace").splitlines()
+        for line in reversed(lines):
+            m = re.search(r"(?:Set model to|Kept model as) `?([^`<\"\\]+?)`?(?: and saved| for this session| with|</|\")(?:.*? with `?(\w+)`? effort)?", line)
+            if m and "local-command-stdout" in line:
+                model, effort = m.group(1).strip(), m.group(2) or ""
+                break
+            if '"type":"assistant"' in line and '"model":"' in line:
+                mm = re.search(r'"model":"([^"]+)"', line)
+                if mm and mm.group(1) != "<synthetic>":
+                    model = claude_label(mm.group(1))
+                    break
+    try:
+        m = MODEL_UI["claude"]["status_effort"].search(screen(pane))
+        if m:
+            effort = m.group(1)
+    except Exception:
+        pass
+    if not model or not effort:
+        # 还没切过、也还没回复过：看账号设置里的默认值（模型可能是 opus 这种别名）
+        try:
+            st = json.load(open(os.path.join(info.get("configDir") or "", "settings.json")))
+            model = model or st.get("model") or ""
+            per = [v.get("effortLevel") for k, v in (st.get("modelSettings") or {}).items() if claude_label(k) == model and isinstance(v, dict)]
+            effort = effort or next((e for e in per if e), "") or st.get("effortLevel") or ""
+        except (OSError, ValueError, AttributeError):
+            pass
+    return {"model": model, "effort": effort}
+
+
+def claude_scan(pane):
+    """把选择器从头翻到尾，记下每个模型和它支持的等级，Esc 退出（什么都不改）。结果按 Claude 版本缓存"""
+    ui = MODEL_UI["claude"]
+    open_picker(pane, ui)
+    models, seen = [], set()
+    try:
+        for _ in range(40):
+            text = screen(pane)
+            cur = next((r for r in picker_rows(text, ui) if r[0]), None)
+            if not cur or cur[1] in seen:
+                break
+            seen.add(cur[1])
+            efforts = []
+            m = ui["effort_line"].search(text)
+            if m and m.group(1):
+                # ←/→ 循环一圈，记下出现过的等级（Esc 退出时不保存）
+                for _ in range(len(ui["effort_labels"]) + 1):
+                    e = (ui["effort_line"].search(screen(pane)) or [None, ""])[1] or ""
+                    e = e.lower()
+                    if e in efforts:
+                        break
+                    if e:
+                        efforts.append(e)
+                    send(pane, ui["next_effort"])
+                    time.sleep(0.12)
+            label = re.sub(r"\s*\(recommended\)$", "", cur[2])
+            models.append({"n": cur[1], "id": cur[2], "label": label, "efforts": [e for e in EFFORTS if e in efforts]})
+            send(pane, DOWN)
+            time.sleep(0.18)
+    finally:
+        send(pane, ESC)
+    if not models:
+        raise RuntimeError("没读到 Claude 的模型列表（选择器画面变了？）")
+    return [{k: v for k, v in m.items() if k != "n"} for m in sorted(models, key=lambda m: m["n"])]  # 按选择器里的顺序
+
+
+def open_picker(pane, ui):
+    send(pane, ui["open"])
+    time.sleep(0.35)
+    send(pane, "\r")
+    if not wait_screen(pane, ui["picker"], 4):
+        send(pane, ESC)
+        raise RuntimeError("没打开模型选择器")
+    time.sleep(0.2)
+
+
+def cursor_models():
+    """cursor-agent --list-models 按显示名分组：等级编在 ID 里（-low / -high …），快速版（-fast）并到同一个模型"""
+    cache = os.path.join(TRIAGE_DIR, "cursor-models.txt")
+    try:
+        if time.time() - os.path.getmtime(cache) >= 86400:
+            raise OSError
+        text = open(cache).read()
+    except OSError:
+        text = subprocess.run(["cursor-agent", "--list-models"], capture_output=True, text=True, timeout=30, env=agent_env()).stdout
+        if " - " in text:
+            os.makedirs(TRIAGE_DIR, exist_ok=True)
+            open(cache, "w").write(text)
+    groups = {}
+    for line in text.splitlines():
+        if " - " not in line:
+            continue
+        mid, name = [x.strip() for x in line.split(" - ", 1)]
+        name = re.sub(r"[​-‍]", "", name)
+        name = re.sub(r"\s*\((current|default)\)", "", name)
+        m = re.match(r"(.+?)-(none|minimal|low|medium|high|xhigh|max)(-fast)?$", mid)
+        effort = m.group(2) if m else ""
+        label = re.sub(r"\s+(Extra High|Low|Medium|High|Max|None|Minimal)\b", "", name)
+        label = re.sub(r"\s+(No Thinking|Fast|Thinking|\d+[KM])\b|\s*\(NO ZDR\)", "", label)
+        label = re.sub(r"\s+", " ", label).strip()
+        g = groups.setdefault(label, {"id": label, "label": label, "efforts": [], "ids": {}})
+        if effort and effort not in g["efforts"]:
+            g["efforts"].append(effort)
+        if effort and not (m and m.group(3)):
+            g["ids"].setdefault(effort, mid)
+    for g in groups.values():
+        g["efforts"] = [e for e in EFFORTS if e in g["efforts"]]
+    return list(groups.values())
+
+
+def codex_models():
+    d = json.load(open(os.path.join(HOME, ".codex/models_cache.json")))
+    ms = [m for m in (d.get("models", d) if isinstance(d, dict) else d) if isinstance(m, dict) and m.get("visibility", "list") == "list"]
+    ms.sort(key=lambda m: m.get("priority", 999))
+    return [{"id": m.get("slug"), "label": m.get("display_name") or m.get("slug"),
+             "efforts": [x.get("effort") for x in m.get("supported_reasoning_levels") or [] if x.get("effort")],
+             "default": m.get("default_reasoning_level") or ""} for m in ms if m.get("slug")]
+
+
+def codex_current(pane, models):
+    try:
+        m = MODEL_UI["codex"]["status"].search(screen(pane))
+    except Exception:
+        m = None
+    if m:
+        name = m.group(1)
+        slug = next((x["id"] for x in models if norm(x["id"]) == norm(name) or norm(x["label"]) == norm(name)), name)
+        return {"model": slug, "effort": m.group(2)}
+    # 退路：配置文件里的默认值
+    try:
+        conf = open(os.path.join(HOME, ".codex/config.toml")).read()
+        g = lambda k: (re.search(rf'^{k}\s*=\s*"([^"]*)"', conf, re.M) or [None, ""])[1]
+        return {"model": g("model"), "effort": g("model_reasoning_effort")}
+    except OSError:
+        return {"model": "", "effort": ""}
+
+
+def cursor_current(pane):
+    """输入框下面第一行：「Claude Opus 5.5 300K High」→ 模型 + 等级；读不到就看 cli-config.json 的 selectedModel"""
+    try:
+        lines = screen(pane).splitlines()
+        i = max(i for i, l in enumerate(lines) if l.strip().startswith("▀▀▀"))
+        text = re.split(r"\s{2,}", lines[i + 1].strip())[0]
+        words = MODEL_UI["cursor-agent"]["effort_labels"]
+        effort = next((k for k, v in sorted(words.items(), key=lambda kv: -len(kv[1])) if text.endswith(" " + v)), "")
+        label = re.sub(r"\s+(Extra High|Low|Medium|High|Max|Fast|\d+[KM])\b", "", text).strip()
+        if label:
+            return {"model": label, "effort": effort}
+    except (ValueError, IndexError, RuntimeError):
+        pass
+    try:
+        sel = json.load(open(os.path.join(HOME, ".cursor/cli-config.json"))).get("selectedModel") or {}
+        eff = next((p.get("value") for p in sel.get("parameters") or [] if p.get("id") in ("effort", "reasoning_effort")), "")
+        return {"model": sel.get("modelId", ""), "effort": eff}
+    except Exception:
+        return {"model": "", "effort": ""}
+
+
+def with_id(cur, models):
+    """current 里补上它在列表里的 id（手机端据此高亮）：名字 / ID 对得上的那一项；Claude 的「X (default)」= Default 那一项"""
+    name = norm(cur.get("model"))
+    hit = next((m for m in models if name and (norm(m["id"]) == name or norm(m["label"]) == name)), None)
+    if not hit and name.endswith("(default)"):
+        hit = next((m for m in models if norm(m["label"]) == "default"), None)
+    return {**cur, "id": hit["id"] if hit else ""}
+
+
+def model_list(pane, refresh=False):
+    out = _model_list(pane, refresh)
+    out["current"] = with_id(out["current"], out["models"])
+    return out
+
+
+def _model_list(pane, refresh=False):
+    info = inspect(pane)
+    agent = info.get("agent")
+    if agent == "claude" and info.get("session"):
+        cache = os.path.join(MODEL_DIR, f"claude-{os.path.basename(info.get('configDir') or 'claude')}.json")
+        models = None
+        try:
+            c = json.load(open(cache))
+            if not refresh and time.time() - c.get("t", 0) < 7 * 86400:
+                models = c["models"]
+        except (OSError, ValueError, KeyError):
+            pass
+        scanned = False
+        if models is None:
+            # 第一次要把选择器翻一遍（会往 pane 里按键）：只在空闲时做
+            if info.get("status") != "idle":
+                return {"agent": agent, "models": [], "current": claude_current(pane, info), "busy": True, "error": "agent 正在干活，空闲后再读模型列表"}
+            with model_lock(pane):
+                models = claude_scan(pane)
+            scanned = True
+            os.makedirs(MODEL_DIR, exist_ok=True)
+            with open(cache + ".tmp", "w") as f:
+                json.dump({"t": time.time(), "models": models}, f, ensure_ascii=False)
+            os.replace(cache + ".tmp", cache)
+        return {"agent": agent, "models": models, "current": claude_current(pane, info), "busy": info.get("status") != "idle", "scanned": scanned}
+    if agent == "codex":
+        models = codex_models()
+        return {"agent": agent, "models": models, "current": codex_current(pane, models), "busy": info.get("status") != "idle"}
+    if agent == "cursor-agent":
+        return {"agent": agent, "models": [{k: v for k, v in m.items() if k != "ids"} for m in cursor_models()], "current": cursor_current(pane),
+                "busy": info.get("status") != "idle", "global": True}
+    return {"agent": agent or "", "models": [], "current": {"model": "", "effort": ""}, "busy": False}
+
+
+class model_lock:
+    """同一个 pane 同时只切一次（手机连点两下不会把两串按键交错发进去）"""
+    def __init__(self, pane):
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        self.path = os.path.join(MODEL_DIR, f"{pane}.lock")
+
+    def __enter__(self):
+        import fcntl
+        self.f = open(self.path, "w")
+        try:
+            fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self.f.close()
+            raise RuntimeError("这个会话正在切换模型")
+        return self
+
+    def __exit__(self, *a):
+        self.f.close()
+
+
+def input_line(text, marks):
+    """输入框那一行的内容（marks 是可能的行首提示符）；找不到返回 None"""
+    for line in reversed(text.splitlines()):
+        s = line.strip()
+        for mark in marks:
+            if s.startswith(mark):
+                return s[len(mark):].strip()
+    return None
+
+
+def move_to(pane, ui, want, secs=6):
+    """↑/↓ 把光标移到名字是 want 的那行（选择器到底会绕回，所以一路往下找，最多一圈）"""
+    first = None
+    end = time.time() + secs
+    while time.time() < end:
+        rows = picker_rows(screen(pane), ui)
+        cur = next((r for r in rows if r[0]), None)
+        bare = lambda x: norm(re.sub(r"\s*\((recommended|current|default)\)", "", x))
+        if cur and bare(cur[2]) == bare(want):
+            return cur
+        if cur:
+            if first is None:
+                first = cur[1]
+            elif cur[1] == first:
+                return None
+        send(pane, DOWN)
+        time.sleep(0.15)
+    return None
+
+
+def claude_set(pane, model, effort):
+    ui = MODEL_UI["claude"]
+    open_picker(pane, ui)
+    try:
+        if not move_to(pane, ui, model):
+            raise RuntimeError("选择器里没有这个模型")
+        if effort:
+            for _ in range(len(ui["effort_labels"]) + 1):
+                m = ui["effort_line"].search(screen(pane))
+                if not m or m.group(2):
+                    raise RuntimeError("这个模型不支持调思考等级")
+                if m.group(1).lower() == effort:
+                    break
+                send(pane, ui["next_effort"])
+                time.sleep(0.15)
+            else:
+                raise RuntimeError("这个模型没有这个思考等级")
+        send(pane, ui["session_key"])
+    except Exception:
+        send(pane, ESC)
+        raise
+    m = wait_done(pane, ui["done"], re.sub(r"\s*\(recommended\)$", "", model), effort)
+    if not m:
+        raise RuntimeError("按了切换，但没看到 Claude 的确认")
+    return {"model": m.group(1), "effort": m.group(2) or ""}
+
+
+def codex_set(pane, model, effort, models):
+    ui = MODEL_UI["codex"]
+    target = next((x for x in models if x["id"] == model), None)
+    if not target:
+        raise RuntimeError("Codex 没有这个模型")
+    if effort and effort not in target["efforts"]:
+        raise RuntimeError("这个模型没有这个思考等级")
+    open_picker(pane, ui)
+    try:
+        row = next((r for r in picker_rows(screen(pane), ui) if norm(r[2]) == norm(target["label"])), None)
+        if not row:
+            raise RuntimeError("选择器里没有这个模型")
+        if row[1] <= 9:
+            send(pane, str(row[1]))  # 数字键直接选中模型
+        else:
+            move_to(pane, ui, target["label"])
+            send(pane, "\r")
+        if not wait_screen(pane, ui["effort_picker"], 3):
+            raise RuntimeError("没进到思考等级那一层")
+        time.sleep(0.15)
+        if effort:
+            label = ui["effort_labels"].get(effort, effort)
+            rows = picker_rows(screen(pane), ui)
+            if not any(norm(re.sub(r"\s*\((current|default)\)", "", r[2])) == norm(label) for r in rows):
+                # max / ultra 在「More reasoning…」里
+                if not move_to(pane, ui, ui["more_label"]):
+                    raise RuntimeError("选择器里没有这个思考等级")
+                send(pane, "\r")
+                if not wait_screen(pane, ui["more_picker"], 3):
+                    raise RuntimeError("没进到更多思考等级那一层")
+                time.sleep(0.15)
+            if not move_to(pane, ui, label):
+                raise RuntimeError("选择器里没有这个思考等级")
+        send(pane, ui["session_key"])
+    except Exception:
+        for _ in range(3):
+            send(pane, ESC)
+            time.sleep(0.15)
+        raise
+    m = wait_done(pane, ui["done"], target["id"], effort)
+    if not m:
+        raise RuntimeError("按了切换，但没看到 Codex 的确认")
+    return {"model": m.group(1), "effort": m.group(2) or ""}
+
+
+def cursor_set(pane, model, effort):
+    ui = MODEL_UI["cursor-agent"]
+    target = next((x for x in cursor_models() if x["id"] == model), None)
+    if not target:
+        raise RuntimeError("cursor-agent 没有这个模型")
+    if effort and effort not in target["efforts"]:
+        raise RuntimeError("这个模型没有这个思考等级")
+    open_picker(pane, ui)
+    try:
+        for ch in target["label"]:  # 过滤框要一个字一个字打，整串发进去会被丢掉
+            send(pane, ch)
+            time.sleep(0.04)
+        def on_target():
+            # 只看「Filter:」下面的列表（上面输入框那行也以 → 开头）；光标那行要正好是目标
+            text = screen(pane).split("Filter:", 1)
+            rows = [m.group(2) for m in (ui["row"].match(l) for l in text[-1].splitlines()[1:]) if m and m.group(1)] if len(text) == 2 else []
+            return rows and norm(rows[0]) == norm(target["label"])
+        if not wait(on_target, 3, 0.15):
+            raise RuntimeError("选择器里没有这个模型")
+        if effort:
+            send(pane, "\t")
+            if not wait_screen(pane, ui["editor"], 3):
+                raise RuntimeError("这个模型不能调参数")
+            label = ui["effort_labels"].get(effort, effort)
+            for _ in range(20):
+                lines = screen(pane).splitlines()
+                opts, section, cur, want = [], "", None, None
+                for l in lines:
+                    s = l.strip()
+                    if re.match(r"^[A-Z][\w ]*$", s) and not re.search(r"[○●◯]", s):
+                        section = s
+                        continue
+                    m = re.match(r"^(→\s*)?[○●◯]\s+(.+?)(\s+✓)?$", s)
+                    if m:
+                        if m.group(1):
+                            cur = len(opts)
+                        if ui["effort_section"].match(section) and m.group(2) == label:
+                            want = len(opts)
+                        opts.append(s)
+                if want is None:
+                    raise RuntimeError("这个模型没有这个思考等级")
+                if cur is None:
+                    raise RuntimeError("参数页画面认不出来")
+                if cur == want:
+                    break
+                send(pane, DOWN if want > cur else UP)
+                time.sleep(0.12)
+            send(pane, "\r")
+            time.sleep(0.4)
+            send(pane, ESC)
+            time.sleep(0.4)
+        send(pane, "\r")
+    except Exception:
+        for _ in range(3):
+            send(pane, ESC)
+            time.sleep(0.15)
+        raise
+    ok = wait(lambda: not ui["picker"].search(screen(pane)) and norm(cursor_current(pane)["model"]) == norm(target["label"]), 4, 0.2)
+    if not ok:
+        raise RuntimeError("按了切换，但 cursor-agent 的状态行没变")
+    return cursor_current(pane)
+
+
+def model_set(pane, model, effort=""):
+    info = inspect(pane)
+    agent = info.get("agent")
+    if agent not in AGENTS:
+        raise RuntimeError("这个 pane 里没有认得的 agent（Claude / Codex / cursor-agent）")
+    if effort and effort not in EFFORTS:
+        raise RuntimeError("没有这个思考等级")
+    if info.get("status") != "idle":
+        raise RuntimeError("agent 正在干活，等这一轮停下再切换")
+    text = screen(pane)
+    draft = input_line(text, MODEL_UI[agent]["input"])
+    if draft is None:
+        raise RuntimeError("没认出 agent 的输入框（可能开着别的菜单），先在终端里关掉")
+    if draft and not MODEL_UI[agent]["placeholder"].search(draft):
+        raise RuntimeError("输入框里有没发出去的内容，没有往里写；先发掉或清空")
+    with model_lock(pane):
+        try:
+            if agent == "claude":
+                got = claude_set(pane, model, effort)
+            elif agent == "codex":
+                got = codex_set(pane, model, effort, codex_models())
+            else:
+                got = cursor_set(pane, model, effort)
+        except RuntimeError as e:
+            time.sleep(0.3)
+            return {"ok": False, "error": str(e), "tail": screen_tail(pane)}
+    return {"ok": True, "agent": agent, "current": got}
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     pane = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -771,6 +1302,20 @@ def main():
             # 正常的拒绝（在干活、不是 agent）不算问题；别的（退不出、起不来、代码出错）记成问题报告
             if not re.match(r"(agent 正在干活|这个 pane 里没有认得的)", str(e)):
                 incident("pane-agent", "restart", f"重启并注入失败（pane {pane}）：{e}", "high" if not isinstance(e, RuntimeError) else "normal")
+    elif cmd == "model":
+        try:
+            print(json.dumps(model_list(pane, refresh=len(sys.argv) > 3 and sys.argv[3] == "refresh"), ensure_ascii=False))
+        except RuntimeError as e:
+            print(json.dumps({"error": str(e), "tail": screen_tail(pane)}, ensure_ascii=False))
+    elif cmd == "model-set":
+        opts = json.loads(base64.b64decode(sys.argv[3]).decode()) if len(sys.argv) > 3 else {}
+        model, effort = str(opts.get("model") or ""), str(opts.get("effort") or "")
+        if not model or len(model) > 80 or len(effort) > 12:
+            sys.exit("bad model")
+        try:
+            print(json.dumps(model_set(pane, model, effort), ensure_ascii=False))
+        except RuntimeError as e:
+            print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
     elif cmd == "restart-status":
         try:
             print(open(status_path(pane)).read())
