@@ -38,26 +38,29 @@ self.addEventListener('push', (e) => {
     if ((await pushLang()) === 'en') { d.title = pushEn(d.title); d.body = pushEn(d.body) }
     await self.registration.showNotification(d.title || 'Pane Remote', {
     body: d.body || '', tag: d.tag || 'pane', renotify: true,
-    icon: 'icon-180.png', badge: 'icon-180.png', data: { pane: d.pane, url: d.url, cursor: d.cursor, incident: d.incident },
+    icon: 'icon-180.png', badge: 'icon-180.png', data: { pane: d.pane, url: d.url, cursor: d.cursor, incident: d.incident, plugin: d.plugin },
     })
   })())
 })
+// 点通知：只算出一个地址（hash 路由）。页面开着就发给页面去导航（不重新加载），没开就用这个地址打开
+function target(d) {
+  if (!d) return '#/'
+  if (d.incident) return `#/?sheet=incident:${encodeURIComponent(d.incident)}` // 问题报告：停在当前页面上打开那一条
+  if (d.cursor) return `#/s/c:${encodeURIComponent(d.cursor)}` // Cursor 会话
+  if (d.url) return `#/plugin/preview?open=${encodeURIComponent(d.url)}` // 电脑要打开的网页：进预览页打开
+  if (d.pane != null) return `#/s/p${d.pane}`
+  if (d.plugin && /^[\w.-]+$/.test(d.plugin)) return `#/plugin/${d.plugin}` // 插件发的通知 / 问题
+  return '#/'
+}
 self.addEventListener('notificationclick', (e) => {
   e.notification.close()
-  const pane = e.notification.data && e.notification.data.pane
-  const open = e.notification.data && e.notification.data.url // 电脑要打开的网页：进预览页打开
-  const cursor = e.notification.data && e.notification.data.cursor // Cursor 会话：进 Cursor 页打开这个会话
-  const incident = e.notification.data && e.notification.data.incident // 问题报告：打开那一条
-  const url = new URL(incident ? `./?incident=${encodeURIComponent(incident)}` : cursor ? `./?cursor=${encodeURIComponent(cursor)}` : open ? `./?preview=${encodeURIComponent(open)}` : pane != null ? `./?pane=${pane}` : './', self.registration.scope).href
+  const hash = target(e.notification.data)
   e.waitUntil((async () => {
     const list = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
     for (const c of list) {
-      if (incident) c.postMessage({ type: 'open-incident', id: incident })
-      else if (cursor) c.postMessage({ type: 'open-cursor', id: cursor })
-      else if (open) c.postMessage({ type: 'open-preview', url: open })
-      else if (pane != null) c.postMessage({ type: 'open-pane', pane })
+      c.postMessage({ type: 'navigate', url: hash })
       return c.focus()
     }
-    return self.clients.openWindow(url)
+    return self.clients.openWindow(new URL(`./${hash}`, self.registration.scope).href)
   })())
 })

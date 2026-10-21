@@ -1,0 +1,1 @@
+import{d as e,u as t}from"./c-i18n-CozrJJTM.js";import{t as n}from"./c-Icon-ChRVa42j.js";var r=new Set([`$$slots`,`$$events`,`$$legacy`]);function i(i,a){let o=t(a,r),s={name:`copy`,size:24,node:[[`rect`,{width:`14`,height:`14`,x:`8`,y:`8`,rx:`2`,ry:`2`}],[`path`,{d:`M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2`}]]};n(i,e(()=>o,{get icon(){return s}}))}export{i as t};
