@@ -130,7 +130,7 @@ WantedBy=multi-user.target`)
     const dest = target || t('<用户>@<服务器>')
     const p = sshPort === '22' ? '' : ` -p ${sshPort}`
     console.log(`  cd ${APP_DIR.startsWith(HOME + '/') ? '~' + APP_DIR.slice(HOME.length) : APP_DIR}`)
-    console.log(`  rsync -a${p ? ` -e 'ssh${p}'` : ''} server public package.json package-lock.json ${dest}:pane-remote/`)
+    console.log(`  rsync -a${p ? ` -e 'ssh${p}'` : ''} server host platform plugins public package.json package-lock.json ${dest}:pane-remote/`)
     console.log(`  ssh -t${p} ${dest} 'cd pane-remote && npm ci --omit=dev && sudo systemctl restart pane-remote'`)
     break
   }

@@ -100,7 +100,7 @@ NPM="$(dirname "$NODE")/npm"
 
 say "$(m "3. npm 依赖" "3. npm dependencies")"
 npm_config_update_notifier=false PATH="$(dirname "$NODE"):$PATH" "$NPM" ci --omit=dev --omit=optional --no-audit --no-fund --loglevel=error
-ok "$(m "服务端依赖、预览查看器用的脚本库（都装在本目录 node_modules）" "Server dependencies and preview viewer libraries (all in this directory's node_modules)")"
+ok "$(m "服务端依赖、插件平台、预览查看器用的脚本库（都装在本目录 node_modules）" "Server dependencies, the plugin platform and preview viewer libraries (all in this directory's node_modules)")"
 
 if [[ $CHROME == 1 ]]; then
   say "$(m "4. Google Chrome（预览浏览器用）" "4. Google Chrome (for the preview browser)")"
