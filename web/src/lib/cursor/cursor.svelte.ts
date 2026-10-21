@@ -59,10 +59,27 @@ export const sessionById = (id: string) => cur.projects.flatMap((p) => p.session
 let es: EventSource | null = null
 let wanted = false
 let lastMsgAt = 0
+// 谁在用推送连接：Cursor 对话视图（watch：带上在看的会话，电脑那边盯着它、算已读、不推它的通知）/ 会话列表（只要项目和会话列表）
+const holders = { watch: 0, list: 0 }
+/** 用推送连接，返回释放函数；没人用了就断开 */
+export function holdCursor(kind: 'watch' | 'list') {
+  const was = wanted && holders.watch > 0
+  holders[kind]++
+  if (!wanted || (kind === 'watch' && !was)) connectCursor()
+  let done = false
+  return () => {
+    if (done) return
+    done = true
+    holders[kind]--
+    if (!holders.watch && !holders.list) disconnectCursor()
+    else if (kind === 'watch' && !holders.watch) connectCursor() // 只剩列表在用：换成不带会话的连接
+  }
+}
 export function connectCursor() {
   wanted = true
   es?.close()
-  const src = new EventSource(`api/cursor/stream${cur.id ? `?id=${encodeURIComponent(cur.id)}` : ''}`)
+  const watch = cur.id && (holders.watch > 0 || !holders.list)
+  const src = new EventSource(`api/cursor/stream${watch ? `?id=${encodeURIComponent(cur.id)}` : ''}`)
   es = src
   lastMsgAt = Date.now()
   const on = (ev: string, fn: (d: any) => void) => src.addEventListener(ev, (e) => { lastMsgAt = Date.now(); fn(JSON.parse((e as MessageEvent).data)) })
@@ -110,7 +127,13 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { es?.close(); es = null } else if (!es || es.readyState === EventSource.CLOSED) connectCursor()
 })
 
-export function selectSession(id: string) {
+// 手机上切了 Cursor 会话（分叉、新建后跟过去…）：路由据此把地址切到这个会话
+let selectHook: (id: string) => void = () => {}
+export function onSelectSession(fn: (id: string) => void) { selectHook = fn }
+
+/** quiet = 只切数据、不动地址（路由自己切的时候） */
+export function selectSession(id: string, opts: { quiet?: boolean } = {}) {
+  if (!opts.quiet) selectHook(id)
   remember(cur.id)
   cur.id = id
   cur.draftProject = ''
@@ -123,6 +146,7 @@ export function startDraft(project: string) {
   remember(cur.id)
   cur.id = ''; cur.draftProject = project || '__new__'
   cur.list = []; cur.name = ''; cur.loaded = true; cur.streamText = ''; cur.choices = []
+  selectHook('')
   if (wanted) connectCursor()
 }
 

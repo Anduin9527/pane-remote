@@ -1,8 +1,8 @@
 <script lang="ts">
   // mac 模块（可选，pane-remote enable mac）：这台电脑的性能、用它的扬声器念一段话。
+  // 是平台自带的插件「这台电脑」（lib/plugins/builtin，地址 #/plugin/mac）；active = 插件在前台，后台不采性能
   // 性能只在面板开着、而且「性能」展开时采（电脑上每次要采样 2 秒左右 CPU），每 5 秒一次；
   // 念的话交给电脑上的 say（agent/mac/say.mjs），嗓音 / 语速 / 音量记在手机上
-  import * as Drawer from '$lib/components/ui/drawer'
   import { toast } from 'svelte-sonner'
   import Gauge from '@lucide/svelte/icons/gauge'
   import Megaphone from '@lucide/svelte/icons/megaphone'
@@ -12,7 +12,7 @@
   import { cn } from '$lib/utils'
   import { t, tr } from '$lib/i18n'
 
-  let { open = $bindable(false) }: { open?: boolean } = $props()
+  let { active = true }: { active?: boolean } = $props()
 
   const lsGet = (k: string, d: string) => { try { return localStorage.getItem(k) ?? d } catch { return d } }
   const lsSet = (k: string, v: string) => { try { localStorage.setItem(k, v) } catch {} }
@@ -38,7 +38,7 @@
   }
   function togglePerf() { perfOpen = !perfOpen; lsSet('macPerfOpen', perfOpen ? '1' : '0') }
   $effect(() => {
-    if (!open || !perfOpen) return
+    if (!active || !perfOpen) return
     loadPerf()
     const timer = setInterval(loadPerf, 5000)
     return () => clearInterval(timer)
@@ -76,7 +76,7 @@
       voicesState = 'idle'
     } catch { voicesState = 'failed' }
   }
-  $effect(() => { if (open) loadVoices() })
+  $effect(() => { if (active) loadVoices() })
   async function speak(text = sayText) {
     if (!text.trim()) return
     lsSet('macSayVoice', voice); lsSet('macSayRate', String(rate)); lsSet('macSayVol', sayVol)
@@ -92,9 +92,7 @@
   const btn = 'flex h-10 items-center justify-center gap-1.5 rounded-lg border text-[13px] active:bg-accent disabled:opacity-50'
 </script>
 
-<Drawer.Root bind:open>
-  <Drawer.Content>
-    <Drawer.Header class="border-b py-3 text-left"><Drawer.Title>{t('这台电脑')}</Drawer.Title></Drawer.Header>
+<div class="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-background text-foreground">
     <div class="p-3.5 pb-[calc(env(safe-area-inset-bottom)+14px)]">
       <!-- 性能 -->
       <div class={box}>
@@ -161,5 +159,4 @@
         <p class="mt-2 text-[11px] text-muted-foreground">{t('音量只在念的时候改，念完调回原来的')}</p>
       </div>
     </div>
-  </Drawer.Content>
-</Drawer.Root>
+</div>

@@ -1,8 +1,9 @@
 <script lang="ts">
   import MsgMeta from '$lib/components/MsgMeta.svelte'
   // 对话视图：直接读 Claude 的会话记录，按手机宽度排版（和 pane 有多宽无关）。
-  // 回复按 Markdown 渲染，工具调用折叠成一行（点开看结果），链接点了在预览里打开。每 2 秒刷新一次。
-  import { onMount, tick } from 'svelte'
+  // 回复按 Markdown 渲染，工具调用折叠成一行（点开看结果），链接点了在预览里打开。
+  // 数据优先由 pane-host 推增量，不行就每 2 秒轮询（见 transcriptFeed.ts）。
+  import { tick } from 'svelte'
   import { marked } from 'marked'
   import DOMPurify from 'dompurify'
   import Wrench from '@lucide/svelte/icons/wrench'
@@ -11,13 +12,13 @@
   import { resolveLink } from '$lib/links'
   import { cn } from '$lib/utils'
   import { t as tt, tr, isEn } from '$lib/i18n'
+  import { followTranscript } from './transcriptFeed'
 
   let { onpreview }: { onpreview?: (url: string) => void } = $props()
   type Part = { type: 'text'; text: string } | { type: 'tool'; name: string; summary: string; result: string | null; error: boolean }
   type Msg = { id: string; role: 'user' | 'assistant'; ts: string; parts: Part[] }
   // 每个 pane 的对话缓存（模块级，组件重建也在）：切回来立刻显示，后台再刷新
   const cache = ((globalThis as any).__chatCache ??= new Map<string, Msg[]>()) as Map<string, Msg[]>
-  const etags = ((globalThis as any).__chatEtags ??= new Map<string, string>()) as Map<string, string>
   let msgs = $state<Msg[]>([])
   let loaded = $state(false)
   let error = $state('')
@@ -51,39 +52,19 @@
   const md = (t: string) => DOMPurify.sanitize(marked.parse(t, { gfm: true, breaks: true, async: false }) as string)
   const time = (ts: string) => { try { return new Date(ts).toLocaleTimeString(isEn ? 'en-US' : 'zh-CN', { hour: '2-digit', minute: '2-digit' }) } catch { return '' } }
 
-  async function load() {
-    const pane = ui.current
-    if (!pane || document.visibilityState !== 'visible') return
-    try {
-      // 带上次的 ETag：没变服务端回 304、不再重发几百 KB
-      const tag = etags.get(pane)
-      const r = await fetch(`api/transcript?pane=${pane}&n=80`, { cache: 'no-store', headers: tag && cache.has(pane) ? { 'if-none-match': tag } : {} })
-      if (r.status === 304) { if (pane === ui.current) { error = ''; loaded = true } return }
-      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`)
-      const d: Msg[] = await r.json()
-      if (pane !== ui.current) return
-      const et = r.headers.get('etag')
-      if (et) etags.set(pane, et)
-      error = ''
-      const next = JSON.stringify(d.map((m) => [m.id, m.parts.length, m.parts.at(-1)]))
-      loaded = true
-      if (next === sig) return
-      sig = next
-      cache.set(pane, d)
-      const stick = atBottom
-      msgs = d
-      await tick()
-      if (stick) box?.scrollTo({ top: box.scrollHeight })
-    } catch (e) {
-      error = (e as Error).message
-    }
+  async function show(pane: string, d: Msg[]) {
+    if (pane !== ui.current) return
+    error = ''
+    const next = JSON.stringify(d.map((m) => [m.id, m.parts.length, m.parts.at(-1)]))
+    loaded = true
+    if (next === sig) return
+    sig = next
+    cache.set(pane, d)
+    const stick = atBottom
+    msgs = d
+    await tick()
+    if (stick) box?.scrollTo({ top: box.scrollHeight })
   }
-  onMount(() => {
-    load()
-    const t = setInterval(load, 2000)
-    document.addEventListener('visibilitychange', load)
-    return () => { clearInterval(t); document.removeEventListener('visibilitychange', load) }
-  })
   $effect(() => {
     const pane = ui.current
     const hit = pane ? cache.get(pane) : undefined
@@ -92,7 +73,8 @@
     loaded = !!hit
     atBottom = true
     if (hit) tick().then(() => box?.scrollTo({ top: box.scrollHeight }))
-    load()
+    if (!pane) return
+    return followTranscript<Msg>(pane, 80, { messages: (d) => show(pane, d), error: (e) => { if (pane === ui.current) error = e } })
   })
 
   // 点链接：网页 / localhost / 本机文件在预览里打开，不跳出 App。相对路径按这个 pane 所在的目录算

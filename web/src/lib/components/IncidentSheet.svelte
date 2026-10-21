@@ -35,7 +35,7 @@
   const shown = $derived(incidents.list.filter((x) => showDone || active(x)))
   const doneCount = $derived(incidents.list.filter((x) => !active(x)).length)
 
-  const SOURCE: Record<string, string> = { server: t('服务端'), phone: t('手机端'), mac: t('电脑端'), agent: t('agent 报告'), user: t('你报告的') }
+  const SOURCE: Record<string, string> = { server: t('服务端'), phone: t('手机端'), mac: t('电脑端'), agent: t('agent 报告'), user: t('你报告的'), plugin: t('插件') }
   const STATUS: Record<string, string> = { open: t('待处理'), fixing: t('修复中'), fixed: t('已修复'), resolved: t('已解决'), ignored: t('已忽略') }
   const FIX_STATE: Record<string, string> = { queued: t('排队中'), running: t('修复中'), done: t('完成'), failed: t('没修成'), cancelled: t('已取消') }
   function ago(ms: number) {

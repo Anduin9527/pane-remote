@@ -363,4 +363,6 @@ export default {
   '调到了 {n} 列（相邻 pane 至少要留 12 列）': 'Got to {n} columns (neighboring panes keep at least 12)',
   '已调到 {n} 列': 'Now {n} columns',
   '调整失败：{msg}': 'Could not change width: {msg}',
+  '已取消': "Cancelled",
+  '自动': "Auto",
 } as Record<string, string>

@@ -4,11 +4,6 @@
 //   tr(msg)                     服务端 / 电脑那边发来的提示：先整句匹配，再按带 {占位} 的条目做模式匹配，都没有就原样显示
 export type Lang = 'zh' | 'en'
 const LANG_KEY = 'lang'
-const modules = import.meta.glob<{ default: Record<string, string> }>('./en/*.ts', { eager: true })
-const EN: Record<string, string> = Object.assign({}, ...Object.values(modules).map((m) => m.default))
-// tr() 的模式匹配只用服务端 / 电脑那边消息的字典，免得界面自己的短模板（「定时 {n}」之类）误套到服务端消息上
-const REMOTE = /\/(server|mac|preview-agent)\.ts$/
-const REMOTE_EN: Record<string, string> = Object.assign({}, ...Object.entries(modules).filter(([p]) => REMOTE.test(p)).map(([, m]) => m.default))
 
 function detect(): Lang {
   try { const v = localStorage.getItem(LANG_KEY); if (v === 'zh' || v === 'en') return v } catch {}
@@ -17,6 +12,14 @@ function detect(): Lang {
 }
 export const lang: Lang = detect()
 export const isEn = lang === 'en'
+
+// 英文字典只有英文界面才下载（中文界面首屏省掉几十 KB）。顶层 await：引用这个模块的代码都等字典到了才跑，模块里的常量文案照样能翻
+const loaders = import.meta.glob<{ default: Record<string, string> }>('./en/*.ts')
+const modules: [string, Record<string, string>][] = isEn ? await Promise.all(Object.entries(loaders).map(async ([p, load]) => [p, (await load()).default] as [string, Record<string, string>])) : []
+const EN: Record<string, string> = Object.assign({}, ...modules.map(([, m]) => m))
+// tr() 的模式匹配只用服务端 / 电脑那边消息的字典，免得界面自己的短模板（「定时 {n}」之类）误套到服务端消息上
+const REMOTE = /\/(server|mac|preview-agent)\.ts$/
+const REMOTE_EN: Record<string, string> = Object.assign({}, ...modules.filter(([p]) => REMOTE.test(p)).map(([, m]) => m))
 if (typeof document !== 'undefined') document.documentElement.lang = isEn ? 'en' : 'zh-CN'
 // 让 service worker 也知道（推送通知标题要翻）
 try { caches.open('pane-lang').then((c) => c.put('lang', new Response(lang))).catch(() => {}) } catch {}

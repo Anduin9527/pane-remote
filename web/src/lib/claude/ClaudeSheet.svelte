@@ -108,7 +108,7 @@
         </Drawer.Description>
       {/if}
     </Drawer.Header>
-    <div class="grid gap-4 p-3.5 pb-[calc(env(safe-area-inset-bottom)+14px)]">
+    <div data-vaul-no-drag class="grid gap-4 overflow-y-auto overscroll-contain p-3.5 pb-[calc(env(safe-area-inset-bottom)+14px)]">
       {#if canFork}
       <section class="grid gap-2">
         <span class="text-sm font-medium">{t('分叉当前会话')}<span class="ml-1.5 text-xs font-normal text-muted-foreground">{t('新会话带着现在的全部上下文，原会话不受影响')}</span></span>

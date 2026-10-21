@@ -1,16 +1,16 @@
 <script lang="ts">
-  // Cursor 映射：手机上自己的界面，数据来自电脑上的 Cursor（会话列表、消息、状态），操作回传给 Cursor。
-  // 不传画面：只同步文字增量，网络差也跟手。项目 = WezTerm 的标签页 / 窗口，会话 = pane。
-  import { onMount, onDestroy, tick } from 'svelte'
+  // Cursor 映射：手机上自己的界面，数据来自电脑上的 Cursor（消息、状态），操作回传给 Cursor。
+  // 不传画面：只同步文字增量，网络差也跟手。会话列表在统一的会话列表（PaneSheet）里，这里只是选中 Cursor 会话时的对话视图。
+  import ModelChip from '$lib/components/ModelChip.svelte'
+  import { onMount, tick } from 'svelte'
   import { marked } from 'marked'
   import DOMPurify from 'dompurify'
   import { toast } from 'svelte-sonner'
-  import ChevronDown from '@lucide/svelte/icons/chevron-down'
+  import CursorIcon from './CursorIcon.svelte'
   import Plus from '@lucide/svelte/icons/plus'
   import Wrench from '@lucide/svelte/icons/wrench'
   import Brain from '@lucide/svelte/icons/brain'
   import ArrowDown from '@lucide/svelte/icons/arrow-down'
-  import X from '@lucide/svelte/icons/x'
   import Ellipsis from '@lucide/svelte/icons/ellipsis'
   import GitFork from '@lucide/svelte/icons/git-fork'
   import Pin from '@lucide/svelte/icons/pin'
@@ -23,25 +23,24 @@
   import FolderOpen from '@lucide/svelte/icons/folder-open'
   import FileDiff from '@lucide/svelte/icons/file-diff'
   import ChangesView from './ChangesView.svelte'
-  import UsageCard from './UsageCard.svelte'
   import { resolveLink } from '$lib/links'
   import Composer from '$lib/components/Composer.svelte'
   import { t, tr, isEn } from '$lib/i18n'
-  import { cur, connectCursor, disconnectCursor, reconnectCursor, selectSession, startDraft, cursorCmd, sessionById, type CMsg } from './cursor.svelte'
+  import { cur, holdCursor, selectSession, startDraft, cursorCmd, sessionById, type CMsg } from './cursor.svelte'
+  import { cursorSessions } from '$lib/sessions.svelte'
 
-  let { onpreview }: { onpreview?: (url: string) => void } = $props()
+  // onpick：打开会话列表（App 里统一的那个）
+  let { onpreview, onpick }: { onpreview?: (url: string) => void; onpick?: () => void } = $props()
 
-  let sheetOpen = $state(false)
   let changesOpen = $state(false)
   let box = $state<HTMLDivElement>()
   let atBottom = $state(true)
   let confirmRestart = $state(false)
 
-  onMount(connectCursor)
-  // 还没选会话：接入 Cursor 后自动打开会话选择（只自动打开一次）
+  onMount(() => holdCursor('watch'))
+  // 还没选会话：接入 Cursor 后自动打开会话列表（只自动打开一次）
   let autoOpened = false
-  $effect(() => { if (!autoOpened && cur.conn === 'ready' && !cur.id && !cur.draftProject) { autoOpened = true; sheetOpen = true } })
-  onDestroy(disconnectCursor)
+  $effect(() => { if (!autoOpened && cur.conn === 'ready' && !cur.id && !cur.draftProject) { autoOpened = true; onpick?.() } })
 
   // Markdown 渲染结果缓存（按消息 id + 长度），长对话来回刷新不重复渲染；最多留 500 条
   const mdCache = new Map<string, string>()
@@ -79,14 +78,13 @@
 
   const current = $derived(sessionById(cur.id))
   const project = $derived(cur.projects.find((p) => p.sessions.some((s) => s.id === cur.id)) || cur.projects.find((p) => p.id === cur.draftProject))
-  const title = $derived(cur.draftProject ? t('新会话 · {project}', { project: project?.label || t('不选项目') }) : current?.title || cur.name || (cur.id ? t('未命名会话') : t('选择一个会话')))
+  const title = $derived(cursorSessions.title())
 
   $effect(() => { cur.list.length; streaming; if (atBottom) tick().then(() => box?.scrollTo({ top: box.scrollHeight })) })
 
   // 输入框复用终端那个（草稿按会话存、传文件、展开编辑都一样），发送交给这里
   async function submit(text: string) {
-    if (cur.draftProject) await cursorCmd('new', { project: cur.draftProject === '__new__' ? '' : cur.draftProject, text })
-    else await cursorCmd('send', { id: cur.id, text })
+    await cursorSessions.send(text)
     atBottom = true
   }
   const draftKey = $derived(cur.draftProject ? `cursor-new:${cur.draftProject}` : cur.id ? `cursor:${cur.id}` : null)
@@ -115,7 +113,7 @@
   async function archive() {
     const id = cur.id
     archiveArmed = false
-    try { await cursorCmd('archive', { id }); toast(t('已归档（在 Cursor 里能找回）')); cur.id = ''; sheetOpen = true } catch (err) { toast.error(t('归档失败：{msg}', { msg: (err as Error).message })) }
+    try { await cursorCmd('archive', { id }); toast(t('已归档（在 Cursor 里能找回）')); cur.id = ''; onpick?.() } catch (err) { toast.error(t('归档失败：{msg}', { msg: (err as Error).message })) }
   }
   // 每一轮的最后一条回复 → 这一轮的用户消息 id（Cursor 的分叉按钮按它定位；同一轮只在最后一条回复下给分叉）
   const turnOf = $derived.by(() => {
@@ -140,14 +138,10 @@
   const time = (ts: number) => (ts ? new Date(ts).toLocaleTimeString(isEn ? 'en-US' : 'zh-CN', { hour: '2-digit', minute: '2-digit' }) : '')
 </script>
 
+<!-- 会话栏：会话名和连接状态在顶栏，这里是 Cursor 会话自己的操作 -->
 <div class="flex h-10 flex-none items-center gap-2 border-b bg-card px-2.5">
-  <button class="-ml-1 grid size-7 flex-none place-items-center rounded-lg active:bg-accent" aria-label={t('重连 Cursor（{msg}）', { msg: tr(cur.msg) })} onclick={() => { reconnectCursor(); toast(t('重连 Cursor…')) }}>
-    <span class={cn('size-2 rounded-full', cur.conn === 'ready' ? 'bg-ok' : cur.conn === 'error' ? 'bg-destructive' : 'bg-muted-foreground', cur.generating && 'animate-pulse bg-primary')}></span>
-  </button>
-  <button class="flex min-w-0 flex-1 items-center gap-1.5 text-left" onclick={() => (sheetOpen = true)}>
-    <span class="min-w-0 truncate text-[14px] font-medium">{title}</span>
-    <ChevronDown class="size-4 flex-none text-muted-foreground" />
-  </button>
+  <span class="flex min-w-0 flex-1 items-center gap-1.5 text-[13px] text-muted-foreground"><CursorIcon class="size-3.5 flex-none" /><span class={cn('truncate', statusTone(current?.status || ''))}>{current ? statusCn(current.status) : 'Cursor'}</span></span>
+  {#if cur.id}<ModelChip cursor={cur.id} />{/if}
   {#if cur.conn === 'ready'}
     {#if cur.id && cur.path}
       <button class="grid size-8 place-items-center rounded-lg border active:bg-accent" aria-label={t('查看项目文件')} onclick={() => onpreview?.(cur.path + '/')}><FolderOpen class="size-4" /></button>
@@ -272,7 +266,7 @@
     {#if cur.generating}
       <div class="flex items-center gap-2 border-b px-3 py-1.5 text-sm">
         <span class="flex-1 animate-pulse text-primary">{t('Cursor 正在工作…')}</span>
-        <button class="h-7 rounded-md border px-2.5 text-[13px] active:bg-accent" onclick={() => act('stop', {}, t('已让 Cursor 停下'))}>{t('停止')}</button>
+        <button class="h-7 rounded-md border px-2.5 text-[13px] active:bg-accent" onclick={() => cursorSessions.stop().then(() => toast(t('已让 Cursor 停下')), (err) => toast.error((err as Error).message))}>{t('停止')}</button>
       </div>
     {/if}
     <Composer chat {draftKey} onsubmit={submit} disabled={!cur.id && !cur.draftProject} placeholder={cur.draftProject ? t('新会话的第一条消息…') : cur.id ? t('发给 Cursor…') : t('先选一个会话')} />
@@ -280,40 +274,3 @@
 {/if}
 
 <ChangesView bind:open={changesOpen} id={cur.id} title={title} onfiles={(p) => onpreview?.(p)} />
-
-<!-- 会话选择：全屏页（不用可拖动的抽屉，那种容器会把列表滚动当成拖动拦截掉） -->
-{#if sheetOpen}
-  <div class="fixed inset-0 z-50 flex flex-col bg-background pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)]">
-    <header class="flex flex-none items-center gap-2 border-b bg-card px-2 py-2">
-      <button class="grid size-9 place-items-center rounded-lg active:bg-accent" aria-label={t('关闭')} onclick={() => (sheetOpen = false)}><X class="size-5" /></button>
-      <strong class="flex-1">{t('Cursor 会话列表')}</strong>
-      <Button size="sm" variant="secondary" class="h-9 rounded-full" onclick={() => { startDraft(''); sheetOpen = false }}><Plus />{t('新对话')}</Button>
-    </header>
-    <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 pt-2 pb-[calc(env(safe-area-inset-bottom)+12px)]" data-testid="cursor-sessions">
-      <UsageCard />
-      {#if !cur.projects.length}<p class="p-6 text-center text-sm text-muted-foreground">{cur.conn === 'ready' ? t('没有会话') : tr(cur.msg) || t('还没接入 Cursor')}</p>{/if}
-      <div class="grid gap-3">
-        {#each cur.projects as p (p.id)}
-          {#if p.sessions.length || p.uri}
-            <section class="grid gap-0.5">
-              <div class="flex items-center justify-between px-2.5 text-xs text-muted-foreground">
-                <span class="truncate">{tr(p.label)}</span>
-                {#if p.uri}<button class="flex items-center gap-0.5 rounded px-1.5 py-1 text-primary active:bg-accent" onclick={() => { startDraft(p.id); sheetOpen = false }}><Plus class="size-3" />{t('新 Agent')}</button>{/if}
-              </div>
-              {#each p.sessions as s (s.id)}
-                <button class={cn('flex min-w-0 items-center gap-2 rounded-[10px] px-2.5 py-3 text-left active:bg-accent', s.id === cur.id && 'bg-accent')} onclick={() => { selectSession(s.id); sheetOpen = false }}>
-                  <span class={cn('size-2 flex-none rounded-full', s.unread ? 'bg-primary' : 'bg-transparent')} aria-label={s.unread ? t('未读') : undefined}></span>
-                  <span class={cn('min-w-0 flex-1 truncate text-[15px]', s.unread && 'font-semibold')}>{s.title || t('无标题')}</span>
-                  {#if s.waiting}<span class="flex-none rounded-full bg-warn px-1.5 text-[10px] leading-4 font-semibold text-black">{t('等你')}</span>{/if}
-                  {#if s.active}<span class="flex-none rounded bg-secondary px-1.5 text-[10px] text-muted-foreground">{t('电脑上开着')}</span>{/if}
-                  <span class={cn('flex-none text-xs', statusTone(s.status))}>{statusCn(s.status)}</span>
-                  <span class="w-8 flex-none text-right text-xs text-muted-foreground">{s.age}</span>
-                </button>
-              {/each}
-            </section>
-          {/if}
-        {/each}
-      </div>
-    </div>
-  </div>
-{/if}

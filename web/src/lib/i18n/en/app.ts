@@ -56,4 +56,13 @@ export default {
   '回到底部': 'Back to bottom',
   // keys.ts
   '空格': 'Space',
+  // 外壳：顶栏、会话列表、插件页
+  '原始画面': 'Raw screen',
+  '会话列表': 'Sessions',
+  '＋ 新对话': '+ New chat',
+  '打开 Cursor 页': 'Open Cursor page',
+  '电脑上的浏览器': "Your computer's browser",
+  '插件 · {id}': 'Plugin · {id}',
+  '还没有这个插件：{id}': 'No such plugin yet: {id}',
+  '选一个会话': 'Pick a session',
 } as Record<string, string>

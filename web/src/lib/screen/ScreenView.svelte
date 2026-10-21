@@ -10,7 +10,11 @@
   // 鼠标都直接走 noVNC 内部的发送（坐标相对画布，它按缩放和视口换算），不派发 DOM 鼠标事件：
   // 合成的 mousedown 会触发它的「鼠标捕获」遮罩，之后整个页面的点击都被吃掉。
   // 「横过来」：竖着拿手机时把整个界面转 90°，所有触摸坐标都先换回界面自己的坐标系（toLocal）。
-  import { onDestroy, tick } from 'svelte'
+  // 是平台自带的插件「看屏幕」（lib/plugins/builtin，地址 #/plugin/screen，挂在 Shadow DOM 里）：
+  //   左上角按钮切到后台（onhide）：连接不断，active = false 时不再向转码代理要画面（它是手机要一帧才发一帧），回前台补要一帧增量，不用重连
+  //   后台 30 分钟没回来插件睡眠：组件卸载、连接断开（转码代理照常保留解锁的会话）；看的是哪个窗口、放大到哪存进 localStorage（screenView），重新打开时恢复
+  //   「断开连接」「锁屏并离开」才关掉插件（onclose）
+  import { onDestroy, tick, untrack } from 'svelte'
   import RFB from '@novnc/novnc'
   import X from '@lucide/svelte/icons/x'
   import Keyboard from '@lucide/svelte/icons/keyboard'
@@ -27,12 +31,13 @@
   import Maximize from '@lucide/svelte/icons/maximize'
   import RotateCcwSquare from '@lucide/svelte/icons/rotate-ccw-square'
   import Scaling from '@lucide/svelte/icons/scaling'
+  import Unplug from '@lucide/svelte/icons/unplug'
   import { Button } from '$lib/components/ui/button'
   import { cn } from '$lib/utils'
   import { t, tr } from '$lib/i18n'
   import { postJson } from '$lib/api'
 
-  let { open = $bindable(false) }: { open?: boolean } = $props()
+  let { open = $bindable(false), active = true, onhide, onclose }: { open?: boolean; active?: boolean; onhide?: () => void; onclose?: () => void } = $props()
 
   // 本机记住的设置（用户名、选的屏、清晰 / 触控板 / 横屏），不记密码
   const load = (k: string, d: string) => { try { return localStorage.getItem(k) ?? d } catch { return d } }
@@ -305,6 +310,7 @@
     // 缩放和视口全归我们管：noVNC 在画面区域尺寸变化、换分辨率时会调这两个，把缩放改回它自己的默认值
     r._updateClip = () => applyView()
     r._updateScale = () => applyView()
+    if (!active) r._enabledContinuousUpdates = true // 在后台连上的（睡眠前就在后台不会这样，保险）
     r.addEventListener('connect', () => { if (rfb !== r) return; if (status !== 'live') status = 'loading'; zoom = 1; pos = { x: 0, y: 0 }; cursor = null })
     r.addEventListener('disconnect', (e: any) => {
       if (rfb !== r) return
@@ -339,6 +345,7 @@
       else { winView = null; resizing = false; desktop = n }
       status = 'live'
       tick().then(applyView)
+      restoreView(n)
     })
   }
   function disconnect() {
@@ -363,15 +370,53 @@
     password = ''
     status = 'auth'
   }
+  let closing = false
   function close() {
+    closing = true
+    try { localStorage.removeItem(VIEW_KEY) } catch {} // 主动断开的不用恢复
     disconnect()
     open = false
+    onclose?.()
   }
   $effect(() => {
     if (open) tick().then(connect)
     else disconnect()
   })
-  onDestroy(disconnect)
+  onDestroy(() => { if (!closing) saveView(); disconnect() })
+
+  // ---------- 后台：连接保持，不再要画面 ----------
+  // noVNC 每收完一帧就再要一帧（没开 continuous updates 时）；把它当成已开着，它就不再要，转码代理也就不再发。回前台复原，补要一帧增量
+  function setLive(on: boolean) {
+    const r = rfb
+    if (!r) return
+    if (!on) { r._enabledContinuousUpdates = true; return }
+    if (!r._enabledContinuousUpdates) return
+    r._enabledContinuousUpdates = false
+    if (status === 'live' || status === 'loading') try { RFB.messages.fbUpdateRequest(r._sock, true, 0, 0, r._fbWidth, r._fbHeight) } catch {}
+    tick().then(applyView)
+  }
+  $effect(() => { const a = active; untrack(() => setLive(a)) })
+
+  // ---------- 睡眠前存、重新打开时恢复：看的窗口、放大和位置（屏、清晰度、操作方式、横过来本来就各自存着） ----------
+  const VIEW_KEY = 'screenView'
+  type Saved = { win: Win | null; zoom: number; pos: { x: number; y: number }; at: number }
+  let restore: Saved | null = (() => { try { const v = JSON.parse(localStorage.getItem(VIEW_KEY) || 'null'); return v && Date.now() - v.at < 2 * 3600000 ? v : null } catch { return null } })()
+  function saveView() {
+    if (status !== 'live' && !restore) return
+    const v: Saved = restore && status !== 'live' ? restore : { win: winView ? $state.snapshot(winView) : null, zoom, pos: { ...pos }, at: Date.now() }
+    try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)) } catch {}
+  }
+  /** 画面到了（desktopname）：第一次先切回原来看的窗口，再恢复放大 */
+  function restoreView(n: string) {
+    const r = restore
+    if (!r) return
+    if (r.win && !n.startsWith('[w]') && !n.startsWith('[x]')) { restore = { ...r, win: null }; sendWindow(r.win); return }
+    restore = null
+    if (n.startsWith('[x]')) return // 窗口没了，转码代理退回看屏
+    zoom = r.zoom || 1
+    pos = { ...r.pos }
+    tick().then(applyView)
+  }
 
   // ---------- 横过来：界面坐标 ↔ 屏幕坐标 ----------
   /** 屏幕坐标 → 界面坐标（转了 90° 时：界面 x = 屏幕 y，界面 y = 屏幕宽 - 屏幕 x） */
@@ -419,7 +464,7 @@
   }
   // 兜底：定时对一下视口（只比较数字，很便宜）
   $effect(() => {
-    if (status !== 'live' && status !== 'loading') return
+    if ((status !== 'live' && status !== 'loading') || !active) return
     const ro = new ResizeObserver(() => setTimeout(applyView, 50))
     if (stage) ro.observe(stage)
     const timer = setInterval(() => {
@@ -807,7 +852,9 @@
     if (r.cx != null) kbTarget = { x: r.cx, y: r.cy! }
     if (!r.t || !autoKb) return
     // 快捷栏开着但手机键盘其实收起了（输入框没焦点）：还是要给按钮
-    const typing = kbOpen && (document.activeElement === kbInput || document.activeElement === ghost)
+    // 挂在 Shadow DOM 里：document.activeElement 只能看到宿主，要问 shadow root
+    const focused = (kbInput?.getRootNode() as Document | ShadowRoot | undefined)?.activeElement ?? document.activeElement
+    const typing = kbOpen && (focused === kbInput || focused === ghost)
     if (typing) { if (kbUp) revealTarget(); return }
     bubbleAt = { x: r.x, y: r.y }
     clearTimeout(bubbleTimer)
@@ -853,7 +900,8 @@
 >
   <!-- 顶栏：左边关闭 + 画面来源（下拉）；右边按常用程度：键盘、操作方式、更多（画质、自动键盘、横过来、整块屏、切回前台） -->
   <div class={cn('relative flex items-center gap-1 px-1.5 pb-1', rotated ? 'pt-1' : 'pt-[calc(env(safe-area-inset-top)+4px)]')}>
-    <button class={bar} aria-label={t('关闭')} onclick={close}><X class="size-5" /></button>
+    <!-- 作为插件时是「切到后台」（连接保持，回来不用重连）；断开在「更多」里 -->
+    <button class={bar} aria-label={onhide ? t('切到后台') : t('关闭')} onclick={() => (onhide ? onhide() : close())}><X class="size-5" /></button>
     {#if status === 'live' || status === 'loading'}
       <label class="relative flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-lg bg-white/10 pr-2 pl-2.5 text-[13px] text-white/90 active:bg-white/20">
         {#if winView}<AppWindow class="size-4 flex-none text-white/60" />{:else}<Monitor class="size-4 flex-none text-white/60" />{/if}
@@ -913,6 +961,11 @@
           </button>
           <button class="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left active:bg-white/10" onclick={() => { restoreFront(); moreOpen = false }}>
             <Undo2 class="size-4 text-white/60" /><span class="flex-1">{t('切回原来的前台 app')}</span>
+          </button>
+        {/if}
+        {#if onhide}
+          <button class="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left active:bg-white/10" onclick={() => { moreOpen = false; close() }}>
+            <Unplug class="size-4 text-white/60" /><span class="flex-1">{t('断开连接')}</span>
           </button>
         {/if}
         <button class="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left active:bg-white/10" onclick={lockAndLeave}>

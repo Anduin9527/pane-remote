@@ -2,6 +2,8 @@
   // 预览：看电脑上无界面 Chrome（或 Cursor 内置浏览器） 的实时画面（网络是电脑那边的：localhost、内网、代理都照用）。
   // 轻点 = 点击，拖动 = 滚动，双指 = 缩放 / 平移画面，底栏打字 = 输入到页面里当前聚焦的输入框。
   // 电脑模式：电脑那边按桌面浏览器（Mac Chrome 的 UA、1280 宽）渲染，这里等比缩放显示；长按 = 鼠标悬停。
+  // 是平台自带的插件（lib/plugins/builtin）：切到后台时 active = false，连接不断，压着 ack 不让电脑截下一张（回前台补发）；
+  // 睡眠卸载后电脑上的 Chrome 过 20 分钟会被回收，所以记下最后看的网页（previewLast:<来源>），重新打开时标签页都没了就再打开它。
   import { onMount } from 'svelte'
   import { toast } from 'svelte-sonner'
   import ArrowLeft from '@lucide/svelte/icons/arrow-left'
@@ -28,6 +30,7 @@
   import { currentPane } from '$lib/session.svelte'
   import { resolveLink } from '$lib/links'
 
+  let { active = true }: { active?: boolean } = $props()
   type Tab = { id: string; url: string; title: string }
   let nav = $state({ url: '', title: '', loading: false })
   let tabs = $state<{ list: Tab[]; current: string | null }>({ list: [], current: null })
@@ -152,11 +155,10 @@
 
   const send = (m: object) => { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m)) }
 
-  // 别处要求打开的地址（阅读模式里点的链接）：连上就打开
-  let handled = 0
+  // 别处要求打开的地址（阅读模式里点的链接）：连上就打开。处理到第几个记在 previewRequest 里，睡眠后重新载入不会把旧的再开一遍
   function takeRequest() {
-    if (previewRequest.n === handled || ws?.readyState !== WebSocket.OPEN) return
-    handled = previewRequest.n
+    if (previewRequest.n === previewRequest.handled || ws?.readyState !== WebSocket.OPEN) return
+    previewRequest.handled = previewRequest.n
     address = previewRequest.url
     send({ t: 'open', url: previewRequest.url })
     remember(previewRequest.url)
@@ -173,6 +175,23 @@
     send({ t: 'viewport', w: view.w, h: view.h, dpr: Math.min(2, devicePixelRatio || 2), desktop: desktop || source === 'cursor', lang })
   }
 
+  // 后台时压着的 ack：回到前台补发，电脑接着截图
+  let heldAck: number | null = null
+  $effect(() => { if (active && heldAck != null) { send({ t: 'ack', seq: heldAck }); heldAck = null } })
+
+  // 最后看的网页（按来源）：只在这次挂载第一次收到标签页列表、而且电脑上一个网页都没开着时用
+  const lastKey = () => `previewLast:${source}`
+  const saveLast = (u: string) => { try { localStorage.setItem(lastKey(), u) } catch {} }
+  let restorePending = true
+  function restoreLast(list: Tab[]) {
+    if (!restorePending) return
+    restorePending = false
+    if (isCursor || previewRequest.n !== previewRequest.handled || list.some((x) => x.url && x.url !== 'about:blank')) return
+    let u = ''
+    try { u = localStorage.getItem(lastKey()) || '' } catch {}
+    if (u) { send({ t: 'open', url: u }); address = u }
+  }
+
   let retry = 0
   let retryTimer: ReturnType<typeof setTimeout> | undefined
   function connect() {
@@ -185,6 +204,7 @@
     const sock = new WebSocket(url)
     sock.binaryType = 'blob'
     ws = sock
+    heldAck = null
     sock.onopen = () => { retry = 0; sendViewport(); takeRequest() }
     sock.onmessage = async (e) => {
       if (typeof e.data !== 'string') {
@@ -203,14 +223,16 @@
           frameTimes = [...frameTimes.filter((t) => now - t < 2000), now]
           fps = Math.round(frameTimes.length / 2)
         } finally {
-          send({ t: 'ack', seq: m.seq }) // 画完才 ack，电脑那头据此决定什么时候截下一张
+          // 画完才 ack，电脑那头据此决定什么时候截下一张；在后台就先压着，回前台再补
+          if (active) send({ t: 'ack', seq: m.seq })
+          else heldAck = m.seq
         }
         return
       }
       const m = JSON.parse(e.data)
       if (m.t === 'frame') meta = m
-      else if (m.t === 'nav') { nav = m; if (!editing) address = m.url === 'about:blank' ? '' : m.url }
-      else if (m.t === 'tabs') tabs = m
+      else if (m.t === 'nav') { nav = m; if (!editing) address = m.url === 'about:blank' ? '' : m.url; if (m.url && m.url !== 'about:blank') saveLast(m.url) }
+      else if (m.t === 'tabs') { tabs = m; restoreLast(m.list) }
       else if (m.t === 'error') { if (source === 'cursor' && /没打开网页|关掉了|没有接入/.test(m.msg)) note = tr(m.msg); else toast.error(tr(m.msg)) }
       else if (m.t === 'notice') { note = ''; toast(tr(m.msg)) }
       else if (m.t === 'opened') toast(t('电脑上要打开的网页，已在这里打开'), { description: m.url })

@@ -11,6 +11,11 @@ export default defineConfig({
   // 每次构建都带上构建时间：脚本内容随之变化，文件名（内容哈希）每次都是新的，手机里任何坏掉的旧缓存都用不上
   define: { __BUILD_TIME__: JSON.stringify(new Date().toISOString()) },
   resolve: { alias: { $lib: path.resolve('./src/lib') } },
-  build: { outDir: '../public', emptyOutDir: true, chunkSizeWarningLimit: 1000 },
+  // 按需加载的分块不能叫 index-*：服务端找不到旧首页引用的 assets/index-* 时会拿最新的同类文件顶上（见 server/server.mjs），
+  // 分块也叫 index-* 的话会被顶错
+  build: {
+    outDir: '../public', emptyOutDir: true, chunkSizeWarningLimit: 1000,
+    rolldownOptions: { output: { chunkFileNames: 'assets/c-[name]-[hash].js', assetFileNames: (a) => (a.names?.[0]?.endsWith('.css') && a.names[0] !== 'index.css' ? 'assets/c-[name]-[hash][extname]' : 'assets/[name]-[hash][extname]') } },
+  },
   server: { proxy: { '/api': 'http://127.0.0.1:8787' } },
 })

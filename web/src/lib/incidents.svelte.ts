@@ -4,7 +4,7 @@ import { postJson } from './api'
 export type IncidentFix = { mode?: 'bound' | 'new'; state?: 'queued' | 'running' | 'done' | 'failed' | 'cancelled'; pane?: number; agent?: string; last?: FixUpdate }
 export type FixUpdate = { t: number; status: string; note?: string; branch?: string; pr?: string }
 export type IncidentSummary = {
-  id: string; title: string; source: 'server' | 'phone' | 'mac' | 'agent' | 'user'; component: string; kind: string; severity: 'high' | 'normal' | 'low'
+  id: string; title: string; source: 'server' | 'phone' | 'mac' | 'agent' | 'user' | 'plugin'; component: string; kind: string; severity: 'high' | 'normal' | 'low'
   count: number; first: number; last: number; status: 'open' | 'fixing' | 'fixed' | 'resolved' | 'ignored'; muted: boolean; fix: IncidentFix | null; lastMsg?: string
   ai?: { summary?: string; severity?: string; duplicateOf?: string }
 }

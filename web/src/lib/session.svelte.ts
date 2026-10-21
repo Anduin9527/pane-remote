@@ -28,6 +28,8 @@ export const ui = $state({
   states: {} as Record<string, PaneState>,
   /** 当前 pane 里登记到的 Claude 会话（pane-event hook 记下的），没有就是 null */
   claude: null as ClaudeInfo | null,
+  /** 当前 pane 的 claude 查过没有（没查过时不知道该显示对话还是终端，先不急着加载终端） */
+  claudeChecked: false,
   /** 前台是哪个 agent（claude / codex / cursor-agent），没有会话记录时也有：输入框同步按它的格式读 */
   agent: '' as string,
 })
@@ -50,8 +52,8 @@ export async function refreshClaude() {
     const info = d?.session && d.transcript ? d : null // Claude / Codex / cursor-agent 都行
     claudeCache.set(pane, info)
     agentCache.set(pane, d?.agent || '')
-    if (ui.current === pane) { ui.claude = info; ui.agent = d?.agent || '' }
-  } catch {}
+    if (ui.current === pane) { ui.claude = info; ui.agent = d?.agent || ''; ui.claudeChecked = true }
+  } catch { if (ui.current === pane) ui.claudeChecked = true }
 }
 setInterval(() => { if (document.visibilityState === 'visible') refreshClaude() }, 15000)
 
@@ -107,8 +109,14 @@ let lastMsgAt = 0
 let retryTimer: ReturnType<typeof setTimeout> | undefined
 let retries = 0
 
-export function select(pane: string | number) {
+// 选了 pane（列表、待办、提问、新建…）：路由据此把地址切到这个 pane（在预览 / Cursor / 插件页时也会切回来）
+let selectHook: (id: string) => void = () => {}
+export function onSelect(fn: (id: string) => void) { selectHook = fn }
+
+/** quiet = 只切数据、不动地址（启动时、路由自己切的时候） */
+export function select(pane: string | number, opts: { quiet?: boolean } = {}) {
   const id = String(pane)
+  if (!opts.quiet) selectHook(id)
   const prev = ui.current
   if (prev && prev !== id && ui.hasFrame) frames.set(prev, { lines, seq, cols: ui.cols, rows: ui.rows, fg: ui.fg, title: ui.title, alt: ui.alt })
   ui.current = id
@@ -129,6 +137,7 @@ export function select(pane: string | number) {
   document.title = p ? `${label(p)} · Panes` : 'Pane Remote'
   ui.claude = claudeCache.get(id) ?? null
   ui.agent = agentCache.get(id) ?? ''
+  ui.claudeChecked = claudeCache.has(id)
   refreshClaude()
   if (!paused) connect()
 }
@@ -244,18 +253,18 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('online', () => { if (!paused && ui.current && document.visibilityState === 'visible') connect() })
 window.addEventListener('pageshow', (e) => { if (!paused && e.persisted && ui.current) connect() })
 
-export async function boot() {
-  // 从通知点进来会带 ?pane=N
-  const urlPane = new URLSearchParams(location.search).get('pane')
-  const want = urlPane && /^\d+$/.test(urlPane) ? urlPane : prefs.pane
+/** want = 地址里的 pane；没有就用上次看的。返回实际选中的 pane */
+export async function boot(want: string | null = prefs.pane): Promise<string | null> {
   try {
     const list = await loadPanes()
-    if (!list.length) { setStatus('err', t('没有 pane')); return }
-    const keep = list.find((p) => String(p.pane) === String(want))
-    select((keep || list.find((p) => p.active) || list[0]).pane)
+    if (!list.length) { setStatus('err', t('没有 pane')); return null }
+    const keep = list.find((p) => String(p.pane) === String(want)) || list.find((p) => String(p.pane) === String(prefs.pane))
+    select((keep || list.find((p) => p.active) || list[0]).pane, { quiet: true })
+    return ui.current
   } catch (e) {
     setStatus('err', t('读取失败：{msg}', { msg: tr((e as Error).message) }))
     report('boot-panes', (e as Error).message)
+    return null
   }
 }
 

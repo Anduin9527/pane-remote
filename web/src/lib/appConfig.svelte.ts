@@ -2,10 +2,15 @@
 export type Preset = { label: string; command: string }
 export const appConfig = $state({
   presets: [] as Preset[],
-  modules: { preview: true, openUrl: false, cursor: false, screen: false, mac: false } as Record<string, boolean>,
+  modules: { preview: true, openUrl: false, cursor: false, screen: false, mac: false, plugins: true } as Record<string, boolean>,
   loaded: false,
 })
-export async function loadAppConfig() {
+let loading: Promise<void> | null = null
+/** 只读一次（App 和插件层都会调，共用同一个请求） */
+export function loadAppConfig(): Promise<void> {
+  return (loading ??= load())
+}
+async function load() {
   try {
     const r = await fetch('api/config', { cache: 'no-store' })
     if (!r.ok) return
