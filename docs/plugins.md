@@ -36,6 +36,7 @@ pane-remote 专属的配置写在 `whatevertools.json` 的 `paneRemote` 里：
     "notification": { "reason": "点「通知」时提醒你" }
   },
   "paneRemote": {
+    "requires": ">=0.2.0",
     "keepAlive": 300,
     "storage": ["demo"],
     "mac": { "clipboard": false, "openExternal": false }
@@ -45,12 +46,15 @@ pane-remote 专属的配置写在 `whatevertools.json` 的 `paneRemote` 里：
 
 | 字段 | 说明 |
 |---|---|
+| `requires` | 需要的插件 API 版本范围（`0.2.0`、`>=0.2.0`、`^0.2.0`、`~0.2.1`，空格分开表示同时满足）。不满足的插件不加载，列进插件目录的问题里。当前版本看 `whatevertools.platform.info().api` 或 `GET /api/plugins` 的 `api` |
 | `keepAlive` | 后台超过多少秒就睡眠（30～3600，默认 300） |
 | `storage` | 可以加入的共享存储组（`platform.storage`），没写的组不能用 |
 | `mac.clipboard` | `true`：`copyText` / `clipboard.writeText` 写**电脑**的剪贴板（默认写手机的） |
 | `mac.openExternal` | `true`：`shellOpenExternal` / `shell.openExternal` 在**电脑**上打开（默认在手机上打开） |
 
 `permissions` 里的说明会出现在权限询问里；声明不会自动授予。
+
+**版本**：`platform.info()` 返回 `{ name, version, api }`。`version` 是 pane-remote 的系统版本（`utools.getAppVersion()` 也返回它），`api` 是插件 API 版本，只在插件能用的接口变了才升（加接口升次版本，改 / 删接口升主版本）。判断某个接口能不能用，优先用 `supports()`；`requires` 只做粗筛。
 
 示例：
 

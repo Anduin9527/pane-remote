@@ -1,6 +1,7 @@
 <script lang="ts">
   import ModelChip from '$lib/components/ModelChip.svelte'
   import LeaseGate from '$lib/components/LeaseGate.svelte'
+  import { APP_VERSION } from '$lib/version'
   import { onMount, untrack } from 'svelte'
   import { Toaster } from '$lib/components/ui/sonner'
   import { toast } from 'svelte-sonner'
@@ -47,6 +48,7 @@
   let createOpen = $state(false)
   let renameOpen = $state(false)
   let notifOpen = $state(false)
+  let changelogOpen = $state(false)
   loadAppConfig()
   let keysOpen = $state(false)
   let claudeOpen = $state(false)
@@ -66,7 +68,7 @@
   // 面板第一次打开时才下载，之后留着（关掉的动画、里面的状态都还在）
   const once = $state<Record<string, boolean>>({})
   $effect(() => {
-    const now: Record<string, boolean> = { act: actOpen, create: createOpen, rename: renameOpen, notif: notifOpen, keys: keysOpen, claude: claudeOpen, cron: cronOpen, reader: readerOpen, width: widthOpen, inbox: inboxOpen, incident: incidentOpen }
+    const now: Record<string, boolean> = { act: actOpen, create: createOpen, rename: renameOpen, notif: notifOpen, keys: keysOpen, claude: claudeOpen, cron: cronOpen, reader: readerOpen, width: widthOpen, inbox: inboxOpen, incident: incidentOpen, changelog: changelogOpen }
     untrack(() => { for (const [k, v] of Object.entries(now)) if (v && !once[k]) once[k] = true })
   })
 
@@ -185,6 +187,10 @@
   }
 
   onMount(() => {
+    // 更新后第一次打开：提示新版本，点一下看改了什么
+    const seen = (() => { try { return localStorage.getItem('pr-seen-version') } catch { return null } })()
+    if (seen && seen !== APP_VERSION) toast(t('已更新到 v{v}', { v: APP_VERSION }), { action: { label: t('看看改了什么'), onClick: () => (changelogOpen = true) }, duration: 8000 })
+    try { localStorage.setItem('pr-seen-version', APP_VERSION) } catch {}
     fitViewport()
     window.visualViewport?.addEventListener('resize', fitViewport)
     window.addEventListener('resize', fitViewport)
@@ -264,7 +270,7 @@
     {#await import('$lib/components/MoreMenu.svelte') then M}
       <M.default bind:open={moreOpen} class={iconBtn} {onPane} {pushOn}
         onplugins={() => (plugins.drawer = true)} onreader={() => (readerOpen = true)}
-        onwidth={() => openWidth(ui.panes.find((p) => String(p.pane) === ui.current))} onincident={() => openIncident()} onnotify={() => (notifOpen = true)} />
+        onwidth={() => openWidth(ui.panes.find((p) => String(p.pane) === ui.current))} onincident={() => openIncident()} onnotify={() => (notifOpen = true)} onchangelog={() => (changelogOpen = true)} />
     {/await}
   {:else}
     <!-- 菜单第一次点开时才下载（MoreMenu），之前是一个样子一样的按钮 -->
@@ -345,6 +351,7 @@
 {#if once.width}{#await import('$lib/components/WidthSheet.svelte') then M}<M.default bind:open={widthOpen} pane={widthPane} />{/await}{/if}
 {#if once.create}{#await import('$lib/components/CreatePane.svelte') then M}<M.default bind:open={createOpen} target={createTarget} ondone={() => sessionsSheet.set(false)} />{/await}{/if}
 {#if once.rename}{#await import('$lib/components/RenameSheet.svelte') then M}<M.default bind:open={renameOpen} pane={actPane} />{/await}{/if}
+{#if once.changelog}{#await import('$lib/components/ChangelogSheet.svelte') then M}<M.default bind:open={changelogOpen} />{/await}{/if}
 {#if once.notif}{#await import('$lib/components/NotifySheet.svelte') then M}<M.default bind:open={notifOpen} bind:on={pushOn} />{/await}{/if}
 {#if once.keys}{#await import('$lib/components/KeyEditor.svelte') then M}<M.default bind:open={keysOpen} />{/await}{/if}
 {#if once.inbox}{#await import('$lib/components/Inbox.svelte') then M}<M.default bind:open={inboxSheet.get, inboxSheet.set} oncursor={openCursorSession} />{/await}{/if}

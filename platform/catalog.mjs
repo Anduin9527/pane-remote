@@ -6,6 +6,7 @@ import path from 'node:path'
 import { loadManifest, nativeManifestLoader } from '@whatevertools/core'
 import { utoolsManifestLoader } from '@whatevertools/compat-utools'
 import { pinyin } from 'pinyin-pro'
+import { satisfies, validRange } from './semver.mjs'
 
 const LOADERS = [nativeManifestLoader, utoolsManifestLoader]
 const FILES = [...new Set(LOADERS.flatMap((l) => l.files))]
@@ -47,10 +48,12 @@ export function loadPlugin(dir) {
     storageGroups: Array.isArray(extra.storage) ? extra.storage.filter((g) => typeof g === 'string' && /^[a-z0-9][a-z0-9._-]{0,63}$/.test(g)) : [],
     // 改用 Mac 做的能力：clipboard（clipboard.writeText 写 Mac 的剪贴板）、openExternal（shell.openExternal 在 Mac 上打开）
     mac: { clipboard: extra.mac?.clipboard === true, openExternal: extra.mac?.openExternal === true },
+    // 需要的插件 API 版本范围（见 rpc.mjs 的 PLUGIN_API）
+    requires: (() => { if (extra.requires === undefined) return null; if (!validRange(extra.requires)) throw new Error(`paneRemote.requires 写法不对：${JSON.stringify(extra.requires)}`); return extra.requires })(),
   }
 }
 
-export function createCatalog(rootDir) {
+export function createCatalog(rootDir, { apiVersion } = {}) {
   let cache = { key: '', plugins: new Map(), problems: [] }
   function scan() {
     let names = []
@@ -66,6 +69,7 @@ export function createCatalog(rootDir) {
         const m = loadPlugin(path.join(rootDir, n))
         // 目录名就是插件 id（静态文件路径 /plugins/<目录名>/ 和权限、数据都按它存），描述文件里的 id 不一致时以目录名为准
         if (m.id !== n) m.declaredId = m.id
+        if (m.requires && apiVersion && !satisfies(apiVersion, m.requires)) throw new Error(`需要插件 API ${m.requires}，这里是 ${apiVersion}，请更新 pane-remote`)
         m.id = n
         plugins.set(n, m)
       } catch (e) { problems.push({ dir: n, error: e.problems ? e.problems.join('; ') : e.message }) }

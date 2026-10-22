@@ -59,6 +59,8 @@ const ALLOWED = new Set(config.allowedLogins)
 const LINES = Number(config.scrollbackLines) || 300
 const HOME = process.env.HOME
 const PUBLIC = path.join(APP_DIR, 'public') // 前端构建产物
+// 系统版本：根目录 package.json 的 version 是唯一来源（前端构建时也从这里读），改动记录在 CHANGELOG.md
+const APP_VERSION = (() => { try { return JSON.parse(fs.readFileSync(path.join(APP_DIR, 'package.json'), 'utf8')).version || '0.0.0' } catch { return '0.0.0' } })()
 const RELAY = config.mode === 'relay'
 const BRIDGE = path.join(APP_DIR, 'agent/bridge')
 
@@ -711,6 +713,7 @@ if (config.modules.plugins !== false) try {
     notify: (p) => push.notify(p).then((r) => { console.log(`notify(plugin) ${p.plugin} → ${JSON.stringify(r)}`); return r }),
     recordIncident: (r) => incidents.record(r),
     host, // AI、电脑剪贴板 / 打开网址、只读文件走 pane-host
+    version: APP_VERSION,
   })
 } catch (e) { console.log(`plugins: platform disabled (${e.message})`) }
 
@@ -752,6 +755,13 @@ async function onRequest(req, res) {
     }
   }
   try {
+    if (url.pathname === '/api/version' && req.method === 'GET') return json(res, 200, { version: APP_VERSION, plugin_api: platform?.apiVersion || null })
+    if (url.pathname === '/api/changelog' && req.method === 'GET') {
+      let md = ''
+      try { md = fs.readFileSync(path.join(APP_DIR, 'CHANGELOG.md'), 'utf8') } catch { return json(res, 404, { error: 'no changelog' }) }
+      res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'no-cache' })
+      return res.end(md)
+    }
     // 插件平台（可选模块 plugins，默认开）：插件列表、插件自己的文件
     if (platform && (url.pathname.startsWith('/plugins/') || url.pathname.startsWith('/api/plugins'))) {
       if (await platform.handle(req, res, url, async () => JSON.parse((await readBody(req, 64 << 10)) || '{}'))) return
@@ -1172,7 +1182,7 @@ const kickReason = () => {
   while (Buffer.byteLength(JSON.stringify({ ...i, device: d })) > 120) d = d.slice(0, -1)
   return JSON.stringify({ ...i, device: d })
 }
-const LEASE_FREE = new Set(['/api/lease', '/api/claim', '/api/log']) // 被顶 / 本机时也能用：查状态、接管、上报问题
+const LEASE_FREE = new Set(['/api/lease', '/api/claim', '/api/log', '/api/version', '/api/changelog']) // 被顶 / 本机时也能用：查状态、接管、上报问题
 const clientOf = (req, url) => { const c = req.headers['x-pane-client'] || url.searchParams.get('_pc'); return validClient(c) ? c : '' }
 const kickWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 1024 })
 
@@ -1210,7 +1220,7 @@ server.on('upgrade', onUpgrade)
 
 if (!ALLOWED.size) console.log('警告：allowedLogins 是空的，所有请求都会被拒绝（跑 pane-remote init 配置）')
 if (!RELAY && !SERVE_HOSTS.size) console.log('警告：serveHosts 是空的，local 模式下所有请求都会被拒绝（跑 pane-remote init 配置）')
-server.listen(PORT, '127.0.0.1', () => console.log(`pane-remote (${config.mode}) on 127.0.0.1:${PORT}, ${ALLOWED.size} allowed login(s)`))
+server.listen(PORT, '127.0.0.1', () => console.log(`pane-remote v${APP_VERSION} (${config.mode}) on 127.0.0.1:${PORT}, ${ALLOWED.size} allowed login(s)`))
 
 // 可选：直接在 tailnet 地址上开 HTTPS（config.tls，见 docs/advanced.md「不经 tailscale serve」），不经 tailscale serve。
 // serve 在 tailscaled 的用户态网络栈里收发，它已经忘掉的连接再收到包时直接丢掉、不回 RST。手机睡一晚醒来还拿着睡前的连接发请求，

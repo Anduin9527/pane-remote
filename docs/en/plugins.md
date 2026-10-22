@@ -36,6 +36,7 @@ pane-remote specific settings go under `paneRemote` in `whatevertools.json`:
     "notification": { "reason": "Notify you when you tap Notify" }
   },
   "paneRemote": {
+    "requires": ">=0.2.0",
     "keepAlive": 300,
     "storage": ["demo"],
     "mac": { "clipboard": false, "openExternal": false }
@@ -45,12 +46,15 @@ pane-remote specific settings go under `paneRemote` in `whatevertools.json`:
 
 | Field | Meaning |
 |---|---|
+| `requires` | Required plugin API version range (`0.2.0`, `>=0.2.0`, `^0.2.0`, `~0.2.1`; space-separated parts must all hold). Plugins that don't match are not loaded and are listed as catalog problems. The current version is `whatevertools.platform.info().api` or `api` in `GET /api/plugins` |
 | `keepAlive` | Seconds in the background before the plugin goes to sleep (30–3600, default 300) |
 | `storage` | Shared storage groups it may join (`platform.storage`); undeclared groups are refused |
 | `mac.clipboard` | `true`: `copyText` / `clipboard.writeText` write the **computer's** clipboard (default: the phone's) |
 | `mac.openExternal` | `true`: `shellOpenExternal` / `shell.openExternal` open on the **computer** (default: on the phone) |
 
 The reasons in `permissions` are shown in permission prompts; declaring a permission does not grant it.
+
+**Versions**: `platform.info()` returns `{ name, version, api }`. `version` is the pane-remote system version (also returned by `utools.getAppVersion()`); `api` is the plugin API version, bumped only when the plugin-facing API changes (minor for additions, major for changes / removals). Prefer `supports()` to check whether an API is usable; `requires` is only a coarse filter.
 
 Samples:
 

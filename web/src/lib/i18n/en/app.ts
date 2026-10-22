@@ -76,4 +76,10 @@ export default {
   '在这台设备上继续': 'Continue on this device',
   '这台电脑就是被遥控的电脑': 'This is the computer being controlled',
   '请用手机或其他设备打开。': 'Open it from your phone or another device.',
+  '更新内容': "What's new",
+  '当前版本 v{v}': 'Current version v{v}',
+  '读不到更新记录：{msg}': "Couldn't load the changelog: {msg}",
+  '加载中…': 'Loading…',
+  '已更新到 v{v}': 'Updated to v{v}',
+  '看看改了什么': "See what's new",
 } as Record<string, string>

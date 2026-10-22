@@ -19,11 +19,10 @@ import { FileBackend } from '@whatevertools/db-file'
 import { createCatalog } from './catalog.mjs'
 import { createPermissions } from './permissions.mjs'
 import { createAudit } from './audit.mjs'
-import { createRpc, createShared, createAsks, supportTable, runtimeTable, cleanDir, PLATFORM, PRIVATE_DIR } from './rpc.mjs'
+import { createRpc, createShared, createAsks, supportTable, runtimeTable, cleanDir, PLATFORM, PLUGIN_API, PRIVATE_DIR } from './rpc.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const RUNTIME = path.join(HERE, 'runtime.js')
-const VERSION = '0.1.0'
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.json': 'application/json', '.map': 'application/json', '.txt': 'text/plain; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -61,7 +60,8 @@ function csp(rawHost) {
  */
 export function createPlatform(deps) {
   const root = path.join(deps.dataDir, 'plugins')
-  const catalog = createCatalog(deps.pluginsDir)
+  const VERSION = deps.version || '0.0.0' // 系统版本（根目录 package.json）
+  const catalog = createCatalog(deps.pluginsDir, { apiVersion: PLUGIN_API })
   const perms = createPermissions({ file: path.join(root, 'permissions.json') })
   const audit = createAudit(path.join(root, 'audit.jsonl'))
   const dbs = new Map()
@@ -199,7 +199,7 @@ export function createPlatform(deps) {
     // 启动数据里带上插件的全部文档（含 dbStorage 的键和墓碑），插件页里 db / dbStorage 的同步读写都在本地副本上做
     return {
       plugin: { id: m.id, name: m.name, version: m.version, description: m.description, features: m.features, logo: m.logo },
-      platform: { name: PLATFORM, version: VERSION },
+      platform: { name: PLATFORM, version: VERSION, api: PLUGIN_API },
       ...runtimeBoot,
       db: {
         docs: [...Object.values(db.docs), ...Object.entries(db.tombstones).map(([id, rev]) => ({ _id: id, _rev: rev, _deleted: true }))], // docs / tombstones 是 DocDb 的内部字段，没有对外的全量接口
@@ -259,7 +259,7 @@ export function createPlatform(deps) {
     if (!p.startsWith('/api/plugins')) return false
     const plugin = () => { const m = catalog.get(String(url.searchParams.get('plugin') || '')); if (!m) throw new Error('没有这个插件'); return m }
     try {
-      if (p === '/api/plugins' && req.method === 'GET') return json(res, 200, { platform: PLATFORM, version: VERSION, plugins: catalog.list(), problems: catalog.problems() }), true
+      if (p === '/api/plugins' && req.method === 'GET') return json(res, 200, { platform: PLATFORM, version: VERSION, api: PLUGIN_API, plugins: catalog.list(), problems: catalog.problems() }), true
       if (p === '/api/plugins/support' && req.method === 'GET') return json(res, 200, supportTable()), true
       if (p === '/api/plugins/audit' && req.method === 'GET') return json(res, 200, audit.list(url.searchParams.get('plugin') || '', Math.min(500, Number(url.searchParams.get('n')) || 100))), true
       if (p === '/api/plugins/asks' && req.method === 'GET') return json(res, 200, asks.list()), true
@@ -293,6 +293,7 @@ export function createPlatform(deps) {
   }
 
   return {
+    apiVersion: PLUGIN_API,
     handle,
     upgrade,
     /** /api/agent/answer 也能答插件的问题（推送点进来、Inbox 里答） */

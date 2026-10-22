@@ -218,7 +218,7 @@
   if (dark && dark.addEventListener) dark.addEventListener('change', function () { themeFns.forEach(function (fn) { safe(fn, dark.matches) }) })
   function fire(p) { p.catch(function (e) { console.warn('[pane-remote] ' + e.message) }) }
   var wt = {
-    identity: { platform: { name: BOOT.platform.name, version: BOOT.platform.version }, plugin: { id: P.id, name: P.name, version: P.version } },
+    identity: { platform: { name: BOOT.platform.name, version: BOOT.platform.version, api: BOOT.platform.api }, plugin: { id: P.id, name: P.name, version: P.version } },
     supports: function (name) { var n = LEGACY[name] || name, s = SUPPORT[n]; return !s || s === 'none' ? false : s },
     lifecycle: {
       onEnter: function (fn) { enterFns.push(fn); if (lastEnter) setTimeout(function () { safe(fn, lastEnter) }) },
@@ -260,7 +260,7 @@
     },
     tools: { register: function (name, handler) { if (typeof handler === 'function') tools[String(name)] = handler } },
     platform: {
-      info: function () { return { name: BOOT.platform.name, version: BOOT.platform.version, plugin: P.id } },
+      info: function () { return { name: BOOT.platform.name, version: BOOT.platform.version, api: BOOT.platform.api, plugin: P.id } },
       call: call, // 以后加的 platform.* 方法不用改运行时也能调
       // AI 详细版：responseFormat（结构化输出）、reasoning、tools；返回 { text, structured, usage, ttftMs, ms, model, … }。opts.signal 取消
       ai: {

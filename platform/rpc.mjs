@@ -12,6 +12,9 @@ import crypto from 'node:crypto'
 import { APIS, findApi } from '@whatevertools/core'
 
 export const PLATFORM = 'pane-remote'
+// 插件 API 版本：和系统版本分开，只在插件能用的接口变了才升（加接口升次版本，改 / 删接口升主版本）。
+// 插件在 whatevertools.json 的 paneRemote.requires 里写范围（如 ">=0.2.0"），不满足的不加载、列进插件目录的问题里
+export const PLUGIN_API = '0.2.0'
 
 const unsupported = (method, why) => Object.assign(new Error(`[pane-remote] 不支持 ${method}${why ? `：${why}` : ''}`), { code: 'EWTUNSUPPORTED', method })
 const bad = (msg) => Object.assign(new Error(msg), { code: 'EBADARG' })

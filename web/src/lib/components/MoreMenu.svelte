@@ -8,6 +8,8 @@
   import Ellipsis from '@lucide/svelte/icons/ellipsis'
   import Languages from '@lucide/svelte/icons/languages'
   import FileText from '@lucide/svelte/icons/file-text'
+  import History from '@lucide/svelte/icons/history'
+  import { APP_VERSION } from '$lib/version'
   import PluginsIcon from '$lib/plugins/PluginsIcon.svelte'
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
   import { incidents } from '$lib/incidents.svelte'
@@ -16,9 +18,9 @@
   import { cn } from '$lib/utils'
   import { t, isEn, setLang } from '$lib/i18n'
 
-  let { open = $bindable(false), class: className = '', onPane, pushOn, onplugins, onreader, onwidth, onincident, onnotify }: {
+  let { open = $bindable(false), class: className = '', onPane, pushOn, onplugins, onreader, onwidth, onincident, onnotify, onchangelog }: {
     open?: boolean; class?: string; onPane: boolean; pushOn: boolean
-    onplugins: () => void; onreader: () => void; onwidth: () => void; onincident: () => void; onnotify: () => void
+    onplugins: () => void; onreader: () => void; onwidth: () => void; onincident: () => void; onnotify: () => void; onchangelog: () => void
   } = $props()
 
   function zoom(d: number) {
@@ -49,5 +51,6 @@
     <DropdownMenu.Item onSelect={onnotify}>{#if pushOn}<Bell />{:else}<BellOff />{/if}{t('推送通知')}<span class="ml-auto text-xs text-muted-foreground">{pushOn ? t('已开') : t('未开')}</span></DropdownMenu.Item>
     <DropdownMenu.Separator />
     <DropdownMenu.Item onSelect={() => setLang(isEn ? 'zh' : 'en')}><Languages />{t('语言')}<span class="ml-auto text-xs text-muted-foreground">{isEn ? 'English → 中文' : '中文 → English'}</span></DropdownMenu.Item>
+    <DropdownMenu.Item onSelect={onchangelog}><History />{t('更新内容')}<span class="ml-auto font-mono text-xs text-muted-foreground">v{APP_VERSION}</span></DropdownMenu.Item>
   </DropdownMenu.Content>
 </DropdownMenu.Root>
