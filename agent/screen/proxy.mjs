@@ -147,7 +147,7 @@ let fresh = false, covered = 0, freshTimer = null // 换屏后整块收齐了没
 // 收齐没有按 8 像素一格记（同一块区域重复发不能算两遍）
 const TILE = 8
 let tiles = null, tilesLeft = 0
-const stats = { rects: 0, bytes: 0, enc: {} }
+const stats = { rects: 0, bytes: 0, enc: {}, req: 0, sent: 0 } // req/sent：手机要了几帧、发了几帧（画面不动时分清是哪头停了）
 let sendSize = false, announce = false
 
 // ---------- 显示器和校准 ----------
@@ -167,12 +167,27 @@ function pointer(x, y) {
 // 没有就退回走屏幕共享（多屏时苹果只能把光标放进其中一排屏，别的屏点不到）
 const MOUSE_SOCK = process.env.VNC_PROXY_MOUSECTL || path.join(process.env.HOME, '.cache/pane-remote/mouse.sock')
 let mousectl = null
-{
+// mousectl 重启过（崩了被 launchd 拉起、重装）要重新连上：不然这个代理一直退回屏幕共享，
+// 而屏幕共享常常只给黑屏
+let mousectlTries = 0, mousectlEver = false
+function connectMousectl() {
   const c = net.connect(MOUSE_SOCK)
-  c.on('connect', () => { mousectl = c; log('mousectl connected') })
-  c.on('error', (e) => { mousectl = null; log('mousectl unavailable, pointer via screen sharing:', e.code) })
-  c.on('close', () => { mousectl = null })
+  let up = false
+  c.on('connect', () => {
+    const again = mousectlEver
+    up = true; mousectl = c; mousectlTries = 0; mousectlEver = true
+    log(again ? 'mousectl reconnected' : 'mousectl connected')
+    // 重连上时正退回在屏幕共享上看屏（录屏那条路断过）：换回录屏。第一次连上时还在握手，不能动
+    if (again && !win && attached && !sckFailed) { displayRetries = 0; showScreen(); flush() }
+  })
+  c.on('error', (e) => { if (!up && mousectlTries === 0) log('mousectl unavailable, pointer via screen sharing:', e.code) })
+  c.on('close', () => {
+    if (mousectl === c) { mousectl = null; log('mousectl gone, reconnecting') }
+    // 一直重连：前几次快一点（launchd 拉起只要一两秒），之后每 5 秒
+    setTimeout(connectMousectl, ++mousectlTries < 10 ? 500 : 5000)
+  })
 }
+connectMousectl()
 let viewRect = null, viewDisp = null
 // 键盘也交给 mousectl（跟文字、点击排同一个队列，先后不乱）：VNC keysym → macOS 虚拟键码（美式键位）
 const MOD_FLAGS = { 0xffe1: 0x20000, 0xffe2: 0x20000, 0xffe3: 0x40000, 0xffe4: 0x40000, 0xffe9: 0x80000, 0xffea: 0x80000, 0xffe7: 0x100000, 0xffe8: 0x100000, 0xffeb: 0x100000, 0xffec: 0x100000 }
@@ -464,7 +479,7 @@ setInterval(() => {
   if (!fb) return
   let sum = 0, n = 0, lit = 0
   for (let i = 0; i < fb.length; i += 3 * 97) { const v = fb[i] + fb[i + 1] + fb[i + 2]; sum += v; n++; if (v > 30) lit++ }
-  log(`stats mac rects ${stats.rects} zrle ${(stats.bytes / 1024).toFixed(0)}KB enc ${JSON.stringify(stats.enc)} tiles ${tiles ? tiles.length - tilesLeft : 0}/${tiles?.length} fresh ${fresh} brightness ${(sum / n / 3).toFixed(1)} lit ${(100 * lit / n).toFixed(0)}%`)
+  log(`stats mac rects ${stats.rects} zrle ${(stats.bytes / 1024).toFixed(0)}KB enc ${JSON.stringify(stats.enc)} tiles ${tiles ? tiles.length - tilesLeft : 0}/${tiles?.length} fresh ${fresh} brightness ${(sum / n / 3).toFixed(1)} lit ${(100 * lit / n).toFixed(0)}% phone req ${stats.req} sent ${stats.sent} wants ${phoneWants} flushing ${flushing} dirty ${dirty.length}`)
 }, 5000).unref()
 // ---------- 按窗口看：画面来自 mousectl（ScreenCaptureKit 只录这一个窗口），不走屏幕共享 ----------
 // win：{ id, hi, sock, x, y, w, h（窗口在屏幕上的位置，点）, W, H（画面像素）, pid, taken（已切到前台）, prev（之前的前台 app）}
@@ -495,7 +510,11 @@ function backToScreens(why) {
     if (displayRetries < 3) {
       displayRetries++
       stopWindow()
-      setTimeout(() => { if (!win) { log(`display stream retry ${displayRetries}`); showScreen(); flush() } }, 1000)
+      // mousectl 自己断了的话等它重连上（最多 5 秒）再录，别马上退回屏幕共享
+      setTimeout(async () => {
+        for (let i = 0; i < 50 && !mousectl; i++) await sleep(100)
+        if (!win) { log(`display stream retry ${displayRetries}${mousectl ? '' : ' (mousectl still gone)'}`); showScreen(); flush() }
+      }, 1000)
       return
     }
     sckFailed = true; failNote = ''
@@ -767,6 +786,7 @@ async function flush() {
   }
   const hdr = Buffer.alloc(4); hdr[0] = 0; hdr.writeUInt16BE(parts.length, 2)
   toPhone(Buffer.concat([hdr, ...parts]))
+  stats.sent++
   flushing = false
   flush()
 }
@@ -781,6 +801,7 @@ async function phoneLoop() {
     } else if (t === 3) {
       const b = await fromPhone.need(9)
       if (!b[0]) markAll()
+      stats.req++
       phoneWants = true
       flush()
     } else if (t === 4) {

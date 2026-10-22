@@ -572,6 +572,9 @@ func location() -> String {
   return "\(p.x),\(p.y)\n"
 }
 
+// 代理那头先关了连接（换屏、手机断开）时，这边还在写画面：默认的 SIGPIPE 会直接杀掉整个 mousectl
+// （launchd 记的退出码是 -13），录屏和鼠标全断。忽略它，写失败由 writeAll 返回 false 处理
+signal(SIGPIPE, SIG_IGN)
 unlink(path)
 let fd = socket(AF_UNIX, SOCK_STREAM, 0)
 var addr = sockaddr_un()

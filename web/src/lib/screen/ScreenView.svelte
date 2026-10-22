@@ -36,6 +36,7 @@
   import { cn } from '$lib/utils'
   import { t, tr } from '$lib/i18n'
   import { postJson } from '$lib/api'
+  import { watchRender } from './renderWatch'
 
   let { open = $bindable(false), active = true, onhide, onclose }: { open?: boolean; active?: boolean; onhide?: () => void; onclose?: () => void } = $props()
 
@@ -310,9 +311,11 @@
     // 缩放和视口全归我们管：noVNC 在画面区域尺寸变化、换分辨率时会调这两个，把缩放改回它自己的默认值
     r._updateClip = () => applyView()
     r._updateScale = () => applyView()
+    const stopWatch = watchRender(r) // 手机端渲染卡住时跳过坏图、要整屏，并上报（见 renderWatch.ts）
     if (!active) r._enabledContinuousUpdates = true // 在后台连上的（睡眠前就在后台不会这样，保险）
     r.addEventListener('connect', () => { if (rfb !== r) return; if (status !== 'live') status = 'loading'; zoom = 1; pos = { x: 0, y: 0 }; cursor = null })
     r.addEventListener('disconnect', (e: any) => {
+      stopWatch()
       if (rfb !== r) return
       rfb = null
       sock = null
