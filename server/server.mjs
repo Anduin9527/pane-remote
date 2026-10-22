@@ -34,6 +34,7 @@
 //   /api/plugins*、/plugins/*、WS /api/platform/ws  插件平台（见 platform/index.mjs）
 // 身份：只认 tailscale serve 注入的 Tailscale-User-Login，且必须在 allowedLogins 里；local 模式还要求 Host 是 serveHosts 之一。
 import http from 'node:http'
+import http2 from 'node:http2'
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFile, spawn } from 'node:child_process'
@@ -712,7 +713,7 @@ if (config.modules.plugins !== false) try {
   })
 } catch (e) { console.log(`plugins: platform disabled (${e.message})`) }
 
-const server = http.createServer(async (req, res) => {
+async function onRequest(req, res) {
   if (!authorized(req)) {
     res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
     return res.end('forbidden')
@@ -978,7 +979,7 @@ const server = http.createServer(async (req, res) => {
     if (incidents.isProgramError(e)) incidents.record({ source: 'server', component: `api ${url.pathname.replace(/\/[0-9a-f]{12}(?=\/|$)/, '/:id')}`, kind: e.name || 'Error', msg: e.message, detail: e.stack, severity: e instanceof TypeError || e instanceof ReferenceError ? 'high' : 'normal' })
     json(res, 502, { error: e.message })
   }
-})
+}
 
 // 电脑上要打开网址（pane-open 写的 open 事件）：预览开着就直接打开并提示；否则发给正在看终端的手机，再推一条通知
 function onOpen(url) {
@@ -1135,7 +1136,7 @@ const screen = createScreen({ bridge, bridgeProc })
 const macApi = createMac({ bridge })
 
 // WebSocket 升级不经过上面的请求处理，身份和来源要在这里单独查
-server.on('upgrade', (req, socket, head) => {
+function onUpgrade(req, socket, head) {
   const url = new URL(req.url, 'http://x')
   const origin = req.headers.origin
   const isScreen = url.pathname === '/api/screen/vnc'
@@ -1151,8 +1152,60 @@ server.on('upgrade', (req, socket, head) => {
   if (platformWs) return platform.upgrade(req, socket, head, url)
   const pv = url.searchParams.get('source') === 'cursor' ? previews.cursor : previews.chrome
   pv.wss.handleUpgrade(req, socket, head, (ws) => pv.wss.emit('connection', ws, req))
-})
+}
+
+const server = http.createServer(onRequest)
+server.on('upgrade', onUpgrade)
 
 if (!ALLOWED.size) console.log('警告：allowedLogins 是空的，所有请求都会被拒绝（跑 pane-remote init 配置）')
 if (!RELAY && !SERVE_HOSTS.size) console.log('警告：serveHosts 是空的，local 模式下所有请求都会被拒绝（跑 pane-remote init 配置）')
 server.listen(PORT, '127.0.0.1', () => console.log(`pane-remote (${config.mode}) on 127.0.0.1:${PORT}, ${ALLOWED.size} allowed login(s)`))
+
+// 可选：直接在 tailnet 地址上开 HTTPS（config.tls，见 docs/advanced.md「不经 tailscale serve」），不经 tailscale serve。
+// serve 在 tailscaled 的用户态网络栈里收发，它已经忘掉的连接再收到包时直接丢掉、不回 RST。手机睡一晚醒来还拿着睡前的连接发请求，
+// 包全被丢掉、请求一直挂着，重开 App 也复用同一批死连接，看起来就是「整体断开、重连不上」。系统内核的 TCP 会立刻回 RST，手机马上换新连接。
+// 身份：serve 注入的 Tailscale-User-Login 改成按来源 IP 问本机 tailscaled（whois），客户端带来的同名头一律丢掉
+if (config.tls.listen) {
+  const [tlsHost, tlsPort] = config.tls.listen.split(/:(?=\d+$)/)
+  const creds = () => ({ cert: fs.readFileSync(config.tls.cert), key: fs.readFileSync(config.tls.key) })
+  const tlsServer = http2.createSecureServer({ ...creds(), allowHTTP1: true }) // WebSocket 走 HTTP/1.1
+  // 证书由 tailscale cert 定期续期（docs/advanced.md「不经 tailscale serve」），这里定时重读
+  setInterval(() => { try { tlsServer.setSecureContext(creds()) } catch (e) { console.log(`tls: reload cert failed: ${e.message}`) } }, 6 * 3600e3).unref()
+  const ident = async (req) => {
+    delete req.headers['tailscale-user-login']
+    if (!req.headers.host && req.headers[':authority']) req.headers.host = req.headers[':authority']
+    const login = await whois(req.socket.remoteAddress)
+    if (login) req.headers['tailscale-user-login'] = login
+  }
+  tlsServer.on('request', (req, res) => { ident(req).then(() => onRequest(req, res)) })
+  tlsServer.on('upgrade', (req, socket, head) => { ident(req).then(() => onUpgrade(req, socket, head)) })
+  tlsServer.on('error', (e) => console.log(`tls: ${e.message}`))
+  tlsServer.listen(Number(tlsPort), tlsHost, () => console.log(`pane-remote tls on ${config.tls.listen}`))
+}
+// 来源 IP → Tailscale 登录名。Linux 上直接问 tailscaled 的 LocalAPI（unix socket）；没有这个 socket（macOS 的 Tailscale App）就用 tailscale whois 命令
+const TS_SOCK = '/run/tailscale/tailscaled.sock'
+const TS_CLI = ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale']
+const whoisCache = new Map() // ip → { login, at }
+async function whois(addr) {
+  const ip = String(addr || '').replace(/^::ffff:/, '')
+  const hit = whoisCache.get(ip)
+  if (hit && Date.now() - hit.at < 60000) return hit.login
+  let body = ''
+  if (fs.existsSync(TS_SOCK)) body = await new Promise((resolve) => {
+    const r = http.get({ socketPath: TS_SOCK, path: `/localapi/v0/whois?addr=${encodeURIComponent(ip)}`, headers: { host: 'local-tailscaled.sock' }, timeout: 3000 }, (res) => {
+      let b = ''
+      res.on('data', (d) => { b += d })
+      res.on('end', () => resolve(res.statusCode === 200 ? b : ''))
+    })
+    r.on('timeout', () => r.destroy())
+    r.on('error', () => resolve(''))
+  })
+  else for (const cli of TS_CLI) {
+    body = await new Promise((resolve) => execFile(cli, ['whois', '--json', ip], { timeout: 3000 }, (e, out) => resolve(e ? '' : String(out))))
+    if (body) break
+  }
+  let login = ''
+  try { login = JSON.parse(body).UserProfile?.LoginName || '' } catch {} // ignore: 查不到就当没登录，拒绝
+  whoisCache.set(ip, { login, at: Date.now() })
+  return login
+}

@@ -52,3 +52,32 @@ PANE_REMOTE_CONFIG=~/.config/pane-remote/config.json node server/server.mjs
 
 反向代理必须像 tailscale serve 一样把访问者身份放进 `Tailscale-User-Login` 请求头，并且不能让访问者自己伪造这个头；
 `serveHosts` 填代理对外的主机名。没有可靠身份来源时不要这样用。
+
+## 不经 tailscale serve：睡一晚醒来连不上时
+
+`tailscale serve` 在 tailscaled 自己的网络栈里收发连接。它已经忘掉的连接再收到包时，直接丢掉、不回 RST。
+手机睡一晚醒来，还拿着睡前的连接发请求，这些包全被丢掉，请求一直挂着；重开 App 也复用同一批死连接，看起来就是整体断开、怎么都重连不上。
+服务端日志（Linux 上 `journalctl -u tailscaled`）里会看到 `netstack: ... because the packet was not handled`。
+
+可选的做法：让服务自己在 tailnet 地址上开 HTTPS，用系统内核的 TCP。死连接会立刻收到 RST，手机马上换新连接。
+仍然只有 tailnet 能访问；身份改成按来源 IP 问本机 tailscaled（`whois`），客户端自己带的 `Tailscale-User-Login` 一律丢掉。
+
+1. 生成证书（要在 Tailscale 后台开着 HTTPS）：
+
+   ```sh
+   sudo tailscale cert --cert-file ~/tls.crt --key-file ~/tls.key <本机>.<tailnet>.ts.net
+   sudo chown "$USER" ~/tls.crt ~/tls.key
+   ```
+
+   证书 90 天过期，用 cron / launchd / systemd timer 每周重跑一次；服务每 6 小时重读证书，不用重启。
+2. 关掉 serve 的 443：`sudo tailscale serve --https=443 off`
+3. 在配置里加上（`tailscale ip -4` 查本机的 tailnet 地址）：
+
+   ```json
+   "tls": { "listen": "100.x.y.z:443", "cert": "~/tls.crt", "key": "~/tls.key" }
+   ```
+
+   也可以用环境变量 `TLS_LISTEN` / `TLS_CERT` / `TLS_KEY`。监听 443 要权限：Linux 上 systemd 加 `AmbientCapabilities=CAP_NET_BIND_SERVICE`，或者换个高端口（手机地址里带上端口）。
+4. 重启服务。日志里出现 `pane-remote tls on 100.x.y.z:443` 就生效了。
+
+改回去：删掉 `tls`，重新 `tailscale serve --bg --https=443 http://127.0.0.1:8787`，重启服务。

@@ -39,6 +39,9 @@ const DEFAULTS = {
   // Claude 配置目录名 → 启动命令。分叉会话时必须用会话所在账号的命令，不然找不到会话
   claudeWrappers: { '.claude': 'claude' },
   vapidSubject: 'mailto:pane-remote@localhost',
+  // 可选：不经 tailscale serve，服务自己在 tailnet 地址上开 HTTPS（docs/advanced.md「不经 tailscale serve」）。listen 如 "100.x.y.z:443"，
+  // cert / key 用 tailscale cert 生成。空 = 不开（默认，照旧走 tailscale serve）
+  tls: { listen: '', cert: '', key: '' },
   // relay 模式：中转服务器怎么连回电脑（经反向隧道）
   relay: {
     target: '', // 电脑上的用户名@127.0.0.1
@@ -68,3 +71,6 @@ config.relay.identity = expand(config.relay.identity)
 if (process.env.PORT) config.port = Number(process.env.PORT)
 if (process.env.ALLOWED_LOGINS) config.allowedLogins = process.env.ALLOWED_LOGINS.split(',').map((s) => s.trim()).filter(Boolean)
 if (process.env.DATA_DIR) config.dataDir = process.env.DATA_DIR
+if (process.env.TLS_LISTEN) config.tls = { listen: process.env.TLS_LISTEN, cert: process.env.TLS_CERT || '', key: process.env.TLS_KEY || '' }
+config.tls.cert = expand(config.tls.cert)
+config.tls.key = expand(config.tls.key)
