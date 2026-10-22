@@ -108,6 +108,11 @@ let seq = '' // 手里这份画面对应的帧序号；重连时带给服务端�
 let lastMsgAt = 0
 let retryTimer: ReturnType<typeof setTimeout> | undefined
 let retries = 0
+// 掉线记录：从第一次发现断开算起，连续重连了几次、多久才恢复，恢复时报给服务端（journal 里 [client] stream-*）
+let downSince = 0, downWhy = '', stalls = 0
+function markDown(why: string) {
+  if (!downSince) { downSince = Date.now(); downWhy = why; report('stream-drop', `${why} pane=${ui.current} idle=${Date.now() - lastMsgAt}ms online=${navigator.onLine}`) }
+}
 
 // 选了 pane（列表、待办、提问、新建…）：路由据此把地址切到这个 pane（在预览 / Cursor / 插件页时也会切回来）
 let selectHook: (id: string) => void = () => {}
@@ -154,6 +159,8 @@ function connect() {
   const alive = (e: Event) => {
     lastMsgAt = Date.now()
     retries = 0
+    stalls = 0
+    if (downSince) { report('stream-recover', `${downWhy} after=${Date.now() - downSince}ms pane=${ui.current}`); downSince = 0 }
     const id = (e as MessageEvent).lastEventId
     if (id) seq = id
   }
@@ -189,6 +196,7 @@ function connect() {
   src.addEventListener('fail', (e) => setStatus('err', tr(JSON.parse((e as MessageEvent).data).message)))
   src.onerror = () => {
     setStatus('err', t('连接断开，自动重连中'))
+    markDown('error')
     // 浏览器自己会按 retry 重连；只有彻底关掉（比如服务端返回错误码）时才手动重连，退避 + 随机抖动
     if (src.readyState === EventSource.CLOSED && es === src) {
       const wait = Math.min(16000, 1000 * 2 ** retries++) * (0.7 + Math.random() * 0.6)
@@ -217,6 +225,14 @@ export async function reconnectPane() {
   refreshClaude()
   pollStates()
   if (!paused) connect()
+  // 电脑那头好好的（mac ok），8 秒内画面还是没回来：问题在手机这边的连接，直接重载页面（和重开 PWA 一样的效果）
+  const started = Date.now()
+  if (!paused) setTimeout(() => {
+    if (ui.current === pane && lastMsgAt < started && document.visibilityState === 'visible') {
+      markDown('manual')
+      if (!reloadPage('manual')) setStatus('err', t('还是没连上：{msg}', { msg: mac && mac !== 'ok' ? tr(mac) : t('请检查网络') }))
+    }
+  }, 8000)
   return { dropped, mac }
 }
 
@@ -234,12 +250,37 @@ export function setPaused(v: boolean) {
 }
 
 // 假死检测：服务端每 5 秒发 ping，13 秒什么都没收到就当连接已经断了（iOS 切网络、家里路由器换了 NAT 端口时常见），主动重连
-setInterval(() => {
-  if (!paused && document.visibilityState === 'visible' && ui.current && es && Date.now() - lastMsgAt > 13000) {
-    setStatus('err', t('连接没有响应，重连中'))
-    connect()
-  }
+// 连续几次重连都没收到任何消息：先 ping 一下分清是哪一段断了；手机到中转是通的却一直收不到画面，
+// 多半是 iOS 把新请求塞进了已经死掉的旧连接（这时只有重开应用才好），就自动重载页面，不用手动杀 PWA
+let checking = false
+setInterval(async () => {
+  if (checking || paused || document.visibilityState !== 'visible' || !ui.current || !es || Date.now() - lastMsgAt <= 13000) return
+  markDown('stall')
+  stalls++
+  if (stalls < 2) { setStatus('err', t('连接没有响应，重连中')); connect(); return }
+  checking = true
+  const ping = await pingRelay()
+  checking = false
+  if (Date.now() - lastMsgAt <= 13000) return
+  if (!ping) { setStatus('err', t('手机连不上中转（网络或 Tailscale），重连中')); lastMsgAt = Date.now(); connect(); return }
+  setStatus('err', t('中转能连上但画面没回来，重新加载页面'))
+  reloadPage('stall')
 }, 3000)
+
+async function pingRelay(ms = 4000) {
+  try { return (await fetch(`api/ping?t=${Date.now()}`, { cache: 'no-store', signal: AbortSignal.timeout(ms) })).ok } catch { return false }
+}
+
+/** 自动重载页面：两分钟内最多一次，免得服务端真坏了时不停刷新 */
+export function reloadPage(why: string): boolean {
+  let last = 0
+  try { last = Number(sessionStorage.getItem('pr-reload-at')) || 0 } catch {}
+  if (Date.now() - last < 120000) return false
+  try { sessionStorage.setItem('pr-reload-at', String(Date.now())) } catch {}
+  report('auto-reload', `${why} pane=${ui.current} down=${downSince ? Date.now() - downSince : 0}ms`)
+  setTimeout(() => location.reload(), 300)
+  return true
+}
 // 发送碰到网络错误：画面流多半也断了，2 秒内没收到过消息就立刻重连
 onSendNetFail(() => {
   if (!paused && ui.current && Date.now() - lastMsgAt > 2000) connect()

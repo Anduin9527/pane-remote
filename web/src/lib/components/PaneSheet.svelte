@@ -5,6 +5,7 @@
   import RefreshCw from '@lucide/svelte/icons/refresh-cw'
   import Plus from '@lucide/svelte/icons/plus'
   import Ellipsis from '@lucide/svelte/icons/ellipsis'
+  import X from '@lucide/svelte/icons/x'
   import * as Drawer from '$lib/components/ui/drawer'
   import { Button } from '$lib/components/ui/button'
   import { label, type Pane } from '$lib/api'
@@ -78,8 +79,11 @@
   {/if}
 {/snippet}
 
+<!-- 高度上限 85%，上方始终留一块空白可以点着关闭。以前写的 max-h-[85dvh] 压不过底层组件的全屏上限（那条是 data-[…] 写法，优先级更高），
+     会话多了（加上 Cursor 的会话、用量卡片后加载出来）抽屉就长到几乎整屏（894 高的屏幕上 886），上面没地方点，
+     往下拖又只能拖很窄的标题栏，有时只能选一个会话才关得掉。另外加了明确的关闭按钮；只让列表自己滚 -->
 <Drawer.Root bind:open>
-  <Drawer.Content class="max-h-[85dvh]">
+  <Drawer.Content class="max-h-[85dvh] data-[vaul-drawer-direction=bottom]:max-h-[85dvh] overflow-hidden">
     <Drawer.Header class="flex-row items-center justify-between border-b py-3">
       <Drawer.Title>{tt('会话列表')}</Drawer.Title>
       <div class="flex items-center gap-1.5">
@@ -90,9 +94,10 @@
         <Button size="sm" class="rounded-full" onclick={() => oncreate({ window: curPane()?.window, dir: curPane()?.dir })}>
           <Plus /> {tt('新建')}
         </Button>
+        <Button variant="ghost" size="icon-sm" class="rounded-full" aria-label={tt('关闭')} onclick={() => (open = false)}><X /></Button>
       </div>
     </Drawer.Header>
-    <div data-vaul-no-drag class="overflow-y-auto overscroll-contain px-1.5 pb-[calc(env(safe-area-inset-bottom)+8px)]" data-testid="session-list">
+    <div data-vaul-no-drag class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 pb-[calc(env(safe-area-inset-bottom)+8px)]" data-testid="session-list">
       {#if !ui.panes.length}
         <p class="p-6 text-center text-sm text-muted-foreground">{loading ? tt('读取中…') : tt('没有 pane')}</p>
       {/if}

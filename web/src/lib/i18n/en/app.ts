@@ -44,6 +44,10 @@ export default {
   '连接断开，自动重连中': 'Disconnected, reconnecting automatically',
   '重连中…': 'Reconnecting…',
   '连接没有响应，重连中': 'Connection not responding, reconnecting',
+  '手机连不上中转（网络或 Tailscale），重连中': "Can't reach the relay (network or Tailscale), reconnecting",
+  '中转能连上但画面没回来，重新加载页面': 'Relay is reachable but the screen is not coming back, reloading',
+  '还是没连上：{msg}': 'Still not connected: {msg}',
+  '请检查网络': 'check your network',
   '没有 pane': 'No panes',
   '读取失败：{msg}': 'Failed to load: {msg}',
   // api.ts
@@ -59,6 +63,7 @@ export default {
   // 外壳：顶栏、会话列表、插件页
   '原始画面': 'Raw screen',
   '会话列表': 'Sessions',
+  '关闭': 'Close',
   '＋ 新对话': '+ New chat',
   '打开 Cursor 页': 'Open Cursor page',
   '电脑上的浏览器': "Your computer's browser",

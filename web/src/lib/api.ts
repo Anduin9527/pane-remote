@@ -44,8 +44,33 @@ export const answerAsk = (id: string, answer: string, text = '') => postJson('ap
 
 export const label = (p: Pane) => p.title || p.tabTitle || `pane ${p.pane}`
 
-export function report(kind: string, msg: unknown) {
-  try { navigator.sendBeacon('api/log', JSON.stringify({ kind, msg: String(msg).slice(0, 3000), t: Date.now() })) } catch {}
+// 报错 / 诊断发回服务端（pane-remote logs 里搜 client）。以前用 sendBeacon：手机连不上中转的时候发的全丢了，
+// 偏偏最想知道的就是那段时间出了什么错。现在发不出去就存在本机（最多 200 条），下次连上（启动、切回前台、网络恢复、
+// 任何一次发送成功）按顺序补发，带上原来的时间和 queued 标记
+const QKEY = 'pr-log-queue'
+const readQ = (): any[] => { try { return JSON.parse(localStorage.getItem(QKEY) || '[]') } catch { return [] } }
+const writeQ = (q: any[]) => { try { localStorage.setItem(QKEY, JSON.stringify(q.slice(-200))) } catch {} }
+// 带超时：手机拿着死连接发请求时 fetch 既不成功也不失败，不设超时这条就既没发出去也没存下来
+const post = (e: object) => fetch('api/log', { method: 'POST', body: JSON.stringify(e), keepalive: true, headers: { 'content-type': 'text/plain' }, signal: AbortSignal.timeout(10000) }).then((r) => { if (!r.ok) throw new Error(String(r.status)) })
+let flushing = false
+export async function flushReports() {
+  if (flushing) return
+  flushing = true
+  try {
+    for (let q = readQ(); q.length; q = readQ()) {
+      await post({ ...q[0], queued: true, late: Date.now() - (q[0].t || Date.now()) })
+      writeQ(readQ().slice(1))
+    }
+  } catch {} finally { flushing = false }
+}
+export const pendingReports = () => readQ().length
+export function report(kind: string, msg: unknown, extra: Record<string, unknown> = {}) {
+  const e = { kind, msg: String(msg).slice(0, 3000), t: Date.now(), ...extra }
+  post(e).then(() => { if (readQ().length) flushReports() }, () => writeQ([...readQ(), e]))
+}
+if (typeof window !== 'undefined') {
+  addEventListener('online', () => flushReports())
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') flushReports() })
 }
 
 // ---------- 发送队列 ----------

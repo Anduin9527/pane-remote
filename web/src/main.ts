@@ -1,7 +1,8 @@
 import { mount } from 'svelte'
 import './app.css'
 import App from './App.svelte'
-import { report } from '$lib/api'
+import { report, flushReports, pendingReports } from '$lib/api'
+import { toast } from 'svelte-sonner'
 import { update } from '$lib/update.svelte'
 
 // 报错发回服务端，方便排查手机上的问题（pane-remote logs 里搜 client）
@@ -9,7 +10,16 @@ addEventListener('error', (e) => report('error', `${e.message} @ ${e.filename}:$
 addEventListener('unhandledrejection', (e) => report('rejection', e.reason?.stack || e.reason?.message || e.reason))
 const build = (document.querySelector('script[src*="assets/index-"]') as HTMLScriptElement | null)?.src.split('/').pop() || 'dev'
 declare const __BUILD_TIME__: string
-report('boot', `v2 ${build} ${__BUILD_TIME__} ${innerWidth}x${innerHeight} dpr=${devicePixelRatio} standalone=${(navigator as any).standalone}`)
+// 启动：带上这次是怎么打开的（navigate / reload / back_forward）、离上次启动多久、上次留下几条没发出去的报错——
+// 连不上时人会反复重开 App，光看到一串 boot 分不清是人在重开还是页面自己崩了重载
+let lastBoot = 0
+try { lastBoot = Number(localStorage.getItem('pr-last-boot')) || 0; localStorage.setItem('pr-last-boot', String(Date.now())) } catch {}
+const navType = (performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined)?.type || '?'
+report('boot', `v2 ${build} ${__BUILD_TIME__} ${innerWidth}x${innerHeight} dpr=${devicePixelRatio} standalone=${(navigator as any).standalone} nav=${navType} since=${lastBoot ? Math.round((Date.now() - lastBoot) / 1000) + 's' : '-'} queued=${pendingReports()} online=${navigator.onLine}`)
+flushReports()
+// 界面上弹出的错误提示（「xx 失败」）也记一条：以前用户看到了，日志里什么都没有
+const toastError = toast.error
+toast.error = ((msg: unknown, opts?: unknown) => { report('ui-fail', typeof msg === 'string' ? msg : String(msg), { view: location.hash.slice(0, 80) }); return (toastError as any)(msg, opts) }) as typeof toast.error
 
 // iOS Safari 无视 user-scalable=no，双指缩放要自己拦；键盘收起后页面偶尔停在被推上去的位置，拉回来
 for (const ev of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(ev, (e) => e.preventDefault(), { passive: false })
