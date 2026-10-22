@@ -22,6 +22,7 @@
   import { cn } from '$lib/utils'
   import FolderOpen from '@lucide/svelte/icons/folder-open'
   import FileDiff from '@lucide/svelte/icons/file-diff'
+  import Repeat from '@lucide/svelte/icons/repeat'
   import ChangesView from './ChangesView.svelte'
   import { resolveLink } from '$lib/links'
   import Composer from '$lib/components/Composer.svelte'
@@ -79,6 +80,19 @@
   const current = $derived(sessionById(cur.id))
   const project = $derived(cur.projects.find((p) => p.sessions.some((s) => s.id === cur.id)) || cur.projects.find((p) => p.id === cur.draftProject))
   const title = $derived(cursorSessions.title())
+  // loop 倒计时：每 15 秒刷新一次显示
+  let nowTick = $state(Date.now())
+  onMount(() => { const h = setInterval(() => (nowTick = Date.now()), 15000); return () => clearInterval(h) })
+  const hm = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const every = (s: number) => (s >= 3600 && s % 3600 === 0 ? t('{n} 小时', { n: s / 3600 }) : s >= 60 && s % 60 === 0 ? t('{n} 分钟', { n: s / 60 }) : t('{n} 秒', { n: s }))
+  function loopLine(l: { state: string; interval: number; fixed: boolean }) {
+    const base = l.interval ? t('Loop · 每 {e}', { e: every(l.interval) }) : 'Loop'
+    return l.state === 'waiting' ? base : `${base} · ${t('已停')}`
+  }
+  function loopIn(at: number) {
+    const left = Math.max(0, Math.round((at - nowTick) / 60000))
+    return left >= 1 ? `${hm(at)}（${t('{n} 分钟后', { n: left })}）` : hm(at)
+  }
 
   $effect(() => { cur.list.length; streaming; if (atBottom) tick().then(() => box?.scrollTo({ top: box.scrollHeight })) })
 
@@ -102,7 +116,11 @@
   }
   // 会话操作：分叉（整段 / 从某一轮）、置顶、归档。分叉成功后切到新会话
   const pinned = $derived(!!cur.projects.find((p) => p.id === '__pinned_agents__')?.sessions.some((s) => s.id === cur.id))
-  async function fork(bubble = '') {
+  // 分叉会在 Cursor 里新开一个会话、把电脑上的窗口切过去：先弹一次确认，免得误触
+  function fork(bubble = '') {
+    toast(bubble ? t('从这一轮分叉出新会话？') : t('分叉出新会话（带着全部上下文）？'), { description: t('会在电脑上的 Cursor 里新开一个会话并切过去'), action: { label: t('分叉'), onClick: () => doFork(bubble) }, duration: 6000 })
+  }
+  async function doFork(bubble = '') {
     const id = cur.id
     try {
       const r = await cursorCmd('fork', { id, ...(bubble ? { bubble } : {}) })
@@ -263,6 +281,21 @@
       </div>
     {/if}
     <!-- 跟终端对话模式一样：在跑的时候给一条「正在工作… 停止」 -->
+    <!-- /loop：电脑上 Cursor 在跑的循环（后台终端里定时叫醒 agent），点开看完整说明 -->
+    {#each cur.loops as l (l.purpose)}
+      <details class="border-b px-3 py-1.5 text-sm">
+        <summary class="flex cursor-pointer list-none items-center gap-2">
+          <Repeat class={cn('size-3.5 flex-none', l.state === 'waiting' ? 'text-primary' : 'text-muted-foreground')} />
+          <span class="min-w-0 flex-1 truncate">{loopLine(l)}</span>
+          <span class="flex-none text-xs text-muted-foreground">{l.state === 'waiting' && l.nextAt ? t('下次 {at}', { at: loopIn(l.nextAt) }) : l.lastTickAt ? t('上次 {at}', { at: hm(l.lastTickAt) }) : ''}</span>
+        </summary>
+        <div class="mt-1 space-y-0.5 pl-5.5 text-xs text-muted-foreground">
+          {#if l.title}<div>{l.title}</div>{/if}
+          {#if l.prompt}<div class="break-words whitespace-pre-wrap text-foreground/80">{l.prompt}</div>{/if}
+          <div>{t('已触发 {n} 次', { n: l.ticks })}{l.state === 'stopped' ? ' · ' + t('电脑上没在等下一次（可能已停止，或 agent 正在处理这一次）') : ''}</div>
+        </div>
+      </details>
+    {/each}
     {#if cur.generating}
       <div class="flex items-center gap-2 border-b px-3 py-1.5 text-sm">
         <span class="flex-1 animate-pulse text-primary">{t('Cursor 正在工作…')}</span>

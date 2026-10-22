@@ -72,6 +72,7 @@ export default {
   '已接入 Cursor': 'Connected to Cursor',
   'Cursor 没有打开': "Cursor isn't running",
   'Cursor 开着，但不是用调试端口启动的': "Cursor is running, but wasn't started with a debugging port",
+  'Cursor 的调试端口没有响应，稍后自动重试': "Cursor's debugging port isn't responding, retrying shortly",
 
   // ---- agent/cursor-agent.mjs：错误 ----
   'Cursor 没有启动起来': "Cursor didn't start",

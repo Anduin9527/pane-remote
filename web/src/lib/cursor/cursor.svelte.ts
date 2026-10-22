@@ -2,6 +2,8 @@
 import { t, tr } from '$lib/i18n'
 export type CSession = { id: string; title: string; age: string; status: string; active: boolean; unread?: boolean; waiting?: boolean; choices?: string[] }
 export type CProject = { id: string; label: string; uri: string; sessions: CSession[] }
+/** /loop 的一个循环（电脑上 Cursor 后台终端里的 sleep 循环）：waiting = 在等下一次，stopped = 没再接着跑 */
+export type CLoop = { purpose: string; title: string; prompt: string; fixed: boolean; interval: number; state: 'waiting' | 'stopped'; nextAt: number; startedAt: number; lastTickAt: number; ticks: number }
 export type CMsg =
   | { id: string; role: 'user' | 'assistant'; text: string; ts: number }
   | { id: string; role: 'tool'; tool: string; detail: string; status: string; decision: string; ts: number; output?: string; cwd?: string; rejected?: boolean; error?: string }
@@ -27,6 +29,7 @@ export const cur = $state({
   busy: '',
   path: '', // 会话的项目目录（电脑上）
   changed: 0, // 会话改过的文件数
+  loops: [] as CLoop[],
 })
 
 // 每个会话最近一份消息（内存里，最多 10 个）：切回来立刻显示，后台再更新
@@ -109,6 +112,7 @@ export function connectCursor() {
 function apply(d: any) {
   if (d.path !== undefined) cur.path = d.path || ''
   if (d.changed !== undefined) cur.changed = d.changed || 0
+  if (d.loops !== undefined) cur.loops = d.loops || []
   cur.status = d.status || ''
   cur.generating = !!d.generating
   cur.choices = d.choices || []
@@ -138,14 +142,14 @@ export function selectSession(id: string, opts: { quiet?: boolean } = {}) {
   cur.id = id
   cur.draftProject = ''
   const hit = msgCache.get(id)
-  cur.list = hit?.list || []; cur.name = hit?.name || ''; cur.loaded = !!hit; cur.streamText = ''; cur.choices = []; cur.path = ''; cur.changed = 0
+  cur.list = hit?.list || []; cur.name = hit?.name || ''; cur.loaded = !!hit; cur.streamText = ''; cur.choices = []; cur.path = ''; cur.changed = 0; cur.loops = []
   try { localStorage.setItem('cursorSession', id) } catch {}
   if (wanted) connectCursor()
 }
 export function startDraft(project: string) {
   remember(cur.id)
   cur.id = ''; cur.draftProject = project || '__new__'
-  cur.list = []; cur.name = ''; cur.loaded = true; cur.streamText = ''; cur.choices = []
+  cur.list = []; cur.name = ''; cur.loaded = true; cur.streamText = ''; cur.choices = []; cur.loops = []
   selectHook('')
   if (wanted) connectCursor()
 }

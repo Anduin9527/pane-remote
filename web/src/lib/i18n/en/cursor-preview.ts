@@ -132,4 +132,17 @@ export default {
   '按金额 {used} / {limit}（{p}）': 'By cost {used} / {limit} ({p})',
   '合计 {p}': 'Total {p}',
   '查询中…': 'Loading…',
+  // /loop
+  'Loop · 每 {e}': 'Loop · every {e}',
+  '{n} 小时': '{n} h',
+  '{n} 秒': '{n} s',
+  '{n} 分钟后': 'in {n} min',
+  '已停': 'stopped',
+  '下次 {at}': 'next {at}',
+  '上次 {at}': 'last {at}',
+  '已触发 {n} 次': 'Fired {n} times',
+  '电脑上没在等下一次（可能已停止，或 agent 正在处理这一次）': 'Not waiting for the next tick on the Mac (stopped, or the agent is handling this one)',
+  '从这一轮分叉出新会话？': 'Fork a new chat from this turn?',
+  '分叉出新会话（带着全部上下文）？': 'Fork a new chat with the full context?',
+  '会在电脑上的 Cursor 里新开一个会话并切过去': 'Cursor on the Mac opens the new chat and switches to it',
 } as Record<string, string>

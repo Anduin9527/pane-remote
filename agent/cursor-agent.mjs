@@ -105,6 +105,166 @@ function normalize(b, bid) {
   return null
 }
 
+// ---------- 会话记录文件（Cursor 3.26 起新会话的消息只在这里） ----------
+// ~/.cursor/projects/<项目>/agent-transcripts/<会话 ID>/<会话 ID>.jsonl，只追加：每行一条消息
+// {role, message:{content:[{type:'text',text} | {type:'tool_use',name,input}]}}，或者一轮结束 {type:'turn_ended', status, error?}。
+// 用户消息包在 <timestamp>…</timestamp><user_query>…</user_query> 里。官方钩子给的 transcript_path 就是它。
+// Cursor 3.26 起，新会话的 composerData 里消息列表是空的（旧会话两边都有），只读旧位置的话新会话就对不上
+const TRANSCRIPTS = path.join(os.homedir(), '.cursor/projects')
+const tpaths = new Map()
+function transcriptPath(id) {
+  const known = tpaths.get(id)
+  if (known && fs.existsSync(known)) return known
+  try {
+    for (const p of fs.readdirSync(TRANSCRIPTS)) {
+      const f = path.join(TRANSCRIPTS, p, 'agent-transcripts', id, `${id}.jsonl`)
+      if (fs.existsSync(f)) { tpaths.set(id, f); return f }
+    }
+  } catch {}
+  return ''
+}
+const TOOL_ALIASES = { Shell: '执行命令', Bash: '执行命令', Edit: '改文件', Read: '读文件', Grep: '搜索', Glob: '找文件', StrReplace: '改文件', Write: '写文件', Delete: '删文件', LS: '列目录', WebSearch: '网页搜索', WebFetch: '读网页', GetDynamicTools: 'MCP 工具', CallDynamicTool: 'MCP 工具', TodoWrite: '待办', Task: '子任务' }
+function transcriptTool(name, input = {}) {
+  const mcp = input.toolName ? `${input.namespace ? input.namespace + ' · ' : ''}${input.toolName}` : ''
+  const pick = input.command || mcp || input.path || input.file_path || input.target_file || input.pattern || input.glob_pattern || input.query || input.url || input.description || input.branchName || input.name || ''
+  return { tool: TOOL_ALIASES[name] || name || '工具', detail: clip(String(pick).replace(/\s+/g, ' '), 200) }
+}
+const MONTHS = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 }
+/** 「Wednesday, Oct 21, 2026, 9:47 PM (UTC+8)」→ 毫秒 */
+function parseStamp(s) {
+  const m = /([A-Z][a-z]{2}) (\d+), (\d{4}), (\d+):(\d+) (AM|PM) \(UTC([+-]\d+)(?::(\d+))?\)/.exec(s || '')
+  if (!m) return 0
+  const h = (Number(m[4]) % 12) + (m[6] === 'PM' ? 12 : 0), off = Number(m[7]) * 60 + Math.sign(Number(m[7])) * Number(m[8] || 0)
+  return Date.UTC(Number(m[3]), MONTHS[m[1]] ?? 0, Number(m[2]), h, Number(m[5])) - off * 60000
+}
+/** 一行记录 → 0..n 条手机端消息（id = t<行号>.<第几段>，文件只追加，行号不变） */
+function transcriptLine(d, n) {
+  if (d.type === 'turn_ended') return d.status === 'success' ? [] : [{ id: `t${n}`, role: 'assistant', text: d.status === 'aborted' ? '（这一轮被停止了）' : `（这一轮出错了${d.error ? '：' + clip(String(d.error), 300) : ''}）`, ts: 0 }]
+  const parts = d.message?.content || []
+  if (d.role === 'user') {
+    const raw = parts.filter((c) => c.type === 'text').map((c) => c.text || '').join('\n')
+    const q = /<user_query>([\s\S]*?)<\/user_query>/.exec(raw)
+    return [{ id: `t${n}`, role: 'user', text: clip((q ? q[1] : raw.replace(/<(\w+)>[\s\S]*?<\/\1>/g, '')).trim()), ts: parseStamp(/<timestamp>([\s\S]*?)<\/timestamp>/.exec(raw)?.[1]) }]
+  }
+  if (d.role !== 'assistant') return []
+  return parts.map((c, i) => c.type === 'text' ? (c.text ? { id: `t${n}.${i}`, role: 'assistant', text: clip(c.text), ts: 0 } : null)
+    : c.type === 'tool_use' ? { id: `t${n}.${i}`, role: 'tool', ...transcriptTool(c.name, c.input), status: '', decision: '', ts: 0 }
+    : c.type === 'thinking' ? { id: `t${n}.${i}`, role: 'thinking', size: (c.thinking || c.text || '').length, ts: 0 } : null).filter(Boolean)
+}
+/** 增量读记录文件：只读上次之后追加的部分；文件变小了（被重写）就从头读。e.t = { file, off, line, rest, ended } */
+function readTranscript(id, e) {
+  const file = transcriptPath(id)
+  if (!file) return null
+  let size = 0
+  try { size = fs.statSync(file).size } catch { return null }
+  if (!e.t || e.t.file !== file || size < e.t.off) { e.t = { file, off: 0, line: 0, rest: '', ended: '' }; e.order = []; e.byId = new Map() }
+  const upserts = []
+  if (size > e.t.off) {
+    // 很长的会话第一次只读最后 4MB（够 MAX_MSGS 条），行号从那里开始数也没关系：id 只要在这个进程里稳定
+    const start = e.t.off === 0 && size > 4 << 20 ? size - (4 << 20) : e.t.off
+    const fd = fs.openSync(file, 'r')
+    const buf = Buffer.alloc(size - start)
+    fs.readSync(fd, buf, 0, buf.length, start)
+    fs.closeSync(fd)
+    let text = e.t.rest + buf.toString('utf8')
+    if (start !== e.t.off) text = text.slice(text.indexOf('\n') + 1) // 从中间开始读：丢掉不完整的第一行
+    const lines = text.split('\n')
+    e.t.rest = lines.pop() // 最后一行可能还没写完
+    for (const l of lines) {
+      const n = e.t.line++
+      let d
+      try { d = JSON.parse(l) } catch { continue }
+      if (d.type === 'turn_ended') e.t.ended = d.status || ''
+      else if (d.role === 'user') e.t.ended = ''
+      for (const m of transcriptLine(d, n)) { e.byId.set(m.id, m); e.order.push(m.id); upserts.push(m) }
+    }
+    e.t.off = size
+    if (e.order.length > MAX_MSGS) { for (const k of e.order.splice(0, e.order.length - MAX_MSGS)) e.byId.delete(k) }
+  }
+  return upserts
+}
+
+/** 改过几个文件（手机上「改动」按钮的数字，0 就不显示按钮）。3.26 起 originalFileStates 是空的：数 ofsContent:<会话>: 下的原文（含只读过的文件，会偏多一点） */
+let qOfsCount = null
+function changedCount(id, c) {
+  const n = Object.keys(c.originalFileStates || {}).length
+  if (n || !openDb()) return n
+  try { qOfsCount ||= db.prepare('SELECT count(*) AS n FROM cursorDiskKV WHERE key >= ? AND key < ?'); return Number(qOfsCount.get(`ofsContent:${id}:`, `ofsContent:${id};`).n) || 0 } catch { return 0 }
+}
+
+// ---------- loop（/loop）----------
+// Cursor 本地的 /loop 是一个后台终端：sleep N 秒后输出 AGENT_LOOP_TICK_<用途>（或 AGENT_LOOP_WAKE_<用途>）把 agent 叫醒。
+// 固定间隔是一个一直跑的 while 循环；动态间隔每次叫醒后 agent 再起一个新的。会话数据里不记这些，
+// 但 Cursor 把每个后台终端写在 ~/.cursor/projects/<项目>/terminals/<编号>.txt：开头一段 key: value（pid、command、
+// title「Loop every 3m: …」、status running/succeeded…、started_at、running_for_ms），后面是输出。
+// 终端不记属于哪个会话：按会话记录里出现过的标记（用途名）对上
+const LOOP_RE = /AGENT_LOOP_(?:TICK|WAKE)_([A-Za-z0-9_-]+)/
+const loopMarks = new Map() // 会话 → { file, off, marks:Set }，增量扫会话记录
+function loopMarksOf(id) {
+  const file = transcriptPath(id)
+  if (!file) return new Set()
+  let e = loopMarks.get(id)
+  if (!e || e.file !== file) { e = { file, off: 0, marks: new Set() }; loopMarks.set(id, e) }
+  try {
+    const size = fs.statSync(file).size
+    if (size < e.off) { e.off = 0; e.marks.clear() }
+    if (size > e.off) {
+      const fd = fs.openSync(file, 'r'), buf = Buffer.alloc(size - e.off)
+      fs.readSync(fd, buf, 0, buf.length, e.off); fs.closeSync(fd)
+      for (const m of buf.toString('utf8').matchAll(new RegExp(LOOP_RE, 'g'))) e.marks.add(m[1])
+      e.off = Math.max(e.off, size - 200) // 留一点重叠：标记刚好被切在两次读之间
+    }
+  } catch {}
+  return e.marks
+}
+function terminalHeader(file) {
+  let head = ''
+  try { const fd = fs.openSync(file, 'r'), buf = Buffer.alloc(8192); const n = fs.readSync(fd, buf, 0, buf.length, 0); fs.closeSync(fd); head = buf.subarray(0, n).toString('utf8') } catch { return null }
+  const m = /^---\n([\s\S]*?)\n---/.exec(head)
+  if (!m) return null
+  const h = {}
+  for (const line of m[1].split('\n')) {
+    const i = line.indexOf(': ')
+    if (i < 0) continue
+    const k = line.slice(0, i), v = line.slice(i + 2).trim()
+    try { h[k] = v.startsWith('"') ? JSON.parse(v) : /^\d+$/.test(v) ? Number(v) : v } catch { h[k] = v }
+  }
+  return h
+}
+const alive = (pid) => { try { return pid > 0 && process.kill(pid, 0) } catch { return false } }
+/** 这个会话的 loop：每个用途一条，取最新的那个终端判断状态 */
+function loopsOf(id) {
+  const marks = loopMarksOf(id)
+  if (!marks.size) return []
+  const dir = path.join(path.dirname(path.dirname(path.dirname(transcriptPath(id)))), 'terminals')
+  let files = []
+  try { files = fs.readdirSync(dir).filter((f) => f.endsWith('.txt')).map((f) => { const p = path.join(dir, f); return { p, t: fs.statSync(p).mtimeMs } }) } catch { return [] }
+  files = files.filter((f) => Date.now() - f.t < 3 * 86400e3).sort((a, b) => b.t - a.t).slice(0, 80)
+  const by = new Map()
+  for (const f of files) {
+    const h = terminalHeader(f.p)
+    const m = h && LOOP_RE.exec(String(h.command || ''))
+    if (!m || !marks.has(m[1])) continue
+    const started = Date.parse(h.started_at) || 0
+    const x = by.get(m[1]) || { purpose: m[1], ticks: 0, lastTickAt: 0, latest: null }
+    if (h.status === 'succeeded' || h.status === 'completed') { x.ticks++; x.lastTickAt = Math.max(x.lastTickAt, started + (Number(h.running_for_ms) || 0)) }
+    if (!x.latest || started > x.latest.started) x.latest = { ...h, started }
+    by.set(m[1], x)
+  }
+  return [...by.values()].map(({ purpose, ticks, lastTickAt, latest: h }) => {
+    const cmd = String(h.command || '')
+    const sleep = Number(/sleep\s+(\d+)/.exec(cmd)?.[1]) || 0
+    const fixed = /while\s+true/.test(cmd)
+    let prompt = ''
+    try { prompt = JSON.parse(/AGENT_LOOP_\w+_[A-Za-z0-9_-]+\s+(\{.*\})/.exec(cmd)?.[1].replace(/\\"/g, '"') || '{}').prompt || '' } catch {}
+    const running = h.status === 'running' && alive(Number(h.pid))
+    // 动态间隔：在跑 = 正在等下一次（下次 = 开始 + sleep）；最新那个已经跑完、没再起新的 = 停了（或 agent 正在处理这次）
+    const state = running ? 'waiting' : 'stopped'
+    const nextAt = running && sleep ? (fixed ? h.started + Math.ceil((Date.now() - h.started) / (sleep * 1000)) * sleep * 1000 : h.started + sleep * 1000) : 0
+    return { purpose, title: String(h.title || ''), prompt: clip(prompt, 500), fixed, interval: sleep, state, nextAt, startedAt: h.started, lastTickAt, ticks }
+  }).sort((a, b) => (a.state === 'waiting' ? 0 : 1) - (b.state === 'waiting' ? 0 : 1) || b.startedAt - a.startedAt).slice(0, 5)
+}
+
 // 会话消息缓存：id → { updated, order:[bid], byId: Map(bid → msg), status, generating:Set }，按最近使用淘汰
 const cache = new Map()
 function touch(id, entry) { cache.delete(id); cache.set(id, entry); while (cache.size > MAX_SESSIONS) cache.delete(cache.keys().next().value) }
@@ -118,6 +278,19 @@ function readSession(id) {
   let e = cache.get(id)
   const fresh = !e
   if (!e) e = { updated: 0, order: [], byId: new Map(), status: '', generating: new Set() }
+  // 新会话（数据库里没有消息列表）读记录文件
+  if (!headers.length || e.t) {
+    const ups = readTranscript(id, e)
+    if (ups) {
+      const status = e.t.ended ? (e.t.ended === 'success' ? 'completed' : e.t.ended) : (c.status || '')
+      const statusChanged = status !== e.status
+      e.updated = c.lastUpdatedAt; e.status = status; e.generating = generating
+      touch(id, e)
+      e.path = c.workspaceIdentifier?.uri?.fsPath || ''
+      e.changed = changedCount(id, c)
+      return { fresh, upserts: ups, statusChanged, entry: e, name: c.name || '' }
+    }
+  }
   const upserts = []
   // 会话还没结束（或页面上正在生成）时，最后几条每次都重读：Cursor 先写一条空消息，生成完再把内容填进去
   const busy = generating.size > 0 || e.generating.size > 0 || !/^(completed|aborted|error)$/i.test(c.status || '') || (watching === id && !!lastLive?.streaming)
@@ -144,7 +317,7 @@ function readSession(id) {
   e.updated = c.lastUpdatedAt; e.status = status; e.generating = generating
   touch(id, e)
   e.path = c.workspaceIdentifier?.uri?.fsPath || ''
-  e.changed = Object.keys(c.originalFileStates || {}).length
+  e.changed = changedCount(id, c)
   return { fresh, upserts, statusChanged, entry: e, name: c.name || '' }
 }
 const listOf = (e) => e.order.map((k) => e.byId.get(k)).filter(Boolean)
@@ -158,8 +331,11 @@ function setStatus(c, msg = '', step) {
 }
 const cursorRunning = () => spawnSync('/usr/bin/pgrep', ['-x', 'Cursor'], { encoding: 'utf8' }).stdout.trim() !== ''
 async function portUp() {
-  try { return (await fetch(`http://127.0.0.1:${PORT}/json/version`, { signal: AbortSignal.timeout(800) })).ok } catch { return false }
+  try { return (await fetch(`http://127.0.0.1:${PORT}/json/version`, { signal: AbortSignal.timeout(2000) })).ok } catch { return false }
 }
+// Cursor 主进程命令行里有没有带调试端口参数
+const debugArg = () => spawnSync('/bin/ps', ['-axo', 'args='], { encoding: 'utf8' }).stdout.split('\n').some((l) => l.startsWith('/Applications/Cursor.app/Contents/MacOS/Cursor ') && l.includes(`--remote-debugging-port=${PORT}`))
+let portMiss = 0
 async function pageTarget() {
   try {
     const list = await (await fetch(`http://127.0.0.1:${PORT}/json/list`, { signal: AbortSignal.timeout(1500) })).json()
@@ -384,7 +560,7 @@ function pump() {
   const r = readSession(id)
   if (!r) { out({ t: 'messages', id, list: [], status: '', missing: true }); return }
   const live = watching === activeId && lastLive ? lastLive : null
-  const extra = { path: r.entry.path || '', changed: r.entry.changed || 0, status: r.entry.status, generating: r.entry.generating.size > 0 || !!live?.streaming, choices: live?.choices || [], streamText: live?.streaming ? live.text : '', streamId: live?.streaming ? live.lastId : '' }
+  const extra = { loops: loopsOf(id), path: r.entry.path || '', changed: r.entry.changed || 0, status: r.entry.status, generating: r.entry.generating.size > 0 || !!live?.streaming, choices: live?.choices || [], streamText: live?.streaming ? live.text : '', streamId: live?.streaming ? live.lastId : '' }
   if (r.fresh || pump.sent !== id) { pump.sent = id; out({ t: 'messages', id, list: listOf(r.entry), name: r.name, ...extra }) }
   else if (r.upserts.length || r.statusChanged || JSON.stringify(extra) !== pump.lastExtra) out({ t: 'delta', id, upserts: r.upserts, order: r.entry.order, ...extra })
   pump.lastExtra = JSON.stringify(extra)
@@ -398,10 +574,21 @@ function changes(id) {
   const c = composer(id)
   if (!c) throw new Error('读不到这个会话')
   const root = c.workspaceIdentifier?.uri?.fsPath || ''
-  const entries = Object.entries(c.originalFileStates || {})
+  let entries = Object.entries(c.originalFileStates || {})
+  // Cursor 3.26 起新会话的 originalFileStates 是空的，但改动前的原文还按 ofsContent:<会话>:<文件 URI> 存着（走主键范围查）。
+  // 这里面也有只读过、没改的文件，没变化的就不列；原文长度 0 当成新建的文件
+  const fallback = !entries.length
+  if (fallback && openDb()) {
+    try {
+      const pre = `ofsContent:${id}:`
+      entries = db.prepare('SELECT key, length(value) AS n FROM cursorDiskKV WHERE key >= ? AND key < ? LIMIT 400').all(pre, `ofsContent:${id};`)
+        .map((r) => [r.key.slice(pre.length), { contentKey: r.key, isNewlyCreated: !Number(r.n) }])
+    } catch (e) { log('changes', e.message) }
+  }
   const files = []
   let total = 0
-  for (const [uri, st] of entries.slice(0, MAX_FILES)) {
+  for (const [uri, st] of entries) {
+    if (files.length >= MAX_FILES) break
     let file = ''
     try { file = decodeURIComponent(new URL(uri).pathname) } catch { continue }
     const rel = root && file.startsWith(root + '/') ? file.slice(root.length + 1) : file.replace(os.homedir(), '~')
@@ -414,7 +601,7 @@ function changes(id) {
     try { if (exists) { const st2 = fs.statSync(file); current = st2.size > 2e6 ? null : fs.readFileSync(file, 'utf8') } } catch {}
     const item = { file, rel, isNew: !!st?.isNewlyCreated, deleted: !exists, adds: 0, dels: 0, diff: '' }
     if (current === null || original.includes('\0') || (current || '').includes('\0')) { item.binary = true; files.push(item); continue }
-    if (original === current) { item.same = true; files.push(item); continue }
+    if (original === current || (fallback && st.isNewlyCreated && !exists)) { if (!fallback) { item.same = true; files.push(item) } continue }
     // 系统自带的 diff：原来的内容从标准输入给，不写临时文件
     const r = spawnSync('/usr/bin/diff', ['-u', '--label', 'a/' + rel, '--label', 'b/' + rel, '-', exists ? file : '/dev/null'], { input: original, encoding: 'utf8', maxBuffer: 8 << 20 })
     let diff = r.stdout || ''
@@ -423,7 +610,7 @@ function changes(id) {
     if (total + diff.length > MAX_TOTAL) { item.diff = ''; item.omitted = true } else { item.diff = diff; total += diff.length }
     files.push(item)
   }
-  return { path: root, total: entries.length, shown: files.length, files }
+  return { path: root, total: fallback ? files.length : entries.length, shown: files.length, files }
 }
 
 // ---------- 操作 ----------
@@ -488,7 +675,25 @@ async function rowAction(id, labels) {
 }
 // 分叉：Cursor 在每一轮回复后面有「Fork chat」，挂在 turn-actions:human:<这一轮用户消息的 id> 那一行。
 // 对话是虚拟滚动的，太早的轮次不在 DOM 里：先滚到底找，找不到就一屏一屏往上滚
+/** 手机上的消息 id → Cursor 自己的消息（bubble）id。从会话记录读出来的消息 id 是行号（t12…），Cursor 页面上的分叉按钮
+ *  按 bubble id 定位：按用户消息原文去数据库里找同样文字的用户 bubble（同样的话说过几次就按从后往前第几次对上） */
+function bubbleOf(id, mid) {
+  if (!/^t\d/.test(mid)) return mid
+  const e = cache.get(id)
+  const m = e?.byId.get(mid)
+  if (!m || m.role !== 'user' || !openDb()) throw new Error('这一轮在 Cursor 里找不到对应的消息')
+  const text = m.text.trim()
+  const fromEnd = e.order.slice(e.order.indexOf(mid) + 1).filter((k) => { const x = e.byId.get(k); return x?.role === 'user' && x.text.trim() === text }).length
+  const rows = db.prepare(`SELECT key, json_extract(value,'$.text') AS t, json_extract(value,'$.createdAt') AS c FROM cursorDiskKV WHERE key >= ? AND key < ? AND json_extract(value,'$.type') = 1`)
+    .all(`bubbleId:${id}:`, `bubbleId:${id};`).filter((r) => String(r.t || '').trim() === text).sort((a, b) => String(a.c).localeCompare(String(b.c)))
+  // 会话记录偶尔把同一条用户消息记两遍（数据库里只有一个 bubble）：数多了就落到最早那个
+  const hit = rows[Math.max(0, rows.length - 1 - fromEnd)]
+  if (!hit) throw new Error('这一轮在 Cursor 里找不到对应的消息')
+  return hit.key.slice(`bubbleId:${id}:`.length)
+}
+
 async function forkAt(id, bubble) {
+  bubble = bubble ? bubbleOf(id, bubble) : ''
   if (id !== activeId) { await openSession(id); await sleep(800) }
   const find = `(() => {
     const bubble = ${js(bubble || '')}
@@ -772,6 +977,7 @@ async function handle(m) {
       schedule(300)
       return
     }
+    case 'bubble': return { bubble: bubbleOf(String(m.id || ''), String(m.mid || '')) } // 只读：手机消息 id → Cursor 消息 id（排查分叉用）
     case 'fork': {
       await needReady()
       return forkAt(String(m.id || ''), m.bubble ? String(m.bubble) : '')
@@ -792,10 +998,17 @@ async function check() {
   if (launching) return
   const running = cursorRunning()
   if (!running) { if (conn !== 'not-running') { ws?.close(); attached = false; setStatus('not-running', 'Cursor 没有打开') } return }
-  if (!(await portUp())) { if (conn !== 'no-debug') setStatus('no-debug', 'Cursor 开着，但不是用调试端口启动的') ; return }
+  if (!(await portUp())) {
+    // 端口一时没答（睡眠刚醒、Cursor 主线程忙）不等于没开调试端口：进程命令行带着端口参数就只是暂时连不上，
+    // 连续 3 次（15 秒）没答才算掉线；命令行里没有端口参数才是真的「不是遥控方式启动的」
+    if (debugArg()) { if (++portMiss >= 3 && conn === 'ready') { ws?.close(); attached = false; setStatus('error', 'Cursor 的调试端口没有响应，稍后自动重试') } return }
+    if (conn !== 'no-debug') setStatus('no-debug', 'Cursor 开着，但不是用调试端口启动的')
+    return
+  }
+  portMiss = 0
   if (!attached || !ws || ws.readyState !== 1) {
     try { setStatus('connecting', '正在接入…'); await connect() } catch (e) { setStatus('error', e.message) }
-  }
+  } else if (conn !== 'ready') setStatus('ready', '已接入 Cursor') // 之前误判过，连接其实一直在
 }
 
 const rl = readline.createInterface({ input: process.stdin })
