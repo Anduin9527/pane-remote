@@ -1,0 +1,1 @@
+import{d as e,u as t}from"./c-i18n-Cl172Jtn.js";import{t as n}from"./c-Icon-Blh5_z2N.js";var r=new Set([`$$slots`,`$$events`,`$$legacy`]);function i(i,a){let o=t(a,r),s={name:`gauge`,size:24,node:[[`path`,{d:`m12 14 4-4`}],[`path`,{d:`M3.34 19a10 10 0 1 1 17.32 0`}]]};n(i,e(()=>o,{get icon(){return s}}))}export{i as t};
