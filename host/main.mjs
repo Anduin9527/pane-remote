@@ -5,6 +5,7 @@
 // 和平台绑定的事都经 Host 接口（hosts/），这里只管协议、主题和生命周期。
 import fs from 'node:fs'
 import net from 'node:net'
+import os from 'node:os'
 import { RUN_DIR, SOCK } from './paths.mjs'
 import { lineReader, encode, ERR, VERSION } from './protocol.mjs'
 import { pathToFileURL } from 'node:url'
@@ -16,6 +17,8 @@ import { readHostEnv, HOST_ENV_FILE } from './config.mjs'
 import { HOME } from './paths.mjs'
 
 // PANE_HOST_IMPL：换一个 Host 实现（测试用假的；以后 Linux 用 hosts/linux）
+// 本机的网卡地址和主机名：中转拿来认出「访问者就是被遥控的这台电脑」（这台电脑上打开遥控页面没有意义，提示用别的设备）
+const selfIds = () => ({ addrs: Object.values(os.networkInterfaces()).flat().filter((a) => a && !a.internal).map((a) => a.address), hostnames: [os.hostname()] })
 const host = (await import(process.env.PANE_HOST_IMPL ? pathToFileURL(process.env.PANE_HOST_IMPL).href : './hosts/macos/index.mjs')).createHost()
 const started = Date.now()
 const log = (...a) => console.log(new Date().toISOString(), ...a)
@@ -65,7 +68,7 @@ function releaseFeed(topic) {
 // call：async (params, ctx) => 结果；stream：async (params, ctx) => 结果，中途用 ctx.chunk(x) 推，ctx.signal 取消，
 // ctx.request(x) 向对端要一个结果（流里发 {id, chunk: {...x, rid}}，对端回通知 reply {id, rid, ok, value | error}；AI 的工具调用用它）
 const calls = {
-  ping: async () => ({ pong: true, t: Date.now(), version: VERSION, pid: process.pid, uptime: Math.round((Date.now() - started) / 1000), platform: host.platform, home: HOME, feeds: [...feeds.keys()], caps: ['ai', 'fs', ...(host.desktop ? ['desktop'] : [])] }),
+  ping: async () => ({ pong: true, t: Date.now(), version: VERSION, pid: process.pid, uptime: Math.round((Date.now() - started) / 1000), platform: host.platform, home: HOME, feeds: [...feeds.keys()], caps: ['ai', 'fs', ...(host.desktop ? ['desktop'] : [])], ...selfIds() }),
   'terminals.list': () => host.terminals.list(),
   'terminals.text': ({ pane, lines, escapes }) => host.terminals.text(paneId(pane), { lines: Math.min(5000, Number(lines) || 200), escapes: !!escapes }),
   // 一次性取对话（没订阅时服务端的 /api/transcript 也能走这里，省掉 ssh 每次拉起 bash / python 的开销）

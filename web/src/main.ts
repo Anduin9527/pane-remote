@@ -1,3 +1,4 @@
+import { lease, ready as leaseReady } from '$lib/lease.svelte' // 必须第一个：要在任何请求之前包好 fetch / EventSource / WebSocket
 import { mount } from 'svelte'
 import './app.css'
 import App from './App.svelte'
@@ -7,7 +8,7 @@ import { update } from '$lib/update.svelte'
 
 // 报错发回服务端，方便排查手机上的问题（pane-remote logs 里搜 client）
 addEventListener('error', (e) => report('error', `${e.message} @ ${e.filename}:${e.lineno}:${e.colno} ${e.error?.stack || ''}`))
-addEventListener('unhandledrejection', (e) => report('rejection', e.reason?.stack || e.reason?.message || e.reason))
+addEventListener('unhandledrejection', (e) => (lease.status === 'kicked' || lease.status === 'local') ? undefined : report('rejection', e.reason?.stack || e.reason?.message || e.reason))
 const build = (document.querySelector('script[src*="assets/index-"]') as HTMLScriptElement | null)?.src.split('/').pop() || 'dev'
 declare const __BUILD_TIME__: string
 // 启动：带上这次是怎么打开的（navigate / reload / back_forward）、离上次启动多久、上次留下几条没发出去的报错——
@@ -19,7 +20,9 @@ report('boot', `v2 ${build} ${__BUILD_TIME__} ${innerWidth}x${innerHeight} dpr=$
 flushReports()
 // 界面上弹出的错误提示（「xx 失败」）也记一条：以前用户看到了，日志里什么都没有
 const toastError = toast.error
-toast.error = ((msg: unknown, opts?: unknown) => { report('ui-fail', typeof msg === 'string' ? msg : String(msg), { view: location.hash.slice(0, 80) }); return (toastError as any)(msg, opts) }) as typeof toast.error
+toast.error = ((msg: unknown, opts?: unknown) => {
+  if (lease.status === 'kicked' || lease.status === 'local') return 0 // 被顶 / 本机：请求失败是预期的，别弹错误、别上报
+  report('ui-fail', typeof msg === 'string' ? msg : String(msg), { view: location.hash.slice(0, 80) }); return (toastError as any)(msg, opts) }) as typeof toast.error
 
 // iOS Safari 无视 user-scalable=no，双指缩放要自己拦；键盘收起后页面偶尔停在被推上去的位置，拉回来
 for (const ev of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(ev, (e) => e.preventDefault(), { passive: false })
@@ -46,6 +49,7 @@ document.addEventListener('visibilitychange', checkUpdate)
 setInterval(checkUpdate, 10 * 60000)
 setTimeout(checkUpdate, 5000)
 
+await leaseReady
 const app = mount(App, { target: document.getElementById('app')! })
 // 诊断：安全区和各种高度（iOS 主屏幕 App 的布局问题靠这个查）
 setTimeout(() => {

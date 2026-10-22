@@ -1,5 +1,6 @@
 <script lang="ts">
   import ModelChip from '$lib/components/ModelChip.svelte'
+  import LeaseGate from '$lib/components/LeaseGate.svelte'
   import { onMount, untrack } from 'svelte'
   import { Toaster } from '$lib/components/ui/sonner'
   import { toast } from 'svelte-sonner'
@@ -356,3 +357,5 @@
 <Toaster theme="system" position="top-center" closeButton offset={{ top: 'calc(env(safe-area-inset-top) + 52px)' }} mobileOffset={{ top: 'calc(env(safe-area-inset-top) + 52px)' }} />
 <!-- 插件层：全局悬浮按钮 + 插件抽屉 / 容器（插件开在前台时盖住整个外壳，#/plugin/<id> 和它双向同步） -->
 <PluginLayer />
+<!-- 被顶 / 在被遥控的电脑上打开：盖住一切 -->
+<LeaseGate />

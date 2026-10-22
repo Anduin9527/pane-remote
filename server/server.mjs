@@ -52,6 +52,7 @@ import zlib from 'node:zlib'
 import crypto from 'node:crypto'
 import { config, APP_DIR, CONFIG_PATH } from './config.mjs'
 import { startTunnelHeal } from './tunnel-heal.mjs'
+import { createLease, createHostCheck, deviceName, validClient } from './lease.mjs'
 
 const PORT = config.port
 const ALLOWED = new Set(config.allowedLogins)
@@ -724,6 +725,32 @@ async function onRequest(req, res) {
   if (req.headers.origin === 'null' && url.pathname.includes('/api/')) return json(res, 403, { error: 'bad origin' })
   // 所有会改东西的请求（非 GET）都必须来自本站页面：挡住别的网页借浏览器里的登录身份发表单 / 跨站请求
   if (req.method !== 'GET' && req.method !== 'HEAD' && !sameOrigin(req)) return json(res, 403, { error: 'bad origin' })
+  if (url.pathname.startsWith('/api/')) {
+    const local = hostCheck.isHost(req)
+    const client = clientOf(req, url)
+    if (url.pathname === '/api/lease' && req.method === 'GET') return json(res, 200, { local, active: !!client && lease.isHolder(client), ...lease.info() })
+    if (url.pathname === '/api/claim' && req.method === 'POST') {
+      if (local) return json(res, 403, { error: 'local-host' })
+      if (!client) return json(res, 400, { error: 'bad client' })
+      return json(res, 200, { ok: true, ...lease.claim(client, deviceName(req, req.paneNode)) })
+    }
+    if (!LEASE_FREE.has(url.pathname)) {
+      if (local) return json(res, 403, { error: 'local-host' })
+      if (client && !lease.isHolder(client)) {
+        // SSE（EventSource 读不到状态码）：发一条 kicked 事件再关
+        if (String(req.headers.accept || '').includes('text/event-stream')) {
+          res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
+          return res.end(`retry: 3600000\nevent: kicked\ndata: ${JSON.stringify(lease.info())}\n\n`)
+        }
+        return json(res, 409, { error: 'kicked', ...lease.info() })
+      }
+      // 在用的客户端开着的 SSE：被顶时发 kicked 再断
+      if (client && String(req.headers.accept || '').includes('text/event-stream')) {
+        const untrack = lease.track(client, (i) => { if (!res.writableEnded) { res.write(`event: kicked\ndata: ${JSON.stringify(i)}\n\n`); res.end() } })
+        res.on('close', untrack)
+      }
+    }
+  }
   try {
     // 插件平台（可选模块 plugins，默认开）：插件列表、插件自己的文件
     if (platform && (url.pathname.startsWith('/plugins/') || url.pathname.startsWith('/api/plugins'))) {
@@ -1117,7 +1144,7 @@ async function canary() {
   const hostState = host.connected ? await host.call('ping', {}, { timeout: 5000 }).then((p) => `ok (pid ${p.pid}, up ${p.uptime}s)`, (e) => `ping failed: ${e.message}`) : `offline${host.lastError ? ` (${host.lastError})` : ''}`
   console.log(`canary: mcp ${r.mcp?.ok ? 'ok' : 'FAIL'} (${r.mcp?.tools ?? 0} tools), agents ${r.agents?.length || 0}, events ${read === null ? 'skipped' : read ? 'ok' : 'FAIL'} via ${push.eventsSource()}, pane-host ${hostState}`)
 }
-if (RELAY) startTunnelHeal({ port: config.relay.port, dataDir: config.dataDir }) // 隧道卡死时自动清掉占着端口的旧会话
+if (RELAY) startTunnelHeal({ port: config.relay.port, dataDir: config.dataDir, onStuck: (msg) => incidents.record({ source: 'server', component: 'tunnel-heal', kind: 'stuck', msg, severity: 'high' }) }) // 隧道卡死时自动清掉占着端口的旧会话
 setTimeout(() => canary().catch((e) => console.error(`canary: ${e.message}`, e)), 60000)
 setInterval(() => canary().catch((e) => console.error(`canary: ${e.message}`, e)), 600000)
 
@@ -1131,6 +1158,23 @@ push.startMonitor({
   active: () => viewing() || Date.now() - lastApi < 120000,
 })
 push.attachHost(host)
+// 单客户端在线 + 挡住被遥控电脑自己访问（见 lease.mjs）。local 模式经 tailscale serve 进来的请求对端都是回环，
+// 只认代理带的 X-Forwarded-For，不把「回环 = 本机」当真
+const lease = createLease({ file: path.join(config.dataDir, 'lease.json') })
+const hostCheck = createHostCheck({ allow: process.env.ALLOW_HOST_ACCESS === '1', loopbackIsHost: RELAY })
+const onHostIds = (r) => { if (hostCheck.update(r)) console.log(`host-check: 被遥控电脑的地址 ${hostCheck.addrs().join(' ')}`) }
+host.on('up', onHostIds)
+host.on('ping', onHostIds)
+// WebSocket 关闭原因最多 123 字节（中文一个字 3 字节）：设备名太长就截
+const kickReason = () => {
+  const i = lease.info()
+  let d = i.device
+  while (Buffer.byteLength(JSON.stringify({ ...i, device: d })) > 120) d = d.slice(0, -1)
+  return JSON.stringify({ ...i, device: d })
+}
+const LEASE_FREE = new Set(['/api/lease', '/api/claim', '/api/log']) // 被顶 / 本机时也能用：查状态、接管、上报问题
+const clientOf = (req, url) => { const c = req.headers['x-pane-client'] || url.searchParams.get('_pc'); return validClient(c) ? c : '' }
+const kickWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 1024 })
 
 const screen = createScreen({ bridge, bridgeProc })
 const macApi = createMac({ bridge })
@@ -1148,6 +1192,13 @@ function onUpgrade(req, socket, head) {
     socket.end('HTTP/1.1 403 Forbidden\r\n\r\n')
     return
   }
+  if (hostCheck.isHost(req)) { socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return }
+  const client = clientOf(req, url)
+  if (client && !lease.isHolder(client)) {
+    // 握手失败浏览器拿不到原因：先接受再用 4001 关掉，原因里带上是谁在用
+    return kickWss.handleUpgrade(req, socket, head, (ws) => ws.close(4001, kickReason()))
+  }
+  if (client) { const untrack = lease.track(client, () => socket.destroy()); socket.on('close', untrack) }
   if (isScreen) return screen.upgrade(req, socket, head, url)
   if (platformWs) return platform.upgrade(req, socket, head, url)
   const pv = url.searchParams.get('source') === 'cursor' ? previews.cursor : previews.chrome
@@ -1174,8 +1225,9 @@ if (config.tls.listen) {
   const ident = async (req) => {
     delete req.headers['tailscale-user-login']
     if (!req.headers.host && req.headers[':authority']) req.headers.host = req.headers[':authority']
-    const login = await whois(req.socket.remoteAddress)
-    if (login) req.headers['tailscale-user-login'] = login
+    const who = await whois(req.socket.remoteAddress)
+    if (who.login) req.headers['tailscale-user-login'] = who.login
+    req.paneNode = who.node
   }
   tlsServer.on('request', (req, res) => { ident(req).then(() => onRequest(req, res)) })
   tlsServer.on('upgrade', (req, socket, head) => { ident(req).then(() => onUpgrade(req, socket, head)) })
@@ -1185,11 +1237,11 @@ if (config.tls.listen) {
 // 来源 IP → Tailscale 登录名。Linux 上直接问 tailscaled 的 LocalAPI（unix socket）；没有这个 socket（macOS 的 Tailscale App）就用 tailscale whois 命令
 const TS_SOCK = '/run/tailscale/tailscaled.sock'
 const TS_CLI = ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale']
-const whoisCache = new Map() // ip → { login, at }
+const whoisCache = new Map() // ip → { login, node, at }
 async function whois(addr) {
   const ip = String(addr || '').replace(/^::ffff:/, '')
   const hit = whoisCache.get(ip)
-  if (hit && Date.now() - hit.at < 60000) return hit.login
+  if (hit && Date.now() - hit.at < 60000) return hit
   let body = ''
   if (fs.existsSync(TS_SOCK)) body = await new Promise((resolve) => {
     const r = http.get({ socketPath: TS_SOCK, path: `/localapi/v0/whois?addr=${encodeURIComponent(ip)}`, headers: { host: 'local-tailscaled.sock' }, timeout: 3000 }, (res) => {
@@ -1204,8 +1256,14 @@ async function whois(addr) {
     body = await new Promise((resolve) => execFile(cli, ['whois', '--json', ip], { timeout: 3000 }, (e, out) => resolve(e ? '' : String(out))))
     if (body) break
   }
-  let login = ''
-  try { login = JSON.parse(body).UserProfile?.LoginName || '' } catch {} // ignore: 查不到就当没登录，拒绝
-  whoisCache.set(ip, { login, at: Date.now() })
-  return login
+  let login = '', node = null
+  try {
+    const w = JSON.parse(body)
+    login = w.UserProfile?.LoginName || ''
+    // 设备名给顶号提示用（「已在 xx 上打开」）
+    node = { name: w.Node?.Hostinfo?.Hostname || w.Node?.ComputedName || '', os: w.Node?.Hostinfo?.OS || '' }
+  } catch {} // ignore: 查不到就当没登录，拒绝
+  const fresh = { login, node, at: Date.now() }
+  whoisCache.set(ip, fresh)
+  return fresh
 }

@@ -74,7 +74,7 @@ export class HostClient extends EventEmitter {
       this.emit('up', r)
       for (const [topic, s] of this.subs) this.resubscribe(topic, s)
       this.pingTimer = setInterval(() => {
-        this.request(proc, 'ping', {}, { timeout: this.pingTimeout }).catch(() => { if (this.proc === proc) { this.log('host: ping timeout, reconnecting'); proc.kill() } })
+        this.request(proc, 'ping', {}, { timeout: this.pingTimeout }).then((r) => this.emit('ping', r)).catch(() => { if (this.proc === proc) { this.log('host: ping timeout, reconnecting'); proc.kill() } })
       }, this.pingMs)
     }, () => { if (this.proc === proc) proc.kill() })
   }

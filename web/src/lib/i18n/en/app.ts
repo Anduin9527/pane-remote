@@ -70,4 +70,10 @@ export default {
   '插件 · {id}': 'Plugin · {id}',
   '还没有这个插件：{id}': 'No such plugin yet: {id}',
   '选一个会话': 'Pick a session',
+  '已在「{d}」上打开': 'Opened on “{d}”',
+  '已在另一台设备上打开': 'Opened on another device',
+  '同一时间只能在一台设备上使用，这里已经断开。': 'It can only be used on one device at a time, so this one was disconnected.',
+  '在这台设备上继续': 'Continue on this device',
+  '这台电脑就是被遥控的电脑': 'This is the computer being controlled',
+  '请用手机或其他设备打开。': 'Open it from your phone or another device.',
 } as Record<string, string>
