@@ -12,12 +12,11 @@
   import X from '@lucide/svelte/icons/x'
   import Layers from '@lucide/svelte/icons/layers'
   import Plus from '@lucide/svelte/icons/plus'
-  import Delete from '@lucide/svelte/icons/delete'
-  import CornerDownLeft from '@lucide/svelte/icons/corner-down-left'
   import Monitor from '@lucide/svelte/icons/monitor'
   import Smartphone from '@lucide/svelte/icons/smartphone'
   import Maximize from '@lucide/svelte/icons/maximize'
   import Minimize from '@lucide/svelte/icons/minimize'
+  import LiveInput, { type LiveKey, type Mod } from '$lib/components/LiveInput.svelte'
   import Keyboard from '@lucide/svelte/icons/keyboard'
   import Globe from '@lucide/svelte/icons/globe'
   import CursorIcon from '$lib/cursor/CursorIcon.svelte'
@@ -37,7 +36,6 @@
   let status = $state<'connecting' | 'live' | 'closed'>('connecting')
   let address = $state('')
   let editing = $state(false)
-  let typed = $state('')
   let tabsOpen = $state(false)
   let fps = $state(0)
   // 来源：chrome = 电脑上的无界面 Chrome；cursor = Cursor IDE 的内置浏览器（固定按电脑尺寸显示，不能新开标签）
@@ -233,7 +231,7 @@
       if (m.t === 'frame') meta = m
       else if (m.t === 'nav') { nav = m; if (!editing) address = m.url === 'about:blank' ? '' : m.url; if (m.url && m.url !== 'about:blank') saveLast(m.url) }
       else if (m.t === 'tabs') { tabs = m; restoreLast(m.list) }
-      else if (m.t === 'error') { if (source === 'cursor' && /没打开网页|关掉了|没有接入/.test(m.msg)) note = tr(m.msg); else toast.error(tr(m.msg)) }
+      else if (m.t === 'error') { if (source === 'cursor' && /没打开网页|关掉了|没有接入/.test(m.msg)) note = tr(m.msg); else if (m.user) toast.warning(tr(m.msg)); else toast.error(tr(m.msg)) }
       else if (m.t === 'notice') { note = ''; toast(tr(m.msg)) }
       else if (m.t === 'opened') toast(t('电脑上要打开的网页，已在这里打开'), { description: m.url })
       else if (m.t === 'closed') { status = 'closed'; if (m.msg) toast.error(tr(m.msg)) }
@@ -350,12 +348,14 @@
     send({ t: 'tap', ...toPage(t.clientX, t.clientY) })
   }
 
-  function typeText(e: Event) {
-    e.preventDefault()
-    if (typed) send({ t: 'text', s: typed })
-    typed = ''
-  }
-  const key = (k: string) => send({ t: 'key', key: k })
+  // 输入栏（和远程桌面共用 LiveInput）：每打一个字直接发进页面；按键带修饰键（⌘A、⌘C…）
+  const sendKey = (k: string, mods: Mod[]) => send({ t: 'key', key: k, mods })
+  const sendText = (s: string) => send({ t: 'text', s })
+  const TOP_KEYS: LiveKey[] = [{ label: 'Esc', key: 'Escape' }, { label: 'Tab', key: 'Tab' }, { label: '↩', key: 'Enter' }, { label: '⌫', key: 'Backspace' },
+    { label: '←', key: 'ArrowLeft' }, { label: '→', key: 'ArrowRight' }, { label: '⌘A', key: 'a', mods: ['Meta'] }, { label: '⌘C', key: 'c', mods: ['Meta'] }, { label: '⌘V', key: 'v', mods: ['Meta'] }]
+  const MORE_KEYS: LiveKey[] = [{ label: '⌘', mod: 'Meta' }, { label: '⌥', mod: 'Alt' }, { label: '⌃', mod: 'Control' }, { label: '⇧', mod: 'Shift' },
+    { label: '↑', key: 'ArrowUp' }, { label: '↓', key: 'ArrowDown' }, { label: '⌦', key: 'Delete' }, { label: 'Home', key: 'Home' }, { label: 'End', key: 'End' },
+    { label: 'PgUp', key: 'PageUp' }, { label: 'PgDn', key: 'PageDown' }, { label: '⌘X', key: 'x', mods: ['Meta'] }, { label: '⌘Z', key: 'z', mods: ['Meta'] }, { label: '⌘⇧Z', key: 'z', mods: ['Meta', 'Shift'] }]
   const floatBtn = 'grid size-8 place-items-center rounded-full bg-black/45 text-white backdrop-blur-sm active:bg-black/70'
   const iconBtn = 'grid size-9 flex-none place-items-center rounded-lg text-muted-foreground active:bg-accent disabled:opacity-40'
 </script>
@@ -476,19 +476,9 @@
 </div>
 
 {#if !previewUi.immersive || kbOpen}
-<form class="flex items-center gap-1.5 border-t bg-card px-2 pt-1.5 pb-[calc(env(safe-area-inset-bottom)+6px)]" style:padding-left="calc(env(safe-area-inset-left) + 8px)" style:padding-right="calc(env(safe-area-inset-right) + 8px)" onsubmit={typeText}>
-  <input
-    bind:value={typed}
-    placeholder={t('先点页面里的输入框，再在这里打字')}
-    enterkeyhint="send"
-    autocapitalize="off"
-    spellcheck="false"
-    class="h-9 min-w-0 flex-1 rounded-lg border bg-background px-2.5 text-base outline-none focus:ring-2 focus:ring-ring"
-  />
-  <button type="button" class={iconBtn} aria-label={t('退格')} onpointerdown={(e) => e.preventDefault()} onclick={() => key('Backspace')}><Delete class="size-4" /></button>
-  <button type="button" class={iconBtn} aria-label={t('回车')} onpointerdown={(e) => e.preventDefault()} onclick={() => key('Enter')}><CornerDownLeft class="size-4" /></button>
-  <Button type="submit" size="sm" class="h-9" onpointerdown={(e: PointerEvent) => e.preventDefault()}>{t('输入')}</Button>
-</form>
+<div class="border-t bg-card" style:padding-left="env(safe-area-inset-left)" style:padding-right="env(safe-area-inset-right)">
+  <LiveInput top={TOP_KEYS} more={MORE_KEYS} onkey={sendKey} ontext={sendText} keys={previewUi.immersive ? 'always' : 'focus'} placeholder={t('先点页面里的输入框，再在这里打字（直接发过去）')} />
+</div>
 {/if}
 
 <Drawer.Root bind:open={tabsOpen}>

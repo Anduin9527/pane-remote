@@ -537,7 +537,9 @@ async function startCast(targetId) {
   const p = pages.get(targetId)
   if (!p) return
   await applyView(p.sessionId)
+  // 两条消息（连着两次换尺寸、重复切到同一页）并发时会 stop、stop、start、start：后一次 start 报「已经在推流」，推流其实正常，不算错
   await cdp('Page.startScreencast', { format: 'jpeg', quality: 5, maxWidth: 64, maxHeight: 64, everyNthFrame: 1 }, p.sessionId)
+    .catch((e) => { if (!/already active/i.test(e.message)) throw e })
   dirty = true
   pump()
 }
@@ -673,14 +675,42 @@ function normalizeUrl(input) {
 async function navigate(url) {
   const p = pages.get(current)
   if (!p) return newTab(url)
-  const res = await cdp('Page.navigate', { url: normalizeUrl(url) }, p.sessionId)
-  if (res.errorText) out({ t: 'error', msg: `打不开：${res.errorText}` })
+  const target = normalizeUrl(url)
+  const res = await cdp('Page.navigate', { url: target }, p.sessionId)
+  if (res.errorText) out({ t: 'error', user: true, msg: navError(target, res.errorText) })
+}
+// 网址本身打不开（本机开发服务器没起、域名错了）是用户这边的事，不是 pane-remote 的故障：带上地址说清楚，手机上不当故障上报（user: true）
+function navError(target, err) {
+  let host = target
+  try { host = new URL(target).host || target } catch {} // ignore: 不是合法网址就原样显示
+  const local = /^(localhost|127\.|\[::1\])/i.test(host)
+  return `打不开 ${host}：${local && /CONNECTION_REFUSED/.test(err) ? `${host} 上没有服务在跑，开发服务器启动了吗？` : err}`
 }
 
 const KEYS = {
   Enter: { code: 'Enter', vk: 13, text: '\r' }, Backspace: { code: 'Backspace', vk: 8 }, Tab: { code: 'Tab', vk: 9 },
   Escape: { code: 'Escape', vk: 27 }, ArrowUp: { code: 'ArrowUp', vk: 38 }, ArrowDown: { code: 'ArrowDown', vk: 40 },
   ArrowLeft: { code: 'ArrowLeft', vk: 37 }, ArrowRight: { code: 'ArrowRight', vk: 39 },
+  Delete: { code: 'Delete', vk: 46 }, Home: { code: 'Home', vk: 36 }, End: { code: 'End', vk: 35 },
+  PageUp: { code: 'PageUp', vk: 33 }, PageDown: { code: 'PageDown', vk: 34 }, ' ': { code: 'Space', vk: 32, text: ' ' },
+}
+// 单个字符（手机上点了 ⌘ 再打 c 这类）
+function keyDef(key) {
+  if (KEYS[key]) return KEYS[key]
+  if (typeof key !== 'string' || [...key].length !== 1) return null
+  const up = key.toUpperCase()
+  if (/^[A-Z]$/.test(up)) return { code: `Key${up}`, vk: up.charCodeAt(0), text: key }
+  if (/^\d$/.test(key)) return { code: `Digit${key}`, vk: key.charCodeAt(0), text: key }
+  return { code: '', vk: 0, text: key }
+}
+const MOD_BIT = { Alt: 1, Control: 2, Meta: 4, Shift: 8 }
+// macOS 上的 Chrome：模拟的 ⌘ 组合键不会触发编辑命令（全选、复制、粘贴…），要用 commands 直接告诉它
+const MAC_COMMANDS = { a: 'selectAll', c: 'copy', x: 'cut', v: 'paste', z: 'undo' }
+function editCommands(key, mods) {
+  if (process.platform !== 'darwin' || !mods.includes('Meta') || mods.includes('Control') || mods.includes('Alt')) return undefined
+  const k = String(key).toLowerCase()
+  if (k === 'z' && mods.includes('Shift')) return ['redo']
+  return MAC_COMMANDS[k] && !mods.includes('Shift') ? [MAC_COMMANDS[k]] : undefined
 }
 
 // 手机的界面语言变了：当前标签页是文件浏览器的页面就重新加载，换成新语言
@@ -740,11 +770,15 @@ async function handle(msg) {
       return cdp('Input.dispatchMouseEvent', { type: 'mouseWheel', x: msg.x, y: msg.y, deltaX: msg.dx || 0, deltaY: msg.dy || 0 }, sid)
     case 'text': return cdp('Input.insertText', { text: String(msg.s).slice(0, 4000) }, sid)
     case 'key': {
-      const k = KEYS[msg.key]
+      const k = keyDef(msg.key)
       if (!k) return
-      await cdp('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: msg.key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk }, sid)
-      if (k.text) await cdp('Input.dispatchKeyEvent', { type: 'char', key: msg.key, text: k.text }, sid)
-      await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: msg.key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk }, sid)
+      const mods = Array.isArray(msg.mods) ? msg.mods.filter((m) => MOD_BIT[m]) : []
+      const modifiers = mods.reduce((a, m) => a | MOD_BIT[m], 0)
+      const base = { key: msg.key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk, modifiers }
+      await cdp('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base, commands: editCommands(msg.key, mods) }, sid)
+      // 带 ⌘ / ⌃ 的是快捷键，不输入字符
+      if (k.text && !(modifiers & (MOD_BIT.Meta | MOD_BIT.Control))) await cdp('Input.dispatchKeyEvent', { type: 'char', key: msg.key, text: k.text, modifiers }, sid)
+      await cdp('Input.dispatchKeyEvent', { type: 'keyUp', ...base }, sid)
       return
     }
     case 'tabs': return sendTabs()
@@ -782,8 +816,16 @@ const rl = readline.createInterface({ input: process.stdin })
 rl.on('line', (line) => {
   let msg
   try { msg = JSON.parse(line) } catch { return }
-  handle(msg).catch((e) => out({ t: 'error', msg: e.message }))
+  enqueue(msg)
 })
+// 消息一条处理完再处理下一条：以前并发处理，连着两次换尺寸会 stop、stop、start、start，打字和按键也可能交错。
+// ack / refresh 只是放行出图，不用排队。一条最多等 10 秒（比如打开一个一直不响应的网址），免得把后面的全堵住
+let queue = Promise.resolve()
+function enqueue(msg) {
+  const run = () => handle(msg).catch((e) => out({ t: 'error', msg: e.message }))
+  if (msg.t === 'ack' || msg.t === 'refresh') return run()
+  queue = queue.then(() => Promise.race([run(), sleep(10000)]))
+}
 // 中转断开（stdin 关闭）：停掉推流、断开 CDP，Chrome 本身留着
 rl.on('close', async () => {
   const p = pages.get(current)

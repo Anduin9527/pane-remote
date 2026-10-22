@@ -9,6 +9,8 @@ export default {
   'Cursor 的浏览器关掉了；在 Cursor 里再打开网页，这里会自动接上': 'Cursor’s browser was closed. Open a page in Cursor again and it will reconnect here automatically',
   'Cursor 的浏览器不能从手机新开标签，请在 Cursor 的 Browser 面板里打开': 'Can’t open new tabs in Cursor’s browser from the phone. Open them in Cursor’s Browser panel',
   '打不开：{err}': 'Can’t open: {err}',
+  '打不开 {host}：{err}': 'Can’t open {host}: {err}',
+  '{host} 上没有服务在跑，开发服务器启动了吗？': 'Nothing is listening on {host}. Is the dev server running?',
   'Cursor 的浏览器标签请在 Cursor 里关': 'Close Cursor’s browser tabs in Cursor',
   'Cursor 的浏览器现在没打开网页：在 Cursor 里打开 Browser 面板访问一个网址，这里会自动接上': 'Cursor’s browser has no page open. Open the Browser panel in Cursor and visit a URL; it will connect here automatically',
 } as Record<string, string>

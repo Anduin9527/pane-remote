@@ -37,6 +37,7 @@
   import { t, tr } from '$lib/i18n'
   import { postJson } from '$lib/api'
   import { watchRender } from './renderWatch'
+  import LiveInput, { type LiveKey, type Mod } from '$lib/components/LiveInput.svelte'
 
   let { open = $bindable(false), active = true, onhide, onclose }: { open?: boolean; active?: boolean; onhide?: () => void; onclose?: () => void } = $props()
 
@@ -738,22 +739,18 @@
 
   // ---------- 键盘：手机输入框里打的字逐个发过去；特殊键和修饰键用按钮 ----------
   const K = { BackSpace: 0xff08, Tab: 0xff09, Return: 0xff0d, Escape: 0xff1b, Left: 0xff51, Up: 0xff52, Right: 0xff53, Down: 0xff54, Shift: 0xffe1, Control: 0xffe3, Option: 0xffe9, Command: 0xffeb, F11: 0xffc8, Delete: 0xffff, Home: 0xff50, End: 0xff57, PageUp: 0xff55, PageDown: 0xff56 }
-  const MODS = [['⌘', K.Command], ['⌥', K.Option], ['⌃', K.Control], ['⇧', K.Shift]] as const
-  let mods = $state<number[]>([]) // 按下的修饰键：只对下一个键生效
+  const MOD_SYM: Record<Mod, number> = { Meta: K.Command, Alt: K.Option, Control: K.Control, Shift: K.Shift }
+  const NAMED: Record<string, number> = { Enter: K.Return, Backspace: K.BackSpace, Tab: K.Tab, Escape: K.Escape, ArrowLeft: K.Left, ArrowRight: K.Right, ArrowUp: K.Up, ArrowDown: K.Down, Delete: K.Delete, Home: K.Home, End: K.End, PageUp: K.PageUp, PageDown: K.PageDown }
   // 快捷键跟终端页的规则一样：第一行放最常用的（正好排满一行不用滑），其余收在「⋯」展开的面板里（自动换行）。
   // ⌘Q 太容易误点退出 app，不放；要用就点 ⌘ 再按 q
-  type KB = { label: string; mod?: number; sym?: number; extra?: number[] }
-  const TOP_KEYS: KB[] = [{ label: '⌘', mod: K.Command }, { label: 'Esc', sym: K.Escape }, { label: 'Tab', sym: K.Tab }, { label: '↩', sym: K.Return }, { label: '⌫', sym: K.BackSpace },
-    { label: '←', sym: K.Left }, { label: '→', sym: K.Right }, { label: '⌘C', sym: 0x63, extra: [K.Command] }, { label: '⌘V', sym: 0x76, extra: [K.Command] }]
-  const MORE_KEYS: KB[] = [{ label: '⌥', mod: K.Option }, { label: '⌃', mod: K.Control }, { label: '⇧', mod: K.Shift }, { label: '↑', sym: K.Up }, { label: '↓', sym: K.Down }, { label: '⌦', sym: K.Delete },
-    { label: 'Home', sym: K.Home }, { label: 'End', sym: K.End }, { label: 'PgUp', sym: K.PageUp }, { label: 'PgDn', sym: K.PageDown },
-    { label: '⌘X', sym: 0x78, extra: [K.Command] }, { label: '⌘A', sym: 0x61, extra: [K.Command] }, { label: '⌘Z', sym: 0x7a, extra: [K.Command] }, { label: '⌘⇧Z', sym: 0x7a, extra: [K.Command, K.Shift] },
-    { label: '⌘S', sym: 0x73, extra: [K.Command] }, { label: '⌘F', sym: 0x66, extra: [K.Command] }, { label: '⌘W', sym: 0x77, extra: [K.Command] }, { label: '⌘T', sym: 0x74, extra: [K.Command] },
-    { label: '⌘Tab', sym: K.Tab, extra: [K.Command] }, { label: '⌘Space', sym: 0x20, extra: [K.Command] }]
-  let moreKeys = $state(false)
-  const hitKey = (k: KB) => (k.mod ? toggleMod(k.mod) : press(k.sym!, k.extra))
-  const moreModOn = $derived(MORE_KEYS.some((k) => k.mod && mods.includes(k.mod)))
-  // 手机键盘弹着（可视高度明显比窗口矮）：底部不再留安全区
+  const TOP_KEYS: LiveKey[] = [{ label: '⌘', mod: 'Meta' }, { label: 'Esc', key: 'Escape' }, { label: 'Tab', key: 'Tab' }, { label: '↩', key: 'Enter' }, { label: '⌫', key: 'Backspace' },
+    { label: '←', key: 'ArrowLeft' }, { label: '→', key: 'ArrowRight' }, { label: '⌘C', key: 'c', mods: ['Meta'] }, { label: '⌘V', key: 'v', mods: ['Meta'] }]
+  const MORE_KEYS: LiveKey[] = [{ label: '⌥', mod: 'Alt' }, { label: '⌃', mod: 'Control' }, { label: '⇧', mod: 'Shift' }, { label: '↑', key: 'ArrowUp' }, { label: '↓', key: 'ArrowDown' }, { label: '⌦', key: 'Delete' },
+    { label: 'Home', key: 'Home' }, { label: 'End', key: 'End' }, { label: 'PgUp', key: 'PageUp' }, { label: 'PgDn', key: 'PageDown' },
+    { label: '⌘X', key: 'x', mods: ['Meta'] }, { label: '⌘A', key: 'a', mods: ['Meta'] }, { label: '⌘Z', key: 'z', mods: ['Meta'] }, { label: '⌘⇧Z', key: 'z', mods: ['Meta', 'Shift'] },
+    { label: '⌘S', key: 's', mods: ['Meta'] }, { label: '⌘F', key: 'f', mods: ['Meta'] }, { label: '⌘W', key: 'w', mods: ['Meta'] }, { label: '⌘T', key: 't', mods: ['Meta'] },
+    { label: '⌘Tab', key: 'Tab', mods: ['Meta'] }, { label: '⌘Space', key: ' ', mods: ['Meta'] }]
+  // 手机键盘弹着（可视高度明显比窗口矮）：键盘上面露出输入光标
   let kbUp = $state(false)
   $effect(() => {
     const vv = window.visualViewport
@@ -766,16 +763,16 @@
   const keysym = (ch: string) => { const cp = ch.codePointAt(0)!; return cp < 0x100 ? cp : 0x01000000 | cp }
   function press(sym: number, extra: number[] = []) {
     if (!rfb) return
-    const all = [...new Set([...mods, ...extra])]
+    const all = [...new Set(extra)]
     for (const m of all) rfb.sendKey(m, null, true)
     rfb.sendKey(sym, null)
     for (const m of [...all].reverse()) rfb.sendKey(m, null, false)
-    mods = []
   }
-  /** 一段文字：[251, 长度, UTF-8] 整段发给转码代理，由电脑上的助手粘贴进去（不受 Mac 输入法影响、顺序不乱）；
-   *  按着修饰键时（比如先点了 ⌘ 再打 c）还是逐个按键 */
+  /** 输入栏的按键（名字 → keysym） */
+  const pressKey = (k: string, mods: Mod[]) => press(NAMED[k] ?? keysym(k), mods.map((m) => MOD_SYM[m]))
+  /** 一段文字：[251, 长度, UTF-8] 整段发给转码代理，由电脑上的助手粘贴进去（不受 Mac 输入法影响、顺序不乱） */
   function typeText(s: string) {
-    if (mods.length || !sock || sock.readyState !== 1) { for (const ch of s) press(ch === '\n' ? K.Return : keysym(ch)); return }
+    if (!sock || sock.readyState !== 1) { for (const ch of s) press(ch === '\n' ? K.Return : keysym(ch)); return }
     s.split('\n').forEach((part, i) => {
       if (i) press(K.Return)
       if (!part) return
@@ -784,31 +781,6 @@
       m[0] = 251; new DataView(m.buffer).setUint32(1, u.length); m.set(u, 5)
       sock!.send(m)
     })
-  }
-  function toggleMod(sym: number) { mods = mods.includes(sym) ? mods.filter((m) => m !== sym) : [...mods, sym] }
-  let composedAt = 0, composedText = ''
-  function onBeforeInput(e: InputEvent) {
-    // 输入法拼写中 / 拼完上屏：只在 compositionend 发一次（iOS 拼完还会再来一个 insertFromComposition，别重复发）
-    if (e.inputType === 'insertCompositionText' || e.inputType === 'deleteCompositionText' || e.inputType === 'insertFromComposition') return
-    e.preventDefault()
-    if (e.inputType === 'deleteContentBackward') press(K.BackSpace)
-    else if (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') press(K.Return)
-    else if (e.data) {
-      // 有的输入法拼完后又用 insertText 把同一段再插一遍
-      if (e.data === composedText && Date.now() - composedAt < 300) return
-      typeText(e.data)
-    }
-  }
-  function onCompositionEnd(e: CompositionEvent) {
-    if (e.data) { typeText(e.data); composedText = e.data; composedAt = Date.now() }
-    // 等这一轮输入事件走完再清空，免得打断输入法
-    setTimeout(() => { if (kbInput) kbInput.value = '' })
-  }
-  function onKeyDown(e: KeyboardEvent) {
-    const map: Record<string, number> = { Enter: K.Return, Backspace: K.BackSpace, Tab: K.Tab, Escape: K.Escape, ArrowLeft: K.Left, ArrowRight: K.Right, ArrowUp: K.Up, ArrowDown: K.Down }
-    if (e.isComposing || !(e.key in map)) return
-    e.preventDefault()
-    press(map[e.key])
   }
   async function toggleKb() {
     kbOpen = !kbOpen
@@ -884,7 +856,6 @@
 
   const fmtMB = (n: number) => (n / 1048576).toFixed(1)
   const bar = 'grid size-9 flex-none place-items-center rounded-lg text-white/80 active:bg-white/15'
-  const key = 'h-9 min-w-9 flex-none rounded-md bg-white/10 px-2 text-[13px] text-white active:bg-white/25'
   const chip = 'h-7 flex-none rounded-full bg-white/10 px-2.5 text-[12px] text-white/80 active:bg-white/25'
 </script>
 
@@ -1092,29 +1063,7 @@
 
   {#if status === 'live'}
     {#if kbOpen}
-      <div class="flex items-center gap-1 px-2 pt-1.5">
-        <div class="grid min-w-0 flex-1 gap-1" style:grid-template-columns="repeat({TOP_KEYS.length}, minmax(0, 1fr))">
-          {#each TOP_KEYS as k (k.label)}
-            <button class={cn(key, 'min-w-0 px-0', k.mod && mods.includes(k.mod) && 'bg-primary text-primary-foreground')} onpointerdown={(e) => e.preventDefault()} onclick={() => hitKey(k)}>{k.label}</button>
-          {/each}
-        </div>
-        <button class={cn('relative grid h-9 w-8 flex-none place-items-center rounded-md text-white/70 active:bg-white/25', moreKeys && 'bg-white/15 text-white')} aria-label={t('更多按键')} onpointerdown={(e) => e.preventDefault()} onclick={() => (moreKeys = !moreKeys)}>
-          ⋯{#if moreModOn && !moreKeys}<span class="absolute top-1 right-1 size-1.5 rounded-full bg-primary"></span>{/if}
-        </button>
-      </div>
-      {#if moreKeys}
-        <div class="grid grid-cols-[repeat(auto-fill,minmax(52px,1fr))] gap-1 px-2 pt-1">
-          {#each MORE_KEYS as k (k.label)}
-            <button class={cn(key, 'min-w-0 px-1', k.mod && mods.includes(k.mod) && 'bg-primary text-primary-foreground')} onpointerdown={(e) => e.preventDefault()} onclick={() => hitKey(k)}>{k.label}</button>
-          {/each}
-        </div>
-      {/if}
-      <div class={cn('px-2 pt-1.5', rotated || kbUp ? 'pb-1.5' : 'pb-[calc(env(safe-area-inset-bottom)+6px)]')}>
-        <input bind:this={kbInput} onbeforeinput={onBeforeInput} oncompositionend={onCompositionEnd} onkeydown={onKeyDown}
-          autocapitalize="off" autocomplete="off" spellcheck="false" enterkeyhint="enter" {...{ autocorrect: 'off' }}
-          placeholder={mods.length ? t('按下一个键（带 {m}）', { m: MODS.filter(([, s]) => mods.includes(s)).map(([l]) => l).join('') }) : t('在这里打字，直接发到 Mac')}
-          class="h-10 w-full rounded-lg border border-white/20 bg-white/10 px-3 text-base text-white outline-none placeholder:text-white/40" />
-      </div>
+      <LiveInput bind:input={kbInput} top={TOP_KEYS} more={MORE_KEYS} onkey={pressKey} ontext={typeText} dark safeBottom={!rotated} placeholder={t('在这里打字，直接发到 Mac')} />
     {:else}
       <p class={cn('px-3 pt-1 text-center text-[11px] text-white/45', rotated ? 'pb-1' : 'pb-[calc(env(safe-area-inset-bottom)+6px)]')}>
         {pad ? t('滑动 = 挪光标 · 轻点 = 点击 · 长按 = 右键 · 长按后拖 = 拖动 · 双指滑 = 滚动 · 双指捏 = 缩放 · 三指上滑 = 调度中心 · 三指左右滑 = 切桌面') : t('轻点 = 点击 · 长按 = 右键 · 长按后拖 = 拖动 · 单指滑 = 滚动 · 双指 = 缩放 / 平移 · 三指上滑 = 调度中心 · 三指左右滑 = 切桌面')}

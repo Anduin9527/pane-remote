@@ -116,7 +116,7 @@ export default {
   换成电脑模式: 'Switch to desktop mode',
   退出全屏: 'Exit full screen',
   全屏: 'Full screen',
-  '先点页面里的输入框，再在这里打字': 'Tap a field on the page, then type here',
+  '先点页面里的输入框，再在这里打字（直接发过去）': 'Tap a field on the page, then type here (sent as you type)',
   退格: 'Backspace',
   回车: 'Enter',
   新标签: 'New tab',
