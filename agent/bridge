@@ -52,7 +52,7 @@
 #   incident-repo           pane-remote 仓库在电脑上的目录（修自己的问题时在这里开 agent）
 #   agent-answer <id> <base64 JSON>  手机对 agent 提问的回答，写给电脑上等着的 MCP 服务（见 agent/plugin/mcp.mjs）
 #   host                    常驻：连到电脑上的 pane-host（stdin/stdout 按行 JSON-RPC，见 host/protocol.mjs），服务端只占这一条长连接
-#   awake                   让 Mac 2 分钟内不因空闲睡眠（caffeinate -i），并标记「手机在用」；手机在用时中转每分钟调一次
+#   awake                   让 Mac 一段时间内不因空闲睡眠（caffeinate -i，默认 30 分钟，PANE_AWAKE_SECS 可改），并标记「手机在用」；手机在用时中转每分钟调一次
 # 其他任何输入一律拒绝，不会执行 shell。
 set -u
 export PATH=/usr/bin:/bin
@@ -421,9 +421,12 @@ PY
     pidf=$HOME/.cache/pane-remote-caffeinate.pid
     mkdir -p "$HOME/.cache"
     touch "$HOME/.cache/pane-remote-active"  # pane-open 据此判断你此刻在用手机
-    # 上一个 caffeinate 还在就续一个新的再结束旧的，保证中间不断档
+    # 上一个 caffeinate 还在就续一个新的再结束旧的，保证中间不断档。
+    # 放下手机后再撑 30 分钟：以前只撑 2 分钟半，agent 跑到一半 Mac 就睡了，再拿起手机也连不上（合盖照样会睡，这个管不了）
+    secs=${PANE_AWAKE_SECS:-1800}
+    [[ "$secs" =~ ^[0-9]+$ ]] || secs=1800
     old=$(cat "$pidf" 2>/dev/null)
-    nohup /usr/bin/caffeinate -i -t 150 </dev/null >/dev/null 2>&1 &
+    nohup /usr/bin/caffeinate -i -t "$secs" </dev/null >/dev/null 2>&1 &
     echo $! > "$pidf"
     if [[ "$old" =~ ^[0-9]+$ ]] && [[ "$(ps -o comm= -p "$old" 2>/dev/null)" == */caffeinate ]]; then kill "$old" 2>/dev/null; fi
     echo ok

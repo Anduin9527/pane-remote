@@ -8,6 +8,12 @@ earlier work predates the public repository.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-23
+
+### Changed
+- The Mac stays awake for 30 minutes after the phone was last used (was about 2½ minutes), so an agent keeps working and the phone can reconnect; `PANE_AWAKE_SECS` changes it.
+- AI calls through Codex use their own `CODEX_HOME` without `~/.codex/AGENTS.md` (about 2.1K fewer input tokens per call); the login is shared and kept in sync. `createAi({ codexHome: false })` turns it off.
+
 ## [0.9.0] - 2026-10-23 — Versions and changelog
 
 ### Added

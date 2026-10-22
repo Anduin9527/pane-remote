@@ -135,7 +135,7 @@ node host/ai/test/smoke.mjs [claude|codex|cursor]   # 真调用冒烟，8 项共
 ## 已知限制
 
 - **Codex 没有逐字增量**：`exec --json` 一条消息生成完才出来，`onChunk` 一次给整段。要逐字得改走 `codex app-server`（JSON-RPC，有 delta 事件），没做。
-- **Codex 总会带上 `~/.codex/AGENTS.md`**（用户写给编码 agent 的说明）和它自己约 12K token 的系统提示：`--ignore-user-config` 和 `project_doc_max_bytes=0` 都去不掉。AGENTS.md 里指定了回答语言时，实测会用那种语言回答别的语言的问题。现在在提示开头加了一句「按用户消息的语言回答」，未再真测。彻底解决要用单独的 `CODEX_HOME`，但那要复制 / 链接 `auth.json`，令牌刷新时可能把原登录弄坏，没做。
+- **Codex 自己的系统提示约 10K token**，去不掉。`~/.codex/AGENTS.md`（用户写给编码 agent 的说明）靠单独的 `CODEX_HOME`（`~/.local/state/pane-remote/codex-home`，见 `codex-home.mjs`）去掉了：实测每次少约 2.1K 输入 token（12269 → 10191）。登录共用：`auth.json` 是指向 `~/.codex/auth.json` 的软链，Codex 刷新令牌时若把软链换成普通文件，调用结束后拷回原文件、恢复软链。`createAi({ codexHome: false })` 关掉。
 - cursor-agent 没有「不留会话」的开关，每次请求会在 `~/.cursor` 留一个聊天记录；结构化输出靠提示，模型不一定守规矩（取不到 JSON 时报 `code:'structured'`）。
 - 三家都把多轮历史压成一段文字，长对话每次都要重新读全文（没有服务端缓存复用）。
 - Claude 首字延迟大头是 Claude Code 自身（冷启动约 2.5 秒，备用进程约 1.5 秒）；haiku 默认开思考，`reasoning_content` 通常是空的（Claude Code 只给思考摘要）。

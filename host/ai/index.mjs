@@ -12,6 +12,7 @@ import { normalize, resolveImages, hasImages, images, toText, extension } from '
 import { startToolBridge } from './toolbridge.mjs'
 import * as claude from './providers/claude.mjs'
 import * as codex from './providers/codex.mjs'
+import { createCodexHome } from './codex-home.mjs'
 import * as cursor from './providers/cursor.mjs'
 
 const DAY = 86400000
@@ -83,6 +84,9 @@ export function createAi(opts = {}) {
   const enabled = opts.providers || PROVIDERS
   const pool = new claude.WarmPool({ env, cwd: workDir })
   const ctx = { env, pool }
+  // Codex 用单独的 CODEX_HOME（不带 ~/.codex/AGENTS.md，登录共用，见 codex-home.mjs）；codexHome: false 关掉
+  const codexHome = opts.codexHome === false ? null : createCodexHome({ dir: opts.codexHome || path.join(STATE, 'codex-home'), home: os.homedir() })
+  const codexEnv = () => (codexHome ? codexHome.env(env) : env)
   const describeCache = new Map() // 图片哈希 → 转译文字（多轮对话里同一张图只转一次）
   let memo = null
 
@@ -98,7 +102,7 @@ export function createAi(opts = {}) {
     const skipped = {}
     const parts = await Promise.all(enabled.map(async (p) => {
       try {
-        const a = await { claude, codex, cursor }[p].available(env)
+        const a = p === 'codex' ? await codex.available(codexEnv()).finally(() => codexHome?.reconcile()) : await { claude, cursor }[p].available(env)
         if (!a.ok) { skipped[p] = a.reason; return [] }
         if (p === 'claude') return claude.MODELS.map((m) => ({ ...m, vision: true, structured: true, tools: true }))
         if (p === 'codex') return codex.readModels().map((m) => ({ ...m, structured: true, tools: 'experimental' }))
@@ -205,9 +209,9 @@ export function createAi(opts = {}) {
         let schemaFile
         if (schema) { schemaFile = path.join(tmp, 'schema.json'); fs.writeFileSync(schemaFile, JSON.stringify(schema)) }
         const body = toText(norm, (_, n) => `[attached image ${n}]`)
-        // Codex 总会带上 ~/.codex/AGENTS.md（用户写给编码 agent 的说明，可能规定了回答语言），这里先压一句
+        // 独立的 CODEX_HOME 已经不带 ~/.codex/AGENTS.md；关掉独立目录时它还在（可能规定了回答语言），这句留着
         const prompt = `${CODEX_PREAMBLE}${norm.system ? `<instructions>\n${norm.system}\n</instructions>\n\n` : ''}${body}`
-        r = await codex.complete(ctx, { model: native, effort, prompt, imageFiles, schemaFile, toolArgs: tb ? tb.codexArgs() : [], cwd: workDir }, pio)
+        r = await codex.complete({ ...ctx, env: codexEnv() }, { model: native, effort, prompt, imageFiles, schemaFile, toolArgs: tb ? tb.codexArgs() : [], cwd: workDir }, pio).finally(() => codexHome?.reconcile())
       } else {
         const fmt = schema ? `\n\nReply with ONLY one JSON value (no prose, no code fence) that validates against this JSON Schema:\n${JSON.stringify(schema)}` : ''
         const prompt = `${cursor.NO_TOOLS}\n\n${norm.system ? `<instructions>\n${norm.system}\n</instructions>\n\n` : ''}${toText(norm)}${fmt}`
