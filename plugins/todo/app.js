@@ -44,6 +44,9 @@
     nRestore: '用户在手机上从回收站恢复了待办「{t}」({id})', nPurge: '用户在手机上彻底删除了待办「{t}」({id})', nEdit: '用户在手机上修改了待办「{t}」({id})：{f}',
     nComment: '用户在待办「{t}」({id}) 下评论：{c}', nReply: '[待办 {id}] 用户回复了你在「{t}」里的问题：{c}', nType: '用户把待办「{t}」({id}) 的处理类型改成了「{v}」', nSentOther: '用户把待办「{t}」({id}) 发给了 {to} 去{k}',
     aiWorking: '正在分析…', aiNone: '没有看出要做什么', aiApply: '执行 {n} 项', aiNoModel: 'Mac 上没有可用的 AI 模型', aiDone: '已执行 {n} 项',
+    cc: '会话任务', ccEmpty: '在跑的 Claude Code 会话里还没有任务', ccHint: 'Claude Code 自己的任务列表（只读，实时）', ccNone: '没有任务', ccShowDone: '显示已完成（{n}）', ccHideDone: '收起已完成',
+    ccCount: '{p} 进行中 · {o} 待做 · {d} 完成', ccWait: '等 #{ids}', ccBlocks: '挡着 #{ids}', ccPromote: '转成待办', ccPromoted: '已转成待办', ccLinked: '已在待办里', ccAsk: '问进度', ccStatus: { pending: '待做', in_progress: '进行中', completed: '已完成' },
+    ccPrompt: '[CC 任务 #{id}] 「{s}」现在进展怎么样？简单说一下；做完了就在你的任务列表里标完成。', ccFrom: '来自 Claude Code 任务 #{id}（{who}）', ccPerm: '要允许「agent 会话」权限才能看会话任务',
     remind: '过期提醒', remindHint: '每天 {t} 推送过期和今天截止的待办（单独静音的除外）', remindOff: '已关闭，不会推送', remindAt: '提醒时间', remindOn: '过期提醒已打开：每天 {t}',
     remindItem: '提醒这条', remindItemHint: '过期或今天截止时一起推送', remindFail: '没打开过期提醒：{e}',
     opAdd: '新建', opUpdate: '修改', opDone: '完成', opReopen: '重新打开', opTrash: '删除', opComment: '评论', opRun: '发去执行', opCheck: '发去检查', opMissing: '（找不到这条）',
@@ -79,6 +82,9 @@
     nRestore: 'The user restored todo "{t}" ({id}) from the trash', nPurge: 'The user permanently deleted todo "{t}" ({id})', nEdit: 'The user edited todo "{t}" ({id}): {f}',
     nComment: 'The user commented on todo "{t}" ({id}): {c}', nReply: '[todo {id}] The user answered your question in "{t}": {c}', nType: 'The user set todo "{t}" ({id}) to "{v}"', nSentOther: 'The user sent todo "{t}" ({id}) to {to} to {k}',
     aiWorking: 'Analyzing…', aiNone: 'Nothing to do found', aiApply: 'Apply {n}', aiNoModel: 'No AI model available on the Mac', aiDone: 'Applied {n}',
+    cc: 'Agent tasks', ccEmpty: 'No tasks in the running Claude Code sessions yet', ccHint: "Claude Code's own task lists (read-only, live)", ccNone: 'No tasks', ccShowDone: 'Show done ({n})', ccHideDone: 'Hide done',
+    ccCount: '{p} in progress · {o} to do · {d} done', ccWait: 'waits for #{ids}', ccBlocks: 'blocks #{ids}', ccPromote: 'Make it a todo', ccPromoted: 'Added to todos', ccLinked: 'Already a todo', ccAsk: 'Ask for progress', ccStatus: { pending: 'To do', in_progress: 'In progress', completed: 'Done' },
+    ccPrompt: '[CC task #{id}] How is "{s}" going? Give a short update; if it is done, mark it completed in your task list.', ccFrom: 'From Claude Code task #{id} ({who})', ccPerm: 'Allow the "agent sessions" permission to see agent tasks',
     remind: 'Overdue reminder', remindHint: 'Every day at {t}, push overdue and due-today todos (except muted ones)', remindOff: 'Off, nothing is pushed', remindAt: 'Time', remindOn: 'Overdue reminder on: every day at {t}',
     remindItem: 'Remind me about this one', remindItemHint: 'Included when it is overdue or due today', remindFail: 'Could not turn on the reminder: {e}',
     opAdd: 'Add', opUpdate: 'Edit', opDone: 'Done', opReopen: 'Reopen', opTrash: 'Delete', opComment: 'Comment', opRun: 'Run', opCheck: 'Check', opMissing: ' (not found)',
@@ -216,6 +222,7 @@
     if (focus && focus.closest && focus.closest('.sheet') && /INPUT|TEXTAREA|SELECT/.test(focus.tagName)) { pendingRender = true; return }
     if (dragging) { pendingRender = true; return }
     pendingRender = false
+    if (status === 'cc') return renderCc()
     const trashMode = status === 'trash'
     for (const b of $('status').children) b.setAttribute('aria-pressed', String(b.dataset.v === status))
     $('trashBtn').setAttribute('aria-pressed', String(trashMode))
@@ -391,7 +398,7 @@
   for (const b of $('status').children) b.onclick = () => setStatus(b.dataset.v)
   $('trashBtn').onclick = () => setStatus(status === 'trash' ? 'active' : 'trash')
   $('viewBtn').onclick = () => openSheet(null, 'view')
-  function setStatus(v) { status = v; setKv('ui.status', v); limit = 150; armedEmpty = false; render() }
+  function setStatus(v) { status = v; setKv('ui.status', v); limit = 150; armedEmpty = false; render(); ccPoll() }
   $('emptyBtn').onclick = () => {
     if (!armedEmpty) { armedEmpty = true; render(); setTimeout(() => { if (armedEmpty) { armedEmpty = false; render() } }, 4000); return }
     armedEmpty = false
@@ -400,6 +407,108 @@
     for (const d of gone) noteSession(d, 'nPurge')
     render()
     if (n != null) toast(T.emptied)
+  }
+
+  // ---------- 会话任务：Claude Code 自己的任务列表（TaskCreate 写的），只读、实时（这一栏打开时每 5 秒拉一次） ----------
+  let cc = null, ccErr = '', ccTimer = null, ccBusy = false
+  const ccShowDone = new Set()
+  const ccKey = (s, t) => `cc-task:${s.session}#${t.id}`
+  async function loadCc() {
+    if (ccBusy || !platform || !platform.sessions || !platform.sessions.tasks) return
+    ccBusy = true
+    try { cc = await platform.sessions.tasks(); ccErr = '' } catch (e) { ccErr = e.code === 'EWTPERM' ? T.ccPerm : e.message; cc = cc || [] }
+    ccBusy = false
+    if (status === 'cc') { render(); renderSheet() }
+  }
+  function ccPoll() {
+    clearInterval(ccTimer)
+    ccTimer = null
+    if (status !== 'cc') return
+    loadCc()
+    ccTimer = setInterval(() => { if (document.visibilityState === 'visible' && status === 'cc') loadCc() }, 5000)
+  }
+  /** 已经转成待办的（待办的 links 里记着 cc-task:<会话>#<编号>） */
+  function ccLinked() {
+    const set = new Set()
+    for (const d of store.list({ status: 'all' })) for (const l of d.links) if (l.startsWith('cc-task:')) set.add(l)
+    return set
+  }
+  function renderCc() {
+    $('trashBtn').setAttribute('aria-pressed', 'false')
+    for (const b of $('status').children) b.setAttribute('aria-pressed', String(b.dataset.v === status))
+    $('addForm').hidden = true
+    $('trashBar').hidden = true
+    $('filters').hidden = true
+    $('projects').hidden = true
+    const list = $('list')
+    if (!cc) { list.replaceChildren(el('div', { class: 'empty' }, el('span', { class: 'spin' }))); return }
+    const withTasks = cc.filter((s) => s.tasks && s.tasks.length)
+    if (!withTasks.length) { list.replaceChildren(el('div', { class: 'empty' }, svg(I.list, 'stroke-width="1.6"'), el('div', null, ccErr || T.ccEmpty), el('p', null, T.ccHint))); return }
+    const linked = ccLinked()
+    const out = []
+    for (const s of withTasks) {
+      const n = { pending: 0, in_progress: 0, completed: 0 }
+      for (const t of s.tasks) n[t.status]++
+      out.push(el('div', { class: 'cc-head' }, el('b', null, sessName(s)), el('span', null, tilde(s.cwd)), el('i', null, fmt(T.ccCount, { p: n.in_progress, o: n.pending, d: n.completed }))))
+      const rank = { in_progress: 0, pending: 1, completed: 2 }
+      const tasks = s.tasks.slice().sort((a, b) => rank[a.status] - rank[b.status] || Number(a.id) - Number(b.id))
+      const show = ccShowDone.has(s.session) ? tasks : tasks.filter((t) => t.status !== 'completed')
+      out.push(el('ul', null, show.map((t) => el('li', { class: 'cc-row ' + t.status },
+        el('div', { class: 'row' },
+          el('div', { class: 'cc-ico ' + (t.status === 'in_progress' ? 'prog' : t.status === 'completed' ? 'done' : '') }, t.status === 'in_progress' ? '◐' : t.status === 'completed' ? '✓' : '○'),
+          el('button', { class: 'body', onclick: () => openCc(s, t) },
+            el('div', { class: 'title' }, `#${t.id} ${t.subject}`),
+            el('div', { class: 'meta' },
+              t.status === 'in_progress' && t.activeForm ? el('span', { class: 'ran' }, t.activeForm) : null,
+              t.blockedBy.length ? el('span', null, fmt(T.ccWait, { ids: t.blockedBy.join(', #') })) : null,
+              linked.has(ccKey(s, t)) ? el('span', { class: 'linked' }, T.ccLinked) : null)))))))
+      if (n.completed) out.push(el('button', { class: 'cc-more', onclick: () => { ccShowDone.has(s.session) ? ccShowDone.delete(s.session) : ccShowDone.add(s.session); render() } }, ccShowDone.has(s.session) ? T.ccHideDone : fmt(T.ccShowDone, { n: n.completed })))
+    }
+    list.replaceChildren(...out)
+  }
+  function openCc(s, t) {
+    openSheet(null, 'cc')
+    sheet.cc = { session: s.session, id: t.id }
+    renderSheet()
+  }
+  function ccCurrent() {
+    if (!sheet || !sheet.cc || !cc) return null
+    const s = cc.find((x) => x.session === sheet.cc.session)
+    const t = s && s.tasks.find((x) => x.id === sheet.cc.id)
+    return t ? { s, t } : null
+  }
+  function ccSheet() {
+    const cur = ccCurrent()
+    if (!cur) return [el('div', { class: 'hint' }, T.ccNone)]
+    const { s, t } = cur
+    if (sheet.mode === 'ccsend') {
+      const ta = el('textarea', { class: 'prompt', maxlength: 8000, oninput: (e) => { sheet.prompt = e.target.value } })
+      ta.value = sheet.prompt
+      return [
+        el('div', { class: 's-head' }, el('button', { type: 'button', onclick: () => { sheet.mode = 'cc'; renderSheet() } }, T.back), el('b', null, T.ccAsk), el('span')),
+        el('div', { class: 'target' }, el('div', { class: 't' }, `${T.sendTo} `, el('b', null, sessName(s)), el('small', null, tilde(s.cwd) + (s.status === 'busy' ? ` · ${T.busy}` : '')))),
+        el('label', { class: 'field' }, T.message, ta),
+        el('div', { class: 'foot' }, el('button', { type: 'button', onclick: closeSheet }, T.cancel), el('button', { type: 'button', class: 'primary', disabled: sheet.sending ? true : null, onclick: async () => {
+          sheet.sending = true; renderSheet()
+          try { const r = await platform.sessions.send(s.session ? { session: s.session, text: sheet.prompt } : { pane: s.pane, text: sheet.prompt }); closeSheet(); toast(fmt(T.sent, { to: `${r.agent} · #${r.pane}` })) }
+          catch (e) { if (sheet) sheet.sending = false; toast(e.code === 'EWTPERM' ? T.permHint : e.message); renderSheet() }
+        } }, sheet.sending ? el('span', { class: 'spin' }) : T.send)),
+      ]
+    }
+    const linked = ccLinked().has(ccKey(s, t))
+    return [
+      el('div', { class: 's-title' }, `#${t.id} ${t.subject}`),
+      el('div', { class: 's-badges' }, el('span', { class: 'pill ' + (t.status === 'in_progress' ? 'prog' : '') }, T.ccStatus[t.status]), t.status === 'in_progress' && t.activeForm ? el('span', { class: 'meta' }, el('span', { class: 'ran' }, t.activeForm)) : null),
+      t.description ? el('div', { class: 's-note' }, t.description) : null,
+      el('div', { class: 's-meta' }, [sessName(s), tilde(s.cwd), t.blockedBy.length ? fmt(T.ccWait, { ids: t.blockedBy.join(', #') }) : '', t.blocks.length ? fmt(T.ccBlocks, { ids: t.blocks.join(', #') }) : ''].filter(Boolean).join(' · ')),
+      el('div', { class: 'list-btns' },
+        el('button', { type: 'button', disabled: linked ? true : null, onclick: () => {
+          const src = { by: 'agent', agent: s.agent, pane: s.pane, cwd: s.cwd, session: s.session }
+          const note = [t.description, fmt(T.ccFrom, { id: t.id, who: sessName(s) })].filter(Boolean).join('\n\n')
+          if (attempt(() => store.add({ title: t.subject.slice(0, 200), note, assignee: 'agent', links: [ccKey(s, t)], project: s.cwd }, src))) { closeSheet(); render(); toast(T.ccPromoted) }
+        } }, svg(I.list), linked ? T.ccLinked : T.ccPromote),
+        t.status !== 'completed' ? el('button', { type: 'button', onclick: () => { sheet.mode = 'ccsend'; sheet.prompt = fmt(T.ccPrompt, { id: t.id, s: t.subject }); renderSheet() } }, svg(I.chat), T.ccAsk) : null),
+    ]
   }
 
   // ---------- 底部面板 ----------
@@ -432,6 +541,7 @@
     if (focus && box.contains(focus) && /INPUT|TEXTAREA|SELECT/.test(focus.tagName)) return
     const kids = [el('div', { class: 'grab' })]
     if (sheet.mode === 'view') kids.push(...viewSheet())
+    else if (sheet.mode === 'cc' || sheet.mode === 'ccsend') kids.push(...ccSheet())
     else if (sheet.mode === 'ai') kids.push(...aiSheet())
     else {
       const d = current()
@@ -902,6 +1012,7 @@
   setInterval(() => { if (document.visibilityState === 'visible' && !sheet && !dragging) render() }, 60000)
   attempt(() => store.purgeOld())
   render()
+  ccPoll()
   // 过期提醒默认开：第一次打开时建好定时任务（会问「定时任务」和「通知」权限），之后照你的开关来
   if (!kv.getItem('remind.setup')) {
     setKv('remind.setup', true)

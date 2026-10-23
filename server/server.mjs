@@ -713,7 +713,7 @@ const agentSessions = {
       const panes = (await listPanes()).filter((x) => x.workspace !== 'pane-remote-test')
       const infos = await Promise.all(panes.map(async (x) => { try { return { x, a: JSON.parse((await bridge(`agent inspect ${x.pane}`)) || '{}') } } catch { return null } }))
       return infos.filter((i) => i?.a?.agent).map(({ x, a }) => ({
-        pane: x.pane, agent: a.agent, session: a.session || null, cwd: a.cwd || x.dir || '', title: x.title || '', status: a.status || '',
+        pane: x.pane, agent: a.agent, session: a.session || null, cwd: a.cwd || x.dir || '', title: x.title || '', status: a.status || '', configDir: a.configDir || null,
         startedAt: a.startedAt ? Math.round(a.startedAt * 1000) : null,
       }))
     })()
@@ -1256,6 +1256,8 @@ const macApi = createMac({ bridge })
 
 // WebSocket 升级不经过上面的请求处理，身份和来源要在这里单独查
 function onUpgrade(req, socket, head) {
+  // 升级前后客户端断开（ECONNRESET）会在这个裸 socket 上发 error：没有监听就是未捕获异常，整个服务端退出
+  socket.on('error', () => {})
   const url = new URL(req.url, 'http://x')
   const origin = req.headers.origin
   const isScreen = url.pathname === '/api/screen/vnc'
@@ -1270,8 +1272,8 @@ function onUpgrade(req, socket, head) {
   if (hostCheck.isHost(req)) { socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return }
   const client = clientOf(req, url)
   if (client && !lease.isHolder(client)) {
-    // 握手失败浏览器拿不到原因：先接受再用 4001 关掉，原因里带上是谁在用
-    return kickWss.handleUpgrade(req, socket, head, (ws) => ws.close(4001, kickReason()))
+    // 握手失败浏览器拿不到原因：先接受再用 4409 关掉，原因里带上是谁在用（不用 4001：看屏幕的转码代理拿它表示「电脑连不上」）
+    return kickWss.handleUpgrade(req, socket, head, (ws) => ws.close(4409, kickReason()))
   }
   if (client) { const untrack = lease.track(client, () => socket.destroy()); socket.on('close', untrack) }
   if (isScreen) return screen.upgrade(req, socket, head, url)
@@ -1280,8 +1282,10 @@ function onUpgrade(req, socket, head) {
   pv.wss.handleUpgrade(req, socket, head, (ws) => pv.wss.emit('connection', ws, req))
 }
 
-const server = http.createServer(onRequest)
-server.on('upgrade', onUpgrade)
+// TEST_LOGIN（只给本机测试用，比如 scripts/smoke.mjs）：本机回环来的、没带身份头的请求当成这个用户。正式环境不设
+const testLogin = (req) => { if (process.env.TEST_LOGIN && !req.headers['tailscale-user-login'] && /^(::1|::ffff:127\.|127\.)/.test(req.socket.remoteAddress || '')) req.headers['tailscale-user-login'] = process.env.TEST_LOGIN }
+const server = http.createServer((req, res) => { testLogin(req); onRequest(req, res) })
+server.on('upgrade', (req, socket, head) => { testLogin(req); onUpgrade(req, socket, head) })
 
 if (!ALLOWED.size) console.log('警告：allowedLogins 是空的，所有请求都会被拒绝（跑 pane-remote init 配置）')
 if (!RELAY && !SERVE_HOSTS.size) console.log('警告：serveHosts 是空的，local 模式下所有请求都会被拒绝（跑 pane-remote init 配置）')

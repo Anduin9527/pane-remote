@@ -1,7 +1,7 @@
 // 单客户端在线（服务端见 lease.mjs）：同一时间只有一个客户端在用，新打开的顶掉旧的。
 // 必须在 main.ts 第一个 import：要赶在任何模块发请求之前，把 fetch / EventSource / WebSocket 包上一层：
 //   - 发往 api/ 的请求带上本客户端编号（fetch 加请求头，EventSource / WebSocket 加 _pc 参数）
-//   - 收到被顶的信号（409 kicked、SSE 的 kicked 事件、WebSocket 关闭码 4001）就停掉所有连接，之后的请求直接失败不出网
+//   - 收到被顶的信号（409 kicked、SSE 的 kicked 事件、WebSocket 关闭码 4409；不用 4001，看屏幕的转码代理拿它表示「电脑连不上」）就停掉所有连接，之后的请求直接失败不出网
 //   - 连接无故断开时问一下服务端（api/lease）是不是被顶了
 // 编号放 sessionStorage：同一个标签页刷新不变；被顶的标记也放这里，iOS 主屏幕 App 从后台回来自动重载时不会悄悄顶回去，
 // 要点「在这台设备上继续」才接管。App 被杀掉重新打开（sessionStorage 清空）算重新访问，直接接管。
@@ -40,7 +40,8 @@ export const ready = new Promise<void>((r) => { markReady = r; setTimeout(r, 500
 function apiPath(u: string | URL): string | null {
   try {
     const url = new URL(String(u), location.href)
-    return url.origin === location.origin && url.pathname.includes('/api/') ? url.pathname : null
+    // 比主机不比协议：WebSocket 是 ws(s)://，页面是 http(s)://
+    return url.host === location.host && url.pathname.includes('/api/') ? url.pathname : null
   } catch { return null }
 }
 const blocked = (p: string) => (lease.status === 'kicked' || lease.status === 'local') && !FREE.test(p)
@@ -97,30 +98,37 @@ const withPc = (u: string | URL) => {
   return url.href
 }
 
-class LeaseEventSource extends OrigES {
-  constructor(url: string | URL, init?: EventSourceInit) {
-    super(withPc(url), init)
-    if (!apiPath(url)) return
-    if (blocked('/api/')) { this.close(); return }
-    live.add(this)
-    this.addEventListener('kicked', (e) => { this.close(); kicked(JSON.parse((e as MessageEvent).data || '{}')) })
-    this.addEventListener('error', () => { if (this.readyState === OrigES.CLOSED) live.delete(this); checkSoon() })
-  }
-  close() { live.delete(this); super.close() }
+// 包装成「返回原生对象」的构造函数，而不是子类：有的库按原型检查对象（noVNC 的 Websock.attach 看
+// Object.getPrototypeOf(ws) 自己的属性里有没有 send / close / binaryType……），子类的原型上没有这些，远控会直接连不上。
+// 返回原生实例，instanceof、属性、常量都和原来一样；只在实例上挂监听
+function LeaseEventSource(this: unknown, url: string | URL, init?: EventSourceInit) {
+  const es = new OrigES(withPc(url), init)
+  if (!apiPath(url)) return es
+  if (blocked('/api/')) { es.close(); return es }
+  live.add(es)
+  const close = es.close.bind(es)
+  es.close = () => { live.delete(es); close() }
+  es.addEventListener('kicked', (e) => { es.close(); kicked(JSON.parse((e as MessageEvent).data || '{}')) })
+  es.addEventListener('error', () => { if (es.readyState === OrigES.CLOSED) live.delete(es); checkSoon() })
+  return es
 }
-class LeaseWebSocket extends OrigWS {
-  constructor(url: string | URL, protocols?: string | string[]) {
-    super(withPc(url), protocols)
-    if (!apiPath(url)) return
-    if (blocked('/api/')) { this.close(); return }
-    live.add(this)
-    this.addEventListener('close', (e) => {
-      live.delete(this)
-      if (e.code === 4001) { let i: Info = {}; try { i = JSON.parse(e.reason) } catch {} kicked(i) } else checkSoon()
-    })
-  }
+function LeaseWebSocket(this: unknown, url: string | URL, protocols?: string | string[]) {
+  const ws = new OrigWS(withPc(url), protocols)
+  if (!apiPath(url)) return ws
+  if (blocked('/api/')) { ws.close(); return ws }
+  live.add(ws)
+  ws.addEventListener('close', (e) => {
+    live.delete(ws)
+    if (e.code === 4409) { let i: Info = {}; try { i = JSON.parse(e.reason) } catch {} kicked(i) } else checkSoon()
+  })
+  return ws
 }
-window.EventSource = LeaseEventSource as typeof EventSource
+// 静态常量（WebSocket.OPEN 之类）和 instanceof 照旧
+LeaseEventSource.prototype = OrigES.prototype
+LeaseWebSocket.prototype = OrigWS.prototype
+for (const k of ['CONNECTING', 'OPEN', 'CLOSED'] as const) Object.defineProperty(LeaseEventSource, k, { value: OrigES[k] })
+for (const k of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'] as const) Object.defineProperty(LeaseWebSocket, k, { value: OrigWS[k] })
+window.EventSource = LeaseEventSource as unknown as typeof EventSource
 window.WebSocket = LeaseWebSocket as unknown as typeof WebSocket
 
 async function claim() {

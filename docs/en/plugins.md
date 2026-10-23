@@ -346,10 +346,15 @@ const list = await whatevertools.platform.sessions.list()
 // Type a message (multi-line goes as a paste) and press Enter; finds the session's current pane by id (survives pane renumbering), otherwise uses pane
 await whatevertools.platform.sessions.send({ session: '7b7c…', text: '…' })   // → { pane, agent, session }; ENOSESSION if it is gone
 
+// Claude Code's own task list (written by TaskCreate / TaskUpdate, read-only): one group per running session
+await whatevertools.platform.sessions.tasks()
+// → [{ pane, agent, session, cwd, …, tasks: [{ id, subject, description, activeForm, status: 'pending' | 'in_progress' | 'completed', blocks, blockedBy }] }]
+
 // Note: doesn't interrupt; the session sees it with the user's next message (Claude Code UserPromptSubmit hook) or its next pane-remote tool call
 await whatevertools.platform.sessions.note({ session: '7b7c…', text: 'The user checked off X on their phone' })
 ```
 
+- `tasks()` reads `<config dir>/tasks/<session id>/*.json` through pane-host (the config dir of that Claude Code account, e.g. `~/.claude`; only `.claude*` directories under home are accepted). Read-only: Claude Code overwrites its own files while running. Other agents have no task list and return an empty array.
 - The session id is the agent's own (Claude Code's sessionId). When an agent calls a plugin tool over MCP, `ctx.caller.session` is that id; plugins store it to send things back to the same session later.
 - Notes are kept on the server (`plugins/session-notes.json`), at most 30 per session, dropped after 7 days unread, deleted once taken. They are taken by the agent plugin's `hooks/hooks.json` (UserPromptSubmit → `bin/notes-hook` → pane-host `sessions.notes.take` → server) or by the MCP on each tool call, appended to the result.
 - Also available in the plugin tool runtime. Permissions needed there (push, AI…) are asked with the phone card, since there is no UI to prompt.

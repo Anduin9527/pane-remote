@@ -8,6 +8,28 @@ earlier work predates the public repository.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-23 — Agent tasks in Todo
+
+### Added
+- Todo: an "Agent tasks" tab showing each running Claude Code session's own task list (TaskCreate / TaskUpdate), live and read-only: grouped by session with counts, in-progress first with their status text, dependencies, completed ones folded. Tap a task to make it a todo (linked to the session and the task, no duplicates) or to ask that session for progress.
+- Plugin API 0.6.0: `platform.sessions.tasks()`; pane-host `agents.tasks` reads `<config dir>/tasks/<session>/*.json` (home-directory `.claude*` config dirs only).
+
+## [0.12.2] - 2026-10-23
+
+### Fixed
+- Opening the screen view could mark the phone as taken over: the takeover close code (4001) clashed with the screen proxy's "can't reach the computer". Takeover now uses 4409.
+- The server crashed when a client reset its connection during a WebSocket upgrade (unhandled socket error).
+
+### Added
+- `scripts/smoke.mjs`: a browser smoke test on a throwaway local server (shell, takeover, WebSocket wrappers vs noVNC, terminal, plugins, todo, no uncaught errors). Optional modules that are off are skipped. Run it before restarting the service after frontend or server changes.
+
+## [0.12.1] - 2026-10-23
+
+### Fixed
+- The screen view (VNC) could not connect since 0.8.0: the single-client wrapper replaced `WebSocket` with a subclass, and noVNC rejects a socket whose prototype doesn't list `send` / `close` / `binaryType` itself. The wrappers now return native `WebSocket` / `EventSource` instances.
+- WebSockets now carry the client id too (the same-origin check compared `ws://` with `http://`), so taking over also closes the other device's WebSocket connections.
+- Cursor conversations stopped updating on the phone (only old messages plus the final reply showed) when a list-only Cursor connection connected after the conversation view: the server now watches the most recent connection that is viewing a conversation.
+
 ## [0.12.0] - 2026-10-23 — Plugin schedules, overdue reminders
 
 ### Added

@@ -13,6 +13,7 @@ import { EventsFeed } from './services/events.mjs'
 import { TranscriptFeed } from './services/transcript.mjs'
 import { createAiService } from './services/ai.mjs'
 import { createFilesService } from './services/files.mjs'
+import { createAgentTasksService } from './services/agent-tasks.mjs'
 import { readHostEnv, HOST_ENV_FILE } from './config.mjs'
 import { HOME } from './paths.mjs'
 
@@ -31,6 +32,7 @@ if (hostEnv.keys.length) log(`host-env: ${hostEnv.keys.join(', ')} (${HOST_ENV_F
 if (hostEnv.warn) log(hostEnv.warn)
 const ai = createAiService({ env: hostEnv.env })
 const files = createFilesService()
+const agentTasks = createAgentTasksService()
 
 // ---------- 主题 ----------
 // 同一个主题所有连接共用一份（一个 pane 的会话记录只盯一次），最后一个订阅者走后 30 秒关掉
@@ -110,6 +112,7 @@ const calls = {
   'plugins.tools.call': ({ name, args, caller }) => relayRequest({ op: 'plugins.tools.call', name: String(name || '').slice(0, 64), args: args && typeof args === 'object' ? args : {}, caller: caller && typeof caller === 'object' ? caller : null }, 6 * 60000),
   ...ai.calls,
   ...files.calls,
+  ...agentTasks.calls,
 }
 function desktop() {
   if (!host.desktop) throw Object.assign(new Error(`这台电脑（${host.platform}）的 Host 没有实现 desktop`), { code: ERR.METHOD })

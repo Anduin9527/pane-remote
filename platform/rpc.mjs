@@ -14,7 +14,7 @@ import { APIS, findApi } from '@whatevertools/core'
 export const PLATFORM = 'pane-remote'
 // 插件 API 版本：和系统版本分开，只在插件能用的接口变了才升（加接口升次版本，改 / 删接口升主版本）。
 // 插件在 whatevertools.json 的 paneRemote.requires 里写范围（如 ">=0.2.0"），不满足的不加载、列进插件目录的问题里
-export const PLUGIN_API = '0.5.0'
+export const PLUGIN_API = '0.6.0'
 
 const unsupported = (method, why) => Object.assign(new Error(`[pane-remote] 不支持 ${method}${why ? `：${why}` : ''}`), { code: 'EWTUNSUPPORTED', method })
 const bad = (msg) => Object.assign(new Error(msg), { code: 'EBADARG' })
@@ -145,6 +145,18 @@ export const CAPS = {
   'platform.sessions.list': {
     impl: 'relay', perm: 'platform.sessions', support: 'native', note: '在跑 agent 的 pane：{ pane, agent, session, cwd, title, status, startedAt }',
     run: ({ deps }) => sessionsOf(deps).list(),
+  },
+  // Claude Code 自带的任务列表（只读，经 pane-host 读 <配置目录>/tasks/<会话>）：每个在跑的会话一组
+  'platform.sessions.tasks': {
+    impl: 'relay', perm: 'platform.sessions', support: 'native', note: '在跑的 Claude Code 会话各自的 tasks（TaskCreate 写的）：[{ ...会话, tasks: [{ id, subject, description, activeForm, status, blocks, blockedBy }] }]',
+    run: async ({ deps }) => {
+      const list = await sessionsOf(deps).list()
+      const items = list.filter((s) => s.session && s.configDir).map((s) => ({ session: s.session, configDir: s.configDir }))
+      if (!items.length) return list.map((s) => ({ ...s, tasks: [] }))
+      if (!deps.host?.connected) throw hostDown()
+      const r = await deps.host.call('agents.tasks', { items }, { timeout: 15000 })
+      return list.map((s) => ({ ...s, tasks: r?.[s.session]?.tasks || [], tasksAt: r?.[s.session]?.mtime || 0 }))
+    },
   },
   'platform.sessions.send': {
     impl: 'relay', perm: 'platform.sessions', support: 'native', note: '往会话里输入一段文字并回车（多行按粘贴发）；按 session 找它现在在哪个 pane，找不到再看 pane',

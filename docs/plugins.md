@@ -346,10 +346,15 @@ const list = await whatevertools.platform.sessions.list()
 // 发一段话（多行按粘贴发）并回车；按 session 找它现在在哪个 pane（pane 重启换了编号也认得），没有 session 再看 pane
 await whatevertools.platform.sessions.send({ session: '7b7c…', text: '…' })   // → { pane, agent, session }；会话不在了回 ENOSESSION
 
+// Claude Code 自己的任务列表（TaskCreate / TaskUpdate 写的，只读）：每个在跑的会话一组
+await whatevertools.platform.sessions.tasks()
+// → [{ pane, agent, session, cwd, …, tasks: [{ id, subject, description, activeForm, status: 'pending' | 'in_progress' | 'completed', blocks, blockedBy }] }]
+
 // 留言：不打断它，它下次收到用户的消息时（Claude Code 的 UserPromptSubmit hook）或调 pane-remote 工具时一起看到
 await whatevertools.platform.sessions.note({ session: '7b7c…', text: '用户在手机上把 X 勾掉了' })
 ```
 
+- `tasks()` 经 pane-host 读 `<配置目录>/tasks/<会话 id>/*.json`（配置目录是那个 Claude Code 账号的，比如 `~/.claude`，只认家目录下 `.claude` 开头的），只读不写：Claude Code 运行中会覆盖自己的文件。其他 agent 没有任务列表，返回空数组。
 - 会话 id 是 agent 自己的（Claude Code 的 sessionId）。agent 经 MCP 调插件工具时，`ctx.caller.session` 就是它，插件记下来，以后发回同一个会话。
 - 留言存在服务端（`plugins/session-notes.json`），每个会话最多 30 条、7 天没取就丢；取走就删。取的路径：agent 插件的 `hooks/hooks.json`（UserPromptSubmit → `bin/notes-hook` → pane-host `sessions.notes.take` → 服务端），或者 MCP 每次工具调用顺便取、附在结果后面。
 - 插件工具运行时里同样能用（`whatevertools.platform.sessions`）。工具里要用到别的权限（推送、AI……）时，没有界面能弹询问，用「在手机上问你」的卡片问。

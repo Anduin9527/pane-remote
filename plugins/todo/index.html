@@ -177,6 +177,16 @@
     .ops small { display: block; color: var(--muted); font-size: 12px; }
     .ops .opk { font-weight: 600; color: var(--run); margin-right: 4px; }
     .aireply { font-size: 14px; padding: 10px 12px; border-radius: 10px; background: var(--run-soft); margin: 8px 0; white-space: pre-wrap; }
+    .cc-head { display: flex; align-items: baseline; gap: 6px; padding: 14px 16px 4px; font-size: 13px; }
+    .cc-head b { font-weight: 600; }
+    .cc-head span { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+    .cc-head i { font-style: normal; color: var(--muted); font-size: 12px; flex: none; }
+    .cc-ico { flex: none; width: 22px; height: 22px; margin-top: 1px; display: grid; place-items: center; font-size: 15px; color: var(--muted); }
+    .cc-ico.prog { color: var(--run); }
+    .cc-ico.done { color: var(--accent); }
+    .cc-row.completed .title { color: var(--muted); text-decoration: line-through; }
+    .cc-more { display: block; width: 100%; text-align: left; padding: 8px 16px 10px 50px; font-size: 12px; color: var(--muted); }
+    .linked { color: var(--accent); }
     .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -2px; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -193,6 +203,7 @@
         <button data-v="active" aria-pressed="true"></button>
         <button data-v="done" aria-pressed="false"></button>
         <button data-v="all" aria-pressed="false"></button>
+        <button data-v="cc" aria-pressed="false"></button>
       </div>
       <button class="icon-btn" id="viewBtn"></button>
       <button class="icon-btn" id="trashBtn" aria-pressed="false"></button>

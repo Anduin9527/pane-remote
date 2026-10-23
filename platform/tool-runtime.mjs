@@ -132,6 +132,7 @@ function buildApi(boot) {
     },
     sessions: {
       list: () => callPlatform('platform.sessions.list', {}),
+      tasks: () => callPlatform('platform.sessions.tasks', {}),
       send: (o) => callPlatform('platform.sessions.send', o || {}),
       note: (o) => callPlatform('platform.sessions.note', o || {}),
     },

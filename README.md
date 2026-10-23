@@ -163,7 +163,7 @@ relay/              中转模式的辅助命令
 scripts/audit.mjs   发布前审计：查个人信息、内网地址和密钥
 ```
 
-改了前端要重新构建：`npm run build`（会在 web/ 里装开发依赖）；`cd web && npm run size` 检查首屏体积（上限 150 KB gzip）。测试：`npm test`。
+改了前端要重新构建：`npm run build`（会在 web/ 里装开发依赖）；`cd web && npm run size` 检查首屏体积（上限 150 KB gzip）。测试：`npm test`；改了前端或服务端，部署（重启服务）前再跑一次浏览器冒烟测试 `node scripts/smoke.mjs`（要 Chrome，在本机起一个临时服务端，不碰你在用的那个），不过就别上。
 
 ## 许可证
 

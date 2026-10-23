@@ -21,7 +21,7 @@
     }
   },
   "paneRemote": {
-    "requires": ">=0.5.0",
+    "requires": ">=0.6.0",
     "keepAlive": 600
   }
 }

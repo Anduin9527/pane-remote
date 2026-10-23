@@ -64,7 +64,7 @@ With none of them, the model list in plugins is empty. Every call needs the plug
 ## Protocol and development
 
 - Protocol: `host/protocol.mjs` (documented at the top): JSON-RPC 2.0 plus call / stream / sub extensions; topics carry sequence numbers so reconnects can replay.
-- Methods: `ping`, `terminals.list` / `terminals.text` / `terminals.watch`, `transcript.get`, `ai.models` / `ai.complete`, `desktop.clipboard.*` / `desktop.openUrl`, `fs.*`, `plugins.tools.list` / `plugins.tools.call` / `plugins.tools.changed`, `sessions.notes.take` (plugin notes for a session, taken by the agent hook / MCP), `relay.serve` (reverse channel opened by the server; plugin tool calls go through it); topics `events`, `transcript:<pane>:<count>`, `plugins.tools`.
+- Methods: `ping`, `terminals.list` / `terminals.text` / `terminals.watch`, `transcript.get`, `ai.models` / `ai.complete`, `desktop.clipboard.*` / `desktop.openUrl`, `fs.*`, `plugins.tools.list` / `plugins.tools.call` / `plugins.tools.changed`, `agents.tasks` (Claude Code's own task lists, read-only), `sessions.notes.take` (plugin notes for a session, taken by the agent hook / MCP), `relay.serve` (reverse channel opened by the server; plugin tool calls go through it); topics `events`, `transcript:<pane>:<count>`, `plugins.tools`.
 - Everything platform-specific is behind the Host interface (`host/hosts/interface.mjs`); only macOS is implemented. For other platforms see `host/hosts/README.md`.
 - AI library details: `host/ai/README.md`.
 - Tests: `npm test` (fake Host + real connect / host-client / agent/pane-event; no real terminal or agent involved).

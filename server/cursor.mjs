@@ -55,9 +55,10 @@ function send(m) { if (proc?.stdin.writable) proc.stdin.write(JSON.stringify(m) 
 function sse(res, event, data) { try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) } catch {} }
 function broadcast(event, data, filter) { for (const c of clients) if (!filter || filter(c)) sse(c.res, event, data) }
 
-// 最后一个连上 / 切换会话的手机说了算
+// 最后一个连上 / 切换会话、而且在看某个会话的连接说了算。只看列表的连接（不带 id，比如会话列表里的 Cursor 摘要）不算：
+// 以前按「最后一个连上的」算，列表那条后连上时电脑就以为没人在看会话，会话不再刷新（手机上只看到旧消息 + 最后的回复）
 function updateWatch() {
-  const last = [...clients].at(-1)
+  const last = [...clients].reverse().find((c) => c.id)
   send({ t: 'watch', id: last?.id || '' })
 }
 

@@ -168,7 +168,7 @@ scripts/audit.mjs   pre-release audit: personal info, internal addresses and sec
 docs/               extra docs (Chinese); docs/en/ has the English versions
 ```
 
-After changing the frontend, rebuild with `npm run build` (installs dev dependencies in web/); `cd web && npm run size` checks the first-screen size (limit 150 KB gzip). Tests: `npm test`.
+After changing the frontend, rebuild with `npm run build` (installs dev dependencies in web/); `cd web && npm run size` checks the first-screen size (limit 150 KB gzip). Tests: `npm test`; after changing the frontend or the server, run the browser smoke test `node scripts/smoke.mjs` before restarting the service (needs Chrome; it starts a throwaway server locally and leaves yours alone), and don't ship if it fails.
 
 ## License
 
