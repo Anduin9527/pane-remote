@@ -717,6 +717,42 @@ if (config.modules.plugins !== false) try {
   })
 } catch (e) { console.log(`plugins: platform disabled (${e.message})`) }
 
+// 反向通道：pane-host 连上就开一条 relay.serve 流，电脑上的本机程序（agent 的 MCP）经它请服务端办事——
+// 现在是插件工具（plugins.tools.list / plugins.tools.call，见 platform/tools.mjs）。流里带 rid 的片段是请求，s.reply 回结果。
+// local 和 relay 两种模式一样：都是 pane-host 的这条连接
+let relayServe = null
+function openRelayServe() {
+  relayServe?.cancel()
+  if (!platform) return
+  const s = host.stream('relay.serve', {}, (c) => {
+    if (c?.rid == null) return
+    Promise.resolve().then(() => {
+      if (c.op === 'plugins.tools.list') return { tools: platform.agentTools.list() }
+      if (c.op === 'plugins.tools.call') return platform.agentTools.call({ name: String(c.name || ''), args: c.args, caller: c.caller })
+      throw Object.assign(new Error(`unknown op ${c.op}`), { code: 'EBADOP' })
+    }).then((value) => s.reply(c.rid, { ok: true, value }), (e) => {
+      if (!e.code) console.log(`relay.serve ${c.op}: ${e.message}`)
+      s.reply(c.rid, { ok: false, error: { message: String(e.message || e).slice(0, 4000), code: typeof e.code === 'string' ? e.code : undefined } })
+    })
+  })
+  relayServe = s
+  // ignore: 断线时流跟着结束（重连后 up 再开）；旧版 pane-host 没有 relay.serve，插件工具就用不了
+  s.done.catch((e) => { if (e.code === -32601) console.log('relay.serve: pane-host 太旧，插件工具不可用') })
+}
+host.on('up', openRelayServe)
+if (host.connected) openRelayServe()
+// 插件工具列表变了（插件装上 / 改了 / 删掉、权限改成禁止）：告诉 pane-host，它再推给订阅着的 agent MCP，agent 马上看到。每 5 秒比一次
+let toolsSig = ''
+setInterval(() => {
+  if (!platform || !host.connected) return
+  let sig
+  try { sig = crypto.createHash('sha1').update(JSON.stringify(platform.agentTools.list())).digest('hex').slice(0, 16) } catch { return }
+  if (sig === toolsSig) return
+  const first = !toolsSig
+  toolsSig = sig
+  if (!first) host.call('plugins.tools.changed', { sig }).catch(() => { toolsSig = '' }) // 没送到：下次再送
+}, 5000).unref()
+
 async function onRequest(req, res) {
   if (!authorized(req)) {
     res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })

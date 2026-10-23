@@ -1,0 +1,7 @@
+{
+  "id": "todo",
+  "permissions": {
+    "mcp": { "reason": "让在 pane-remote 里跑的 agent 记待办、查看、勾掉" }
+  },
+  "paneRemote": { "requires": ">=0.3.0", "keepAlive": 600 }
+}

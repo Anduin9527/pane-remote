@@ -59,6 +59,7 @@ The reasons in `permissions` are shown in permission prompts; declaring a permis
 Samples:
 
 - `plugins/hello/` (plugin.json + index.html): dbStorage, notifications, copy, incident reports, shared storage, asking on the phone.
+- `plugins/todo/` (plugin.json + preload.js + index.html): MCP tools for agents (`tools` + `registerTool`), live updates with `onDbPull`, a todo list on the phone.
 - `plugins/ai-demo/` (whatevertools.json + index.html): pick a model and reasoning level with `utools.allAiModels()`, streamed answers with `utools.ai(…, onChunk)`, stop (abort), attach a photo (downscaled in the page to a JPEG with a 1280 px long edge).
 
 ## Entry matching
@@ -158,6 +159,7 @@ Every capability call: look up the capability table → check permission (asking
 | Server | Database, pushes, incident reports, shared storage, asking on the phone |
 | Front end (web) | Copy, open links, open another plugin: the server checks permission and replies `$delegate`, the front end does it |
 | Plugin page (local) | Lifecycle, platform info, synchronous db / dbStorage reads and writes (local replica) |
+| Tool runtime (tools) | Runs the plugin's preload in a sandboxed child process on the server when an agent calls a plugin tool over MCP (see "Plugin tools") |
 | Computer (pane-host) | Wired up: AI (`ai.chat` / `ai.models` / `platform.ai.complete`), clipboard text, opening URLs, read-only files (`platform.fs.*`). Offline pane-host → `EWTHOSTDOWN`. Not wired up yet (screenshots, keyboard/mouse, child processes, shellOpenPath, clipboard files/images…) → `EWTUNSUPPORTED` with the reason in the error |
 
 Audit: one line per call (plugin, method, result ok / denied / unsupported / error / delegated / cancelled, implementer, duration, no arguments), the last 500 in memory, also written to `plugins/audit.jsonl` (rotated at 2 MB). See `GET /api/plugins/audit[?plugin=]`.
@@ -175,7 +177,8 @@ Support table summary (the full one is `GET /api/plugins/support`, one row for e
 | `copyText` | emulated | front end / computer | Writes the **phone's** clipboard by default; the computer's when `paneRemote.mac.clipboard` is true |
 | `shellOpenExternal` | emulated | front end / computer | http(s) only; opens on the phone by default, on the computer when `paneRemote.mac.openExternal` is true |
 | `ai` / `allAiModels` | emulated | computer | Claude Code / Codex / cursor-agent signed in on the computer, see AI below |
-| `registerTool` | partial | plugin page | Only for `ai` tool calls; exposing tools to outside agents via MCP isn't done |
+| `registerTool` | emulated | plugin page / tool runtime | `ai` tool calls; tools declared in the manifest's `tools` are also offered to agents over MCP (see "Plugin tools") |
+| `onDbPull` | emulated | plugin page / tool runtime | Called when data changes elsewhere (an agent through a plugin tool, another phone); see "Data sync" |
 | `redirect` | partial | front end | Opens another plugin by id or command |
 | `getFeatures`, `isDarkColors`, `getAppName`, `getAppVersion`, `isMacOS`, … | emulated | plugin page | `isMacOS/isWindows/isLinux` are all false (the plugin runs on the phone) |
 | `setExpandHeight` | mock | plugin page | Plugins always fill the screen |
@@ -273,23 +276,53 @@ await whatevertools.platform.fs.stat('/Users/me/Documents/notes/a.md', { root: '
 - Other folders: added by you under the plugin header's shield → "Folders on the computer it can read" (absolute or `~/…`, not the whole home folder or `/`, at most 20 per plugin); the first read asks `fs.read` once per folder (Always allow covers only that folder). Plugins can't add folders themselves.
 - The server first maps the path (normalized to `~/…`, `..` removed) to its root and checks permission; pane-host then checks that the real path (after following symlinks) is inside that root. `.ssh`, `.gnupg`, keychains and `~/.config/pane-remote` are never readable.
 
-### agent.tools (interface only, not implemented)
+## Plugin tools (MCP for agents)
 
-Plugins expose tools via MCP to the agent in a pane (Claude Code / Codex / cursor-agent):
+The same as uTools plugins offering MCP tools: a plugin declares tools in its manifest and implements them with `utools.registerTool` in its preload. Agents started in pane-remote (Claude Code / Codex / cursor-agent with the pane-remote MCP injected) see them automatically as `plugin_<plugin id>_<tool name>`. The same plugin works unchanged in uTools.
 
-```js
-await wt.platform.agent.tools.register({
-  name: 'stitch_images',                 // the agent sees plugin_<plugin id>_<name>
-  description: 'Stitch several images into one',
-  inputSchema: { type: 'object', properties: { … }, required: [ … ] },
-  outputSchema: { … },                   // optional
-}, async (input, ctx) => {               // ctx: { agent, pane, signal }
-  return { files: [ … ] }
-})
-await wt.platform.agent.tools.unregister('stitch_images')
+```jsonc
+// plugin.json (uTools format; the native format in whatevertools.json works the same)
+{
+  "preload": "preload.js",
+  "tools": {
+    "add": {
+      "description": "For the agent: what the tool does and when to use it",
+      "inputSchema": { "type": "object", "properties": { "title": { "type": "string" } }, "required": ["title"] },
+      "outputSchema": { … }            // optional; if declared, the result is also returned as structuredContent
+    }
+  }
+}
 ```
 
-Design: tools can also be declared statically in the manifest's `tools`; needs the `mcp` permission; path: the agent calls the injected MCP server (`agent/plugin/mcp.mjs`) → via bridge / pane-host to the server → the phone where the plugin is online (WS) → plugin iframe → result back the same way. Every call is audited; calls can require confirmation on the phone.
+```js
+// preload.js
+utools.registerTool('add', async ({ title }, ctx) => {
+  // ctx.requestId; pane-remote also passes ctx.caller = { agent: 'claude', pane: 3, cwd: '/path/to/project' } (not in uTools)
+  const r = utools.db.put({ _id: 'todo/' + Date.now(), title, by: ctx?.caller?.agent })
+  return { id: r.id }
+})
+```
+
+How it runs:
+
+- When an agent calls a tool, the server runs the plugin's preload in a **headless tool runtime** (`platform/tool-runtime.mjs`), collects the functions registered with `registerTool` and runs the one called. The plugin doesn't need to be open on the phone. The runtime exits after 10 idle minutes and is replaced when the plugin's files change.
+- The runtime is a sandboxed child process: Node's `--permission` allows reading only its own file (no file access, no child processes) and its environment is empty. Plugin code runs in a fresh vm context with only `utools` / `whatevertools`, `console`, timers, `fetch`, `URL` and `crypto`; `require` always throws.
+- Available APIs: `utools.db` / `dbStorage` (local replica, same rules as plugin pages), `registerTool`, `onDbPull`, `showNotification` (push), `whatevertools.platform.*` (through the server, with the usual permission checks and audit; there is no UI to show a permission prompt, so anything not granted before counts as "later"). Clipboard, opening links and UI calls are unsupported.
+- Writes are pushed to the server before the tool returns: when the agent gets the result the data is saved and open plugin pages update right away (see "Data sync" below).
+- Permission `mcp` (ask by default): the first call asks with the same card as "ask on the phone" (always pushed), with Always allow / Only this time / Block. Unanswered for 5 minutes, the call fails and the next call asks again (three unanswered asks in a row turn into Block). Blocked plugins' tools disappear from the agent's list; change it any time from the plugin header's shield. Every call is audited (method `mcp.<tool>`).
+- Path: agent → injected MCP (`agent/plugin/mcp.mjs` launcher + `mcp-server.mjs`) → pane-host's socket on the computer (`plugins.tools.list` / `plugins.tools.call`) → the reverse channel the server keeps open while connected to pane-host (`relay.serve` stream) → the server's tool host (`platform/tools.mjs`). Local and relay modes work the same way.
+- When the tool list changes (plugin added / changed / removed, permission set to Block), the server tells pane-host within 5 seconds (`plugins.tools.changed`), pane-host pushes it to MCP servers subscribed to the `plugins.tools` topic, and they send `tools/list_changed` so the agent reloads the list; there is also a fallback refresh every 5 minutes. If the server or pane-host is offline, plugin tool calls fail and the built-in tools keep working.
+- Only tools declared in the manifest's `tools` of a plugin with a preload count; tool names may only contain letters, digits, `_` and `-`, and `inputSchema` must be an object. Registering at runtime (`platform.agent.tools.register`) is not supported: the list has to be known while the plugin isn't running.
+
+Example: `plugins/todo/` (Todo).
+
+## Data sync
+
+Plugin data lives on the server; plugin pages and the tool runtime each keep a local replica (synchronous reads and writes) and push changes to the server, which arbitrates by rev. Changes made elsewhere are pushed back:
+
+- After the server applies changes from one replica, it pushes them to other phone pages with the plugin open (queued while disconnected, replayed on reconnect) and to the running tool runtime
+- After a page's connection to the server dropped and came back, the page fetches everything once (`db.pull`) and merges
+- Accepted changes go to `utools.onDbPull(docs => …)` (= `whatevertools.db.onPull`) callbacks, where the plugin re-renders. Local changes that haven't been pushed yet are not overwritten; the server arbitrates once they are pushed
 
 ## Server endpoints
 
@@ -310,4 +343,4 @@ Design: tools can also be declared statically in the manifest's `tools`; needs t
 
 - Pages built with `wt pack --target web` (which bundle the full whatevertools browser runtime) need IndexedDB / localStorage, which plugin iframes don't have without `allow-same-origin`, so they don't run.
 - Node modules in preload (`require('node:fs')`, `electron`, …) aren't supported; use `platform.fs` for files on the computer.
-- `utools.sharp`, `getPluginTempPath` and exposing tools via MCP (`agent.tools`) aren't available yet.
+- `utools.sharp` and `getPluginTempPath` aren't available yet. Plugin tools can only be declared in the manifest's `tools`, not registered at runtime.

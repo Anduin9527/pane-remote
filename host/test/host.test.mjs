@@ -192,3 +192,30 @@ test('transcript: 订阅拿全量，追加推增量，断线后补发', async ()
   assert.deepEqual(list.map((m) => m.id), ['m5', 'm6', 'm7'])
   sub.close()
 })
+
+test('relay.serve: 本机程序经 pane-host 请服务端办事（插件工具），服务端断开后报不在线', async () => {
+  const net = await import('node:net')
+  const ask = (method, params) => new Promise((resolve, reject) => {
+    const c = net.connect(path.join(TMP, 'run/host.sock'))
+    let buf = ''
+    c.on('connect', () => c.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) + '\n'))
+    c.on('data', (d) => { buf += d; const i = buf.indexOf('\n'); if (i >= 0) { c.destroy(); const m = JSON.parse(buf.slice(0, i)); m.error ? reject(Object.assign(new Error(m.error.message), { code: m.error.code })) : resolve(m.result) } })
+    c.on('error', reject)
+  })
+  await assert.rejects(ask('plugins.tools.list', {}), (e) => e.code === -32001, '服务端还没开反向通道')
+  const seen = []
+  const s = client.stream('relay.serve', {}, (c) => {
+    if (c?.rid == null) return
+    seen.push(c)
+    if (c.op === 'plugins.tools.list') s.reply(c.rid, { ok: true, value: { tools: [{ name: 'plugin_todo_add' }] } })
+    else s.reply(c.rid, { ok: false, error: { message: '没有这个插件工具', code: 'ENOTOOL' } })
+  })
+  await waitFor(async () => true)
+  await new Promise((r) => setTimeout(r, 50))
+  assert.deepEqual(await ask('plugins.tools.list', {}), { tools: [{ name: 'plugin_todo_add' }] })
+  await assert.rejects(ask('plugins.tools.call', { name: 'plugin_x_y', args: { a: 1 }, caller: { agent: 'claude', pane: 3 } }), (e) => e.code === 'ENOTOOL')
+  assert.deepEqual(seen[1], { op: 'plugins.tools.call', name: 'plugin_x_y', args: { a: 1 }, caller: { agent: 'claude', pane: 3 }, rid: seen[1].rid })
+  s.cancel()
+  await s.done.catch(() => {})
+  await assert.rejects(ask('plugins.tools.list', {}), (e) => e.code === -32001)
+})

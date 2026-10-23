@@ -1,7 +1,8 @@
 // pane-remote 插件运行时：注入到每个插件页（iframe，sandbox 没有 allow-same-origin）的最前面。
 // 提供 window.whatevertools（原生 API 子集，也挂在 Symbol.for('whatevertools.api') 上，getApi() 能拿到）和 window.utools（旧名映射）。
 // 所有要宿主做的调用经 postMessage 交给 pane-remote 前端，前端再转给服务端的平台 RPC（查权限、记审计、分发）。
-//   - db / dbStorage：启动数据里带着插件的全部文档，同步读写在本地副本上做，改动攒一下推给服务端（db.push，按 rev 裁决）
+//   - db / dbStorage：启动数据里带着插件的全部文档，同步读写在本地副本上做，改动攒一下推给服务端（db.push，按 rev 裁决）；
+//     别处的改动（agent 经插件工具写的）服务端推过来（db），合并后调 onDbPull 的回调；连接断过就拿一次全量（resync → db.pull）
 //   - 不支持的 API 也有同名函数，调用时抛 EWTUNSUPPORTED，错误里写明原因（比如要 Mac 端的 pane-host）
 //   - 未捕获的异常、未处理的 Promise、console.error 自动报给平台的问题报告（来源 plugin:<id>）
 //   - 流式调用（AI）：call 带 stream: true，前端回 chunk 片段；AI 要调工具时前端发 tool，这里跑 registerTool 注册的
@@ -86,6 +87,10 @@
     } else if (m.t === 'leave') {
       flush()
       leaveFns.forEach(function (fn) { safe(fn) })
+    } else if (m.t === 'db') {
+      pullApply(m.docs)
+    } else if (m.t === 'resync') {
+      call('db.pull', {}).then(function (r) { pullApply(r && r.docs) }, function () {})
     }
   })
   function onReady() {
@@ -125,6 +130,21 @@
     })
   }
   window.addEventListener('pagehide', flush)
+  // 别处的改动（服务端推来的、重新同步拿到的全量）：rev 赢了才收（规则同服务端的 DocDb）；还没推上去的本地改动先不动，
+  // 推上去后由服务端裁决。收下的交给 onDbPull 的回调（uTools 的「数据从别的设备同步过来」）
+  var pullFns = []
+  function revWins(a, b) { var na = revN(a), nb = revN(b); return na !== nb ? na > nb : a > b }
+  function pullApply(list) {
+    var applied = []
+    ;(Array.isArray(list) ? list : []).forEach(function (d) {
+      if (!d || !d._id || !d._rev || outbox[d._id]) return
+      var cur = docs[d._id] ? docs[d._id]._rev : tombs[d._id]
+      if (cur && (cur === d._rev || !revWins(d._rev, cur))) return
+      if (d._deleted) { delete docs[d._id]; tombs[d._id] = d._rev } else { docs[d._id] = clone(d); delete tombs[d._id] }
+      applied.push(clone(d))
+    })
+    if (applied.length) pullFns.forEach(function (fn) { safe(fn, clone(applied)) })
+  }
   function putOne(input) {
     if (!input || typeof input !== 'object' || typeof input._id !== 'string' || !input._id) return { res: dbErr(String(input && input._id || ''), 'bad_request', 'doc._id must be a non-empty string') }
     var id = input._id, cur = docs[id]
@@ -183,7 +203,7 @@
     getAttachment: function (id) { return attCache[id] || null },
     getAttachmentType: function (id) { return atts[id] || null },
     syncState: function () { return null },
-    onPull: function () {},
+    onPull: function (fn) { if (typeof fn === 'function') pullFns.push(fn) },
   }
   db.promises = {
     put: function (d) { return Promise.resolve(db.put(d)) },

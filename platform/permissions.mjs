@@ -76,6 +76,8 @@ export function createPermissions({ file, dismissLimit = 3 }) {
       const ids = new Set([...Object.keys(m.permissions || {}), ...Object.keys(remembered)])
       return [...ids].map((id) => ({ id, title: PERMISSION_MAP[id]?.title || id, description: PERMISSION_MAP[id]?.description || '', reason: m.permissions?.[id]?.reason || '', decision: set.resolve(id).decision, remembered: !!remembered[id] }))
     },
+    /** 用户明确选过「禁止」（记住了的，或连续关掉 3 次自动转的）——和「这次打开里没答应」区分开 */
+    blocked(m, permission) { const set = ensure(m); return set.rememberedGrants()[permission] !== undefined && set.resolve(permission).decision === 'deny' },
     set: (m, permission, decision) => { ensure(m); pm.set(m.id, permission, decision) },
     reset: (m) => { ensure(m); pm.reset(m.id) },
   }

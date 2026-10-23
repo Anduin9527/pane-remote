@@ -19,6 +19,17 @@ let seq = 0
 let ws: WebSocket | null = null
 let outbox: string[] = []
 let retry: ReturnType<typeof setTimeout> | null = null
+let everOpen = false
+
+// 插件数据在别处改了（Mac 上的 agent 经插件工具写的、别的设备）：服务端推 { t: 'db', plugin, docs }，转给打开着这个插件的页面。
+// 连接断过再连上时通知页面拿一次全量（断开太久服务端那边的排队会被清掉）
+type DbListener = { plugin: string; docs: (docs: unknown[]) => void; resync: () => void }
+const dbListeners = new Set<DbListener>()
+export function onPluginDb(l: DbListener) {
+  dbListeners.add(l)
+  connect()
+  return () => { dbListeners.delete(l) }
+}
 
 export class PlatformError extends Error {
   code: string
@@ -38,6 +49,8 @@ function connect() {
   ws = s
   s.onopen = () => {
     platformUi.connected = true
+    if (everOpen) for (const l of dbListeners) l.resync()
+    everOpen = true
     s.send(JSON.stringify({ t: 'vis', visible: document.visibilityState === 'visible' }))
     for (const m of outbox.splice(0)) s.send(m)
   }
@@ -61,12 +74,15 @@ function connect() {
       platformUi.prompts = platformUi.prompts.filter((x) => x.id !== m.id)
     } else if (m.t === 'asks') {
       platformUi.asks = Array.isArray(m.list) ? m.list : []
+    } else if (m.t === 'db' && Array.isArray(m.docs)) {
+      for (const l of dbListeners) if (l.plugin === m.plugin) l.docs(m.docs)
     }
   }
   s.onclose = () => {
     if (ws === s) ws = null
     platformUi.connected = false
-    if ((pending.size || platformUi.prompts.length) && !retry) retry = setTimeout(() => { retry = null; connect() }, 1500)
+    // 有在途的调用、权限询问，或者有打开着的插件页（要收数据更新）：1.5 秒后重连
+    if ((pending.size || platformUi.prompts.length || dbListeners.size) && !retry) retry = setTimeout(() => { retry = null; connect() }, 1500)
   }
 }
 
@@ -108,5 +124,5 @@ export const warmup = () => connect()
 
 document.addEventListener('visibilitychange', () => {
   if (ws?.readyState === 1) ws.send(JSON.stringify({ t: 'vis', visible: document.visibilityState === 'visible' }))
-  else if (document.visibilityState === 'visible' && (pending.size || platformUi.prompts.length)) connect()
+  else if (document.visibilityState === 'visible' && (pending.size || platformUi.prompts.length || dbListeners.size)) connect()
 })

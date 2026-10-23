@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import { RUN_DIR, SOCK } from './paths.mjs'
-import { lineReader, encode, ERR, VERSION } from './protocol.mjs'
+import { lineReader, encode, ERR, VERSION, Feed } from './protocol.mjs'
 import { pathToFileURL } from 'node:url'
 import { EventsFeed } from './services/events.mjs'
 import { TranscriptFeed } from './services/transcript.mjs'
@@ -36,12 +36,17 @@ const files = createFilesService()
 // 同一个主题所有连接共用一份（一个 pane 的会话记录只盯一次），最后一个订阅者走后 30 秒关掉
 const feeds = new Map() // topic → { feed, refs, closeTimer }
 let eventsFeed = null
+// 插件工具列表变了（服务端说的，或者反向通道连上 / 断开）：agent 的 MCP 订阅这个主题，收到就重新拉列表、通知 agent
+const toolsFeed = new Feed({ ring: 4 })
 async function openFeed(topic) {
   let f = feeds.get(topic)
   if (f) { clearTimeout(f.closeTimer); f.refs++; await f.ready; return f.feed }
   let feed, ready
   if (topic === 'events') {
     feed = eventsFeed ??= new EventsFeed(host.events.log)
+    ready = Promise.resolve()
+  } else if (topic === 'plugins.tools') {
+    feed = toolsFeed
     ready = Promise.resolve()
   } else {
     const m = /^transcript:(\d{1,6}):(\d{1,3})$/.exec(topic)
@@ -64,6 +69,20 @@ function releaseFeed(topic) {
   }, topic === 'events' ? 0 : 30000)
 }
 
+// ---------- 反向通道 ----------
+// 服务端连上后开一条 relay.serve 流挂着；本机程序（agent 的 MCP，mac/agent/plugin/mcp.mjs）经 plugins.tools.* 请服务端办事，
+// 这里用流里的 ctx.request 转过去。多个服务端连着时用最后连上的那个
+const relayLinks = []
+function relayRequest(data, timeout) {
+  const link = relayLinks.at(-1)
+  if (!link) return Promise.reject(Object.assign(new Error('pane-remote 服务端没连上这台电脑的 pane-host'), { code: ERR.DOWN }))
+  let timer
+  return Promise.race([
+    link.request(data),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('服务端没有回应'), { code: ERR.DOWN })), timeout) }),
+  ]).finally(() => clearTimeout(timer))
+}
+
 // ---------- 方法 ----------
 // call：async (params, ctx) => 结果；stream：async (params, ctx) => 结果，中途用 ctx.chunk(x) 推，ctx.signal 取消，
 // ctx.request(x) 向对端要一个结果（流里发 {id, chunk: {...x, rid}}，对端回通知 reply {id, rid, ok, value | error}；AI 的工具调用用它）
@@ -83,6 +102,10 @@ const calls = {
     if (!/^https?:\/\/[^\s]+$/i.test(String(url || ''))) throw Object.assign(new Error('只能打开 http(s) 网址'), { code: ERR.PARAMS })
     return desktop().openUrl(String(url))
   },
+  // 插件工具（给 agent 的 MCP）：服务端那边查权限（可能要在手机上问你）、起插件的工具运行时
+  'plugins.tools.list': () => relayRequest({ op: 'plugins.tools.list' }, 15000),
+  'plugins.tools.changed': ({ sig } = {}) => { toolsFeed.publish({ sig: String(sig ?? '').slice(0, 100) }); return true },
+  'plugins.tools.call': ({ name, args, caller }) => relayRequest({ op: 'plugins.tools.call', name: String(name || '').slice(0, 64), args: args && typeof args === 'object' ? args : {}, caller: caller && typeof caller === 'object' ? caller : null }, 6 * 60000),
   ...ai.calls,
   ...files.calls,
 }
@@ -100,6 +123,14 @@ const streams = {
       if (cur !== prev) { ctx.chunk({ text: cur }); prev = cur; idle = 0 } else idle++
       await sleep(idle < 20 ? 100 : idle < 60 ? 250 : 500, ctx.signal)
     }
+    return null
+  },
+  // 服务端挂着的反向通道（见上面 relayRequest）：一直挂到服务端断开
+  'relay.serve': async (params, ctx) => {
+    relayLinks.push(ctx)
+    log(`relay.serve: 服务端已连上反向通道（${relayLinks.length} 条）`)
+    toolsFeed.publish({ sig: 'relay-up' })
+    try { await new Promise((r) => ctx.signal.addEventListener('abort', r, { once: true })) } finally { relayLinks.splice(relayLinks.indexOf(ctx), 1); toolsFeed.publish({ sig: 'relay-down' }) }
     return null
   },
   ...ai.streams,

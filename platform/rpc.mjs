@@ -14,7 +14,7 @@ import { APIS, findApi } from '@whatevertools/core'
 export const PLATFORM = 'pane-remote'
 // 插件 API 版本：和系统版本分开，只在插件能用的接口变了才升（加接口升次版本，改 / 删接口升主版本）。
 // 插件在 whatevertools.json 的 paneRemote.requires 里写范围（如 ">=0.2.0"），不满足的不加载、列进插件目录的问题里
-export const PLUGIN_API = '0.2.0'
+export const PLUGIN_API = '0.3.0'
 
 const unsupported = (method, why) => Object.assign(new Error(`[pane-remote] 不支持 ${method}${why ? `：${why}` : ''}`), { code: 'EWTUNSUPPORTED', method })
 const bad = (msg) => Object.assign(new Error(msg), { code: 'EBADARG' })
@@ -31,7 +31,16 @@ const MAC_NAMES = /^(dialog\.|shell\.(openPath|trash|showInFolder|beep)$|paths\.
 /** 能力表：方法名（whatevertools 原生 API 的点分名，或 platform.* / 内部的 db.push 之类） → 定义 */
 export const CAPS = {
   // ---------- 插件运行时内部用 ----------
-  'db.push': { impl: 'relay', perm: 'storage', support: 'emulated', run: ({ db, args }) => ({ applied: db.applyRemote(Array.isArray(args?.docs) ? args.docs.slice(0, 500) : []).length }) },
+  'db.push': {
+    impl: 'relay', perm: 'storage', support: 'emulated',
+    run: ({ ctx, m, db, args, deps }) => {
+      const applied = db.applyRemote(Array.isArray(args?.docs) ? args.docs.slice(0, 500) : [])
+      if (applied.length) deps.dbChanged?.(m, applied, ctx.client) // 推给别的打开着这个插件的手机页面、插件的工具运行时
+      return { applied: applied.length }
+    },
+  },
+  // 插件页重新同步：回到前台、和服务端的连接断过之后拿一次全量（文档 + 墓碑），本地按 rev 合并
+  'db.pull': { impl: 'relay', perm: 'storage', support: 'emulated', run: ({ db }) => ({ docs: allDocs(db) }) },
   'db.putAttachment': {
     impl: 'relay', perm: 'storage', support: 'emulated',
     run: async ({ db, args }) => db.postAttachment(str(args?.id, 500), Buffer.from(str(args?.data, 15 << 20), 'base64'), str(args?.type, 100)),
@@ -116,10 +125,13 @@ export const CAPS = {
     impl: 'mac', perm: fsPerm, support: 'native',
     run: ({ host, m, grant, args }) => host.call('fs.read', { plugin: m.id, root: grant.root, path: grant.path, encoding: args?.encoding === 'base64' ? 'base64' : 'utf8', maxBytes: Number(args?.maxBytes) || undefined }, { timeout: 30000 }),
   },
-  // 插件工具经 MCP 暴露给 agent：只定了接口（见 docs/plugins.md），还没实现
-  'platform.agent.tools.register': { impl: 'none', support: 'none', why: '计划中：插件工具经 MCP 暴露给 agent（接口见 docs/plugins.md）' },
+  // 插件工具经 MCP 暴露给 agent：用描述文件的 tools 声明 + preload 里 utools.registerTool 实现（tools.mjs），不在运行中注册
+  'platform.agent.tools.register': { impl: 'none', support: 'none', why: '工具写在描述文件的 tools 里，在 preload 里用 utools.registerTool 实现（见 docs/plugins.md「插件工具」）' },
   'platform.sessions.list': { impl: 'none', support: 'none', why: '计划中：等统一会话接口' },
 }
+
+/** 插件数据库的全部文档，含删除的墓碑（docs / tombstones 是 DocDb 的内部字段，没有对外的全量接口） */
+export const allDocs = (db) => [...Object.values(db.docs), ...Object.entries(db.tombstones).map(([id, rev]) => ({ _id: id, _rev: rev, _deleted: true }))]
 
 function httpUrl(u) {
   const url = str(u, 2000)
@@ -203,9 +215,9 @@ const LOCAL = {
   'lifecycle.onEnter': 'emulated', 'lifecycle.onLeave': 'emulated', 'lifecycle.onReady': 'emulated', 'lifecycle.exit': 'emulated',
   'window.type': 'emulated', 'system.appName': 'emulated', 'system.appVersion': 'emulated', 'system.isDev': 'emulated',
   'system.isMac': 'emulated', 'system.isWindows': 'emulated', 'system.isLinux': 'emulated', 'system.isDark': 'emulated', 'system.onThemeChange': 'emulated',
-  'db.put': 'emulated', 'db.get': 'emulated', 'db.remove': 'emulated', 'db.bulk': 'emulated', 'db.all': 'emulated', 'db.getAttachmentType': 'emulated', 'db.onPull': 'mock',
+  'db.put': 'emulated', 'db.get': 'emulated', 'db.remove': 'emulated', 'db.bulk': 'emulated', 'db.all': 'emulated', 'db.getAttachmentType': 'emulated', 'db.onPull': 'emulated',
   'kv.set': 'emulated', 'kv.get': 'emulated', 'kv.remove': 'emulated', 'features.list': 'emulated', 'panel.setHeight': 'mock',
-  'tools.register': 'partial', // 只给 ai.chat 的工具调用用；经 MCP 暴露给外部 agent 还没做
+  'tools.register': 'emulated', // ai.chat 的工具调用；描述文件 tools 里声明了的，还经 MCP 给 agent 用（tools.mjs）
 }
 
 /** 这个平台对某个 API 的支持程度和实现方（按 whatevertools 的规格名或 uTools 旧名查） */
@@ -289,7 +301,8 @@ export function createAsks({ notify, broadcast, hasVisibleClient }) {
         a.timer = setTimeout(() => finish(id, { answered: false, reason: 'timeout' }), timeout * 1000)
         list.set(id, a)
         changed()
-        if (!ctx.test && !hasVisibleClient?.()) notify?.({ title: `${m.name} 问你`, body: question.slice(0, 200), tag: `ask-${id}`, plugin: m.id })
+        // push: 'always'（agent 在等的权限询问）：手机看着也推——iOS 切到后台的页面常常连接没断、还被当成「在看」
+        if (!ctx.test && (args?.push === 'always' || !hasVisibleClient?.())) notify?.({ title: `${m.name} 问你`, body: question.slice(0, 200), tag: `ask-${id}`, plugin: m.id })
       })
     },
     /** 回答：answer 是选项之一，或者（非确认类问题）text 是自由回答 */

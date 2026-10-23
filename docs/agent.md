@@ -61,7 +61,8 @@ skill（`agent/plugin/skills/pane-remote/SKILL.md`）告诉 agent 什么时候�
 agent（Claude Code / Codex / cursor-agent）
    │ stdio MCP
    ▼
-agent/plugin/mcp.mjs（电脑上，零依赖）
+agent/plugin/mcp.mjs（启动器）→ mcp-server.mjs（电脑上，零依赖）
+   │ 插件工具（plugin_<id>_<工具>）：经 pane-host 的 socket 转给服务端（见 plugins.md「插件工具」）
    │ 往手机：写一条 kind=agent 的事件到 ~/.local/state/pane-remote/events.jsonl（和 hook 同一个文件）
    │ 本机操作：调 agent/bridge（list / text / send / mac-perf / mac-say）
    ▼
@@ -70,6 +71,8 @@ pane-remote 服务（server/server.mjs：onAgent 推送、把问题挂到 /api/s
    ▼
 手机（web/src/lib/components/AgentAsk.svelte、Inbox、会话面板）
 ```
+
+更新：`mcp.mjs` 只是启动器，真正的服务 `mcp-server.mjs` 跑在子进程里；文件一换（更新 pane-remote 之后）就起一个新的子进程，重放 `initialize` 接上，旧的回完手上的请求退出，再告诉 agent 工具列表变了。正在跑的 agent 不用重连。新代码起不来就继续用旧的。
 
 重启并注入：`POST /api/agent/restart {pane, confirm: true}` → bridge `agent restart` → `agent/pane-agent`（脱离 bridge 在后台跑，进度写到 `~/.local/state/pane-remote/agent/restart/<pane>.json`）。
 

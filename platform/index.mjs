@@ -19,7 +19,8 @@ import { FileBackend } from '@whatevertools/db-file'
 import { createCatalog } from './catalog.mjs'
 import { createPermissions } from './permissions.mjs'
 import { createAudit } from './audit.mjs'
-import { createRpc, createShared, createAsks, supportTable, runtimeTable, cleanDir, PLATFORM, PLUGIN_API, PRIVATE_DIR } from './rpc.mjs'
+import { createRpc, createShared, createAsks, supportTable, runtimeTable, cleanDir, allDocs, PLATFORM, PLUGIN_API, PRIVATE_DIR } from './rpc.mjs'
+import { createToolHost } from './tools.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const RUNTIME = path.join(HERE, 'runtime.js')
@@ -99,6 +100,17 @@ export function createPlatform(deps) {
   // 断开太久的连接：清掉，还在跑的流式调用（AI）一起取消
   setInterval(() => { const old = Date.now() - CLIENT_GC; for (const [id, c] of clients) if (!open(c) && c.seen < old) { for (const r of c.running.values()) r.ac.abort(); clients.delete(id) } }, 60000).unref()
 
+  // 心跳：iOS 把切到后台的页面冻住时连接常常不断，服务端还以为手机在看（不推送、结果发进死连接）。
+  // 每 30 秒 ping 一次，上一次的 pong 没回就断开（排队的消息等它重连再补发）
+  setInterval(() => {
+    for (const c of clients.values()) {
+      if (!open(c)) continue
+      if (c.pinged) { try { c.ws.terminate() } catch {} continue } // ignore: 已经断了
+      c.pinged = true
+      try { c.ws.ping() } catch {} // ignore: 正在断开
+    }
+  }, 30000).unref()
+
   const asks = createAsks({ notify: deps.notify, broadcast, hasVisibleClient })
 
   // 用户允许插件读的 Mac 目录（插件权限设置里加）：{ 插件 id: ['~/Documents/x', …] }
@@ -124,7 +136,13 @@ export function createPlatform(deps) {
     if (!macHome && deps.host?.connected) macHome = (await deps.host.call('ping').catch(() => null))?.home || ''
     return macHome
   }
-  const rpc = createRpc({ catalog, perms, audit, dbFor, shared, asks, notify: deps.notify, recordIncident: deps.recordIncident, host: deps.host, home, fsDirs })
+  // 插件数据改了（某个插件页推上来的、工具运行时写的）：推给其他打开着的手机页面（断着的排队，连上补发）和工具运行时
+  function dbChanged(m, docs, from) {
+    if (from !== 'tools') tools.applyDb(m.id, docs)
+    for (const c of clients.values()) if (c.id !== from) send(c, { t: 'db', plugin: m.id, docs })
+  }
+  const rpc = createRpc({ catalog, perms, audit, dbFor, shared, asks, notify: deps.notify, recordIncident: deps.recordIncident, host: deps.host, home, fsDirs, dbChanged })
+  const tools = createToolHost({ catalog, perms, audit, dbFor, rpc, asks, dbChanged, recordIncident: deps.recordIncident, platform: PLATFORM, version: VERSION, apiVersion: PLUGIN_API, log: deps.log })
 
   const prompts = new Map() // id → { resolve, reject, timer }
   function promptVia(c, pluginId) {
@@ -142,6 +160,8 @@ export function createPlatform(deps) {
     if (!c) { c = { id: clientId, ws: null, queue: [], visible: true, test: false, seen: Date.now(), running: new Map() }; clients.set(clientId, c) }
     if (open(c) && c.ws !== ws) try { c.ws.close(4000, 'replaced') } catch {}
     c.ws = ws
+    c.pinged = false
+    ws.on('pong', () => { c.pinged = false })
     c.test = isTestHost(req.headers.host) // 经本机访问的（自动化测试）：问题报告记成测试、不推送
     c.seen = Date.now()
     for (const m of c.queue.splice(0)) ws.send(JSON.stringify(m))
@@ -202,7 +222,7 @@ export function createPlatform(deps) {
       platform: { name: PLATFORM, version: VERSION, api: PLUGIN_API },
       ...runtimeBoot,
       db: {
-        docs: [...Object.values(db.docs), ...Object.entries(db.tombstones).map(([id, rev]) => ({ _id: id, _rev: rev, _deleted: true }))], // docs / tombstones 是 DocDb 的内部字段，没有对外的全量接口
+        docs: allDocs(db),
         atts: Object.fromEntries(Object.entries(db.atts).map(([id, a]) => [id, a.type])),
       },
     }
@@ -298,8 +318,10 @@ export function createPlatform(deps) {
     upgrade,
     /** /api/agent/answer 也能答插件的问题（推送点进来、Inbox 里答） */
     answerAsk: (id, answer, text) => (asks.has(id) ? asks.answer(id, answer, text) : false),
-    flush: () => { for (const db of dbs.values()) db.flushSync() },
+    flush: () => { for (const db of dbs.values()) db.flushSync(); tools.stopAll() },
+    /** 插件工具（经 Mac 上的 pane-host 给 agent 的 MCP）：list() 工具列表；call({ name, args, caller }) → { value, plugin, tool } */
+    agentTools: { list: () => tools.list(), call: (r) => tools.call(r) },
     // 测试用
-    _rpc: rpc, _perms: perms, _audit: audit, _catalog: catalog, _asks: asks, _fsDirs: fsDirs,
+    _rpc: rpc, _tools: tools, _perms: perms, _audit: audit, _catalog: catalog, _asks: asks, _fsDirs: fsDirs,
   }
 }

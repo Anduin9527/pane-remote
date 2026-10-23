@@ -8,6 +8,26 @@ earlier work predates the public repository.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-10-23
+
+### Changed
+- Updates reach running agents without reconnecting their MCP server: `agent/plugin/mcp.mjs` is now a small launcher that runs the server (`mcp-server.mjs`) in a child process and hot-swaps it when the file changes (replaying `initialize`, letting the old process finish its requests, then sending `tools/list_changed`). A new version that fails to start is discarded and the old one keeps serving. Agents started before this version need one last reconnect.
+- Plugin tool list changes are pushed to agents right away (server → pane-host topic `plugins.tools` → MCP) instead of being polled.
+
+## [0.10.0] - 2026-10-23 — Plugin tools for agents, todo list
+
+### Added
+- Plugins can give tools to agents over MCP, the uTools way: declare them under `tools` in the manifest and implement them with `utools.registerTool` in the preload. Agents started in pane-remote see them as `plugin_<id>_<tool>`. The server runs the preload in a headless, sandboxed runtime (Node `--permission`, empty environment, no file or process access) when a tool is called, so the plugin does not need to be open on the phone. The first call asks for the `mcp` permission on the phone (always pushed); blocking hides the plugin's tools, an unanswered ask just fails that call.
+- Tool handlers get `ctx.caller` (agent, pane, working directory).
+- Plugin data now syncs live: changes made by a tool or another device reach open plugin pages, which get `utools.onDbPull` callbacks; pages resync after a dropped connection (`db.pull`).
+- The **Todo** plugin: a todo list shared by all agents and shown on the phone. Agents add, list, update, complete and remove items (`plugin_todo_*`), with the agent, pane and project recorded; on the phone you can add, check off, edit, filter by status and project, delete, and undo.
+- pane-host: `relay.serve` reverse channel and `plugins.tools.*` methods, so local programs (the agent MCP) can reach the server.
+- Plugin API 0.3.0 (tools over MCP, `onDbPull`).
+
+### Fixed
+- The plugin connection has a 30 s heartbeat, so a phone whose app was backgrounded without closing its connection is no longer counted as "looking" (which suppressed pushes).
+- The agent MCP no longer exits before answering when stdin closes right after the requests.
+
 ## [0.9.1] - 2026-10-23
 
 ### Changed

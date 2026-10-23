@@ -33,7 +33,7 @@ const OrigES = window.EventSource
 const OrigWS = window.WebSocket
 const live = new Set<{ close(): void }>()
 let claimed = false
-let markReady: () => void
+let markReady: () => void = () => {}
 // 第一次接管有结果（成功 / 本机 / 失败）就放行：之前发的 api 请求先等着，免得被服务端当成旧客户端拒掉。最多等 5 秒（离线也能启动）
 export const ready = new Promise<void>((r) => { markReady = r; setTimeout(r, 5000) })
 

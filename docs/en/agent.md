@@ -61,7 +61,8 @@ Unsent text in the input box is cleared.
 agent (Claude Code / Codex / cursor-agent)
    │ stdio MCP
    ▼
-agent/plugin/mcp.mjs (on the Mac, no dependencies)
+agent/plugin/mcp.mjs (launcher) → mcp-server.mjs (on the Mac, no dependencies)
+   │ plugin tools (plugin_<id>_<tool>): through pane-host's socket to the server (see plugins.md, "Plugin tools")
    │ to the phone: a kind=agent event in ~/.local/state/pane-remote/events.jsonl (same file as the hooks)
    │ on the Mac: agent/bridge (list / text / send / mac-perf / mac-say)
    ▼
@@ -70,6 +71,8 @@ pane-remote server (server/server.mjs: onAgent pushes, hangs questions on the pa
    ▼
 phone (web/src/lib/components/AgentAsk.svelte, inbox, session sheet)
 ```
+
+Updates: `mcp.mjs` is only a launcher; the real server, `mcp-server.mjs`, runs in a child process. When the file changes (after updating pane-remote) a new child is started, `initialize` is replayed to it, the old one finishes its requests and exits, and the agent is told the tool list changed. Running agents don't need to reconnect. If the new code fails to start, the old one keeps serving.
 
 Restart and load: `POST /api/agent/restart {pane, confirm: true}` → bridge `agent restart` → `agent/pane-agent` (detached from the bridge; progress in `~/.local/state/pane-remote/agent/restart/<pane>.json`).
 

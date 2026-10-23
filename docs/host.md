@@ -64,7 +64,7 @@ AI 用的是电脑上**已经登录**的命令行 agent，pane-remote 不保存�
 ## 协议和开发
 
 - 协议：`host/protocol.mjs`（文件头有说明）：JSON-RPC 2.0 加 call / stream / sub 三种扩展，主题带序号，断线重连能补发。
-- 方法：`ping`、`terminals.list` / `terminals.text` / `terminals.watch`、`transcript.get`、`ai.models` / `ai.complete`、`desktop.clipboard.*` / `desktop.openUrl`、`fs.*`；主题 `events`、`transcript:<pane>:<条数>`。
+- 方法：`ping`、`terminals.list` / `terminals.text` / `terminals.watch`、`transcript.get`、`ai.models` / `ai.complete`、`desktop.clipboard.*` / `desktop.openUrl`、`fs.*`、`plugins.tools.list` / `plugins.tools.call` / `plugins.tools.changed`、`relay.serve`（服务端开的反向通道，插件工具经它转给服务端）；主题 `events`、`transcript:<pane>:<条数>`、`plugins.tools`。
 - 平台相关的部分都在 Host 接口里（`host/hosts/interface.mjs`），现在只有 macOS 实现；写别的平台见 `host/hosts/README.md`。
 - AI 库的细节见 `host/ai/README.md`。
 - 测试：`npm test`（假 Host + 真 connect / host-client / agent/pane-event，不碰真的终端和 agent）。

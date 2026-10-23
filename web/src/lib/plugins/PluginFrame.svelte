@@ -5,6 +5,7 @@
   import { onDestroy, untrack } from 'svelte'
   import type { Inst, PluginInfo } from './types'
   import { onFrameMessage } from './plugins.svelte'
+  import { onPluginDb } from './client.svelte'
 
   let { x, p }: { x: Inst; p: PluginInfo } = $props()
   let frame = $state<HTMLIFrameElement>()
@@ -33,7 +34,9 @@
     if (wasFg && !fg && ready) post({ t: 'leave' })
     wasFg = fg
   })
-  onDestroy(() => { if (ready) post({ t: 'leave' }) })
+  // 插件数据在别处改了：转给插件页的本地副本（它按 rev 合并，再调 onDbPull 的回调）
+  const offDb = onPluginDb({ plugin: untrack(() => p.id), docs: (docs) => post({ t: 'db', docs }), resync: () => post({ t: 'resync' }) })
+  onDestroy(() => { offDb(); if (ready) post({ t: 'leave' }) })
 </script>
 
 <svelte:window onmessage={onMessage} />

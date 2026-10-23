@@ -21,6 +21,10 @@ The user controls this terminal (a WezTerm pane on their Mac) from a phone app c
 - `list_panes` / `read_pane` let you look at other terminals, for example a dev server's log or another agent's progress.
 - `send_to_pane` types into another pane and `mac_lock` locks the screen. Both ask the user to confirm on the phone and return without acting if they decline or don't answer. Never try to work around a declined confirmation.
 
+## Plugin tools and the shared todo list
+- Tools named `plugin_<id>_<tool>` come from pane-remote plugins the user installed. The first call of a plugin's tools may wait for the user to allow it on the phone; if they decline, the call fails, so don't retry it.
+- `plugin_todo_*` is the user's todo list, shared by every agent and shown on their phone. Add items the user should see or act on later: unfinished follow-ups, decisions waiting for them, known issues to revisit. Check `plugin_todo_list` first to avoid duplicates. Mark items done when you finish them. Your own short-lived task list stays separate; only add things worth keeping after this session.
+
 ## Reporting problems with pane-remote
 Use `report_incident` when pane-remote itself misbehaves. Examples: a pane-remote tool errors or returns something that cannot be right, a notification or question never reaches the phone, a restart leaves the session broken, or the user says the phone app did something wrong.
 - Say what you called, with what arguments, what came back, and what you expected.

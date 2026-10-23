@@ -72,7 +72,7 @@ test('support 表：AI 是 mac 实现、旧名 ai / allAiModels 能查；没接�
   assert.deepEqual([support('ai').name, support('ai').impl, support('ai').support], ['ai.chat', 'mac', 'emulated'])
   assert.equal(support('allAiModels').name, 'ai.models')
   assert.equal(support('platform.fs.read').impl, 'mac')
-  assert.equal(support('registerTool').support, 'partial')
+  assert.equal(support('registerTool').support, 'emulated') // 描述文件 tools 里声明的还经 MCP 给 agent
   assert.deepEqual([support('shellOpenPath').impl, support('shellOpenPath').support], ['mac', 'none'])
 })
 

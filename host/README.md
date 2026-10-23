@@ -37,6 +37,9 @@ LaunchAgent 由 `lib/cli.mjs` 生成（`pane-remote init` 装、`uninstall` 卸�
 | `ai.complete {req, advanced?}`（stream） | 片段 `{type: 'chunk', data: {role, content, reasoning_content?}}`；结束回 AiMessage（`advanced` 时回详细结果）。`cancel` 杀掉子进程 |
 | `desktop.clipboard.readText` / `desktop.clipboard.writeText {text}` | 电脑剪贴板（pbpaste / pbcopy） |
 | `desktop.openUrl {url}` | 在电脑上打开 http(s) 网址：直接 `/usr/bin/open`，不经过「网址转手机」模块的 open 包装 |
+| `relay.serve`（stream，服务端开） | 反向通道：服务端连上就开着这条流；下面的 `plugins.tools.*` 经流里的请求（带 rid 的片段）转给服务端，服务端 `reply` 回结果。多个服务端连着时用最后连上的 |
+| `plugins.tools.changed {sig}`（服务端调） / 主题 `plugins.tools` | 插件工具列表变了：推给订阅的 agent MCP（反向通道连上 / 断开时也推） |
+| `plugins.tools.list` / `plugins.tools.call {name, args, caller}` | 给本机程序（agent 的 MCP，`agent/plugin/mcp-server.mjs`）用：插件工具的列表 / 调用，转给服务端（见 `docs/plugins.md`「插件工具」）。服务端没连上回 -32001 |
 | `fs.roots {plugin, dirs}`、`fs.list / fs.stat / fs.read {plugin, root, path}` | 只读文件：`root` 是 `'private'`（`~/.local/share/pane-remote/plugins-data/<plugin>/`，用到时建，0700）或用户加的目录；真实路径必须落在根目录里，`.ssh`、`.gnupg`、钥匙串、`~/.config/pane-remote` 一律拒绝；单次最多读 10MB |
 | 主题 `events` | 序号 = bridge `events` 的逻辑偏移（截断后也只增不减），data = 事件对象；带 `since` 重连从文件补发 |
 | 主题 `transcript:<pane>:<n>` | data = `{full: [...]}` 或 `{drop, keep, tail}`；消息格式与 `/api/transcript` 完全相同；`since: 0` 先给 reset 全量；补发缓存最近 50 次 |

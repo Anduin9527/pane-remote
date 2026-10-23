@@ -59,6 +59,7 @@ pane-remote 专属的配置写在 `whatevertools.json` 的 `paneRemote` 里：
 示例：
 
 - `plugins/hello/`（plugin.json + index.html）：dbStorage、通知、复制、问题报告、共享存储、在手机上提问。
+- `plugins/todo/`（plugin.json + preload.js + index.html）：给 agent 的 MCP 工具（`tools` + `registerTool`）、`onDbPull` 实时更新、手机上的待办清单。
 - `plugins/ai-demo/`（whatevertools.json + index.html）：`utools.allAiModels()` 选模型和推理等级、`utools.ai(…, onChunk)` 流式回答、停止（abort）、从相册附一张图（先在页面里缩到长边 1280 的 JPEG）。
 
 ## 入口匹配
@@ -158,6 +159,7 @@ pane-remote 专属的权限项：
 | 服务端（server） | 数据库、推送、问题报告、共享存储、在手机上提问 |
 | 前端（web） | 复制、打开链接、打开别的插件：服务端查完权限回 `$delegate`，前端执行 |
 | 插件页（local） | 生命周期、平台信息、db / dbStorage 的同步读写（本地副本） |
+| 工具运行时（tools） | agent 经 MCP 调插件工具时，在服务端的沙盒子进程里跑插件的 preload（见「插件工具」） |
 | 电脑（pane-host） | 已接上：AI（`ai.chat` / `ai.models` / `platform.ai.complete`）、电脑剪贴板文字、在电脑上打开网址、只读文件（`platform.fs.*`）。pane-host 不在线回 `EWTHOSTDOWN`。还没接上的（截屏、键鼠、子进程、shellOpenPath、剪贴板文件/图片……）回 `EWTUNSUPPORTED`，错误里写明「要电脑上的 pane-host，这一项还没接上」 |
 
 审计：每次调用记一行（插件、方法、结果 ok / denied / unsupported / error / delegated / cancelled、实现方、耗时，不记参数），内存留 500 条，同时写 `plugins/audit.jsonl`（2MB 轮转）。`GET /api/plugins/audit[?plugin=]` 查看。
@@ -175,7 +177,8 @@ support 表初稿（完整的以 `GET /api/plugins/support` 为准，whatevertoo
 | `copyText` | emulated | 前端 / 电脑 | 默认写**手机**的剪贴板；`paneRemote.mac.clipboard` 为 true 时写电脑的 |
 | `shellOpenExternal` | emulated | 前端 / 电脑 | 只认 http(s)；默认在手机上打开，`paneRemote.mac.openExternal` 为 true 时在电脑上打开 |
 | `ai` / `allAiModels` | emulated | 电脑 | 本机已登录的 Claude Code / Codex / cursor-agent，见下面「AI」 |
-| `registerTool` | partial | 插件页 | 只给 `ai` 的工具调用用；经 MCP 暴露给外部 agent 还没做 |
+| `registerTool` | emulated | 插件页 / 工具运行时 | `ai` 的工具调用；描述文件 `tools` 里声明了的，还经 MCP 给 agent 用（见「插件工具」） |
+| `onDbPull` | emulated | 插件页 / 工具运行时 | 别处（agent 经插件工具、别的手机）改了数据时调用，见「数据同步」 |
 | `redirect` | partial | 前端 | 按插件 id 或功能指令打开别的插件 |
 | `getFeatures`、`isDarkColors`、`getAppName`、`getAppVersion`、`isMacOS` 等 | emulated | 插件页 | `isMacOS/isWindows/isLinux` 都是 false（插件跑在手机上） |
 | `setExpandHeight` | mock | 插件页 | 插件总是占满屏幕 |
@@ -273,29 +276,53 @@ await whatevertools.platform.fs.stat('/Users/me/Documents/notes/a.md', { root: '
 - 别的目录：用户在插件顶栏盾牌 → 「可以读的电脑文件夹」里加（绝对路径或 `~/…`，不能是整个家目录或 `/`，每个插件最多 20 个），第一次读时再按目录问一次 `fs.read`（「始终允许」只对那个目录有效）。插件自己不能加。
 - 服务端先按路径（统一成 `~/…`、去掉 `..`）找到所属的根目录、查权限；pane-host 再按真实路径（跟随符号链接后）核对一遍必须落在那个根目录里。`.ssh`、`.gnupg`、钥匙串、`~/.config/pane-remote` 不管怎么加都不给读。
 
-### agent.tools（只定了接口，还没实现）
+## 插件工具（给 agent 的 MCP）
 
-插件把工具经 MCP 暴露给 pane 里的 agent（Claude Code / Codex / cursor-agent）：
+和 uTools 的「插件对外提供 MCP 工具」一样：插件在描述文件里声明工具，在 preload 里用 `utools.registerTool` 实现；在 pane-remote 里启动的 agent（Claude Code / Codex / cursor-agent，注入了 pane-remote 的 MCP）会自动看到这些工具，名字是 `plugin_<插件 id>_<工具名>`。同一个插件原样放进 uTools 也能用。
 
-```js
-await wt.platform.agent.tools.register({
-  name: 'stitch_images',                 // agent 看到的名字是 plugin_<插件id>_<name>
-  description: '把多张图片拼成一张',
-  inputSchema: { type: 'object', properties: { … }, required: [ … ] },
-  outputSchema: { … },                   // 可选
-}, async (input, ctx) => {               // ctx: { agent, pane, signal }
-  return { files: [ … ] }
-})
-await wt.platform.agent.tools.unregister('stitch_images')
+```jsonc
+// plugin.json（uTools 格式；原生格式写在 whatevertools.json 里也一样）
+{
+  "preload": "preload.js",
+  "tools": {
+    "add": {
+      "description": "写给 agent 看的：这个工具做什么、什么时候用",
+      "inputSchema": { "type": "object", "properties": { "title": { "type": "string" } }, "required": ["title"] },
+      "outputSchema": { … }            // 可选；声明了的话结果也作为 structuredContent 返回
+    }
+  }
+}
 ```
 
-设计：
+```js
+// preload.js
+utools.registerTool('add', async ({ title }, ctx) => {
+  // ctx.requestId；pane-remote 另给 ctx.caller = { agent: 'claude', pane: 3, cwd: '/path/to/project' }（uTools 里没有）
+  const r = utools.db.put({ _id: 'todo/' + Date.now(), title, by: ctx?.caller?.agent })
+  return { id: r.id }
+})
+```
 
-- 也可以静态声明在描述文件的 `tools` 里（whatevertools 已有这个字段，快拼图就是这样写的），插件页载入后再 `register` 实现。
-- 需要新权限 `mcp`（whatevertools 已有，默认询问）。
-- 链路：agent 调注入的 MCP（`agent/plugin/mcp.mjs`）→ 经 bridge / pane-host 到服务端 → 服务端找到这个插件在线的那台手机（WS 连接）→ 前端转给插件 iframe → 结果原路返回。插件不在线（睡眠 / 没打开）时：可以让手机在后台把它载入（受保活上限约束），手机都不在线就回「插件不在线」。
-- MCP 工具列表随插件上下线变化：服务端维护「在线工具表」，mcp.mjs 发 `tools/list_changed`。
-- 每次调用照样记审计；工具调用可以要求在手机上确认（`confirm: true`）。
+怎么跑的：
+
+- agent 调用时，服务端在一个**无界面的工具运行时**里跑插件的 preload（`platform/tool-runtime.mjs`），收集 `registerTool` 注册的函数再执行；手机不用开着插件。运行时闲 10 分钟退出，插件文件改了自动换新的。
+- 运行时是沙盒子进程：Node 的 `--permission` 只放行读它自己这个文件（读写不了文件、起不了子进程），环境变量是空的；插件代码在 vm 的新上下文里，只有 `utools` / `whatevertools`、`console`、定时器、`fetch`、`URL`、`crypto` 这些。`require` 一律报错。
+- 能用的 API：`utools.db` / `dbStorage`（本地副本，规则同插件页）、`registerTool`、`onDbPull`、`showNotification`（推送）、`whatevertools.platform.*`（经服务端，照常查权限、记审计；没有界面能弹询问，没授权过的按「以后再说」）。剪贴板、打开链接、界面相关的回「不支持」。
+- 工具返回之前先把写入推给服务端：agent 拿到结果时数据已经落盘，打开着的插件页也马上更新（见下面「数据同步」）。
+- 权限 `mcp`（默认询问）：第一次调用时用「在手机上问你」的卡片问（总是推送），选项 始终允许 / 仅这次 / 禁止；5 分钟没回答这次调用失败，下次调用再问（连续 3 次没答自动转为禁止）。禁止之后这个插件的工具不再出现在 agent 的列表里。插件顶栏的盾牌里可以随时改。每次调用记审计（方法名 `mcp.<工具名>`）。
+- 链路：agent → 注入的 MCP（`agent/plugin/mcp.mjs` 启动器 + `mcp-server.mjs`）→ 电脑上 pane-host 的 socket（`plugins.tools.list` / `plugins.tools.call`）→ 服务端连上 pane-host 时开着的反向通道（`relay.serve` 流）→ 服务端的工具宿主（`platform/tools.mjs`）。local 和 relay 模式一样。
+- 插件工具列表一变（插件装上 / 改了 / 删掉、权限改成禁止），服务端 5 秒内告诉 pane-host（`plugins.tools.changed`），pane-host 推给订阅着 `plugins.tools` 主题的 MCP，MCP 发 `tools/list_changed`，agent 马上重新拉；另外每 5 分钟兜底刷新一次。服务端或 pane-host 不在线时插件工具调用失败，自带的工具照常。
+- 只认声明在描述文件 `tools` 里、插件有 preload 的工具；工具名只许字母数字 `_` `-`，`inputSchema` 必须是对象。`platform.agent.tools.register`（运行中注册）不做：工具列表要在插件没运行时就能给出来。
+
+示例：`plugins/todo/`（待办）。
+
+## 数据同步
+
+插件的数据存在服务端，插件页和工具运行时各有一份本地副本（同步读写），改动推给服务端按 rev 裁决。别处的改动会推过来：
+
+- 服务端收到一个副本推上来的改动后，推给其他打开着这个插件的手机页面（断开期间排队，连上补发）和正在跑的工具运行时
+- 页面和服务端的连接断过再连上时，页面拿一次全量（`db.pull`）合并
+- 收下的改动交给 `utools.onDbPull(docs => …)`（= `whatevertools.db.onPull`）的回调：插件在这里重画界面。还没推上去的本地改动不会被覆盖，推上去后由服务端裁决
 
 ## 服务端接口
 
@@ -316,4 +343,4 @@ await wt.platform.agent.tools.unregister('stitch_images')
 
 - `wt pack --target web` 打出来的页面（自带完整的 whatevertools 浏览器运行时）要 IndexedDB / localStorage，而插件 iframe 没有 `allow-same-origin`，跑不起来。
 - preload 里的 `require('node:fs')`、`electron` 等 Node 模块不支持；读电脑上的文件用 `platform.fs`。
-- `utools.sharp`、`getPluginTempPath`、经 MCP 暴露工具（`agent.tools`）还没有。
+- `utools.sharp`、`getPluginTempPath` 还没有。插件工具只能在描述文件 `tools` 里声明，不能运行中注册。
