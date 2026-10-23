@@ -311,7 +311,7 @@ async function handle(m) {
         capabilities: { tools: { listChanged: true } },
         serverInfo: { name: 'pane-remote', version: '1.0.0' },
         instructions: `You are running inside pane-remote: the user controls this terminal (WezTerm pane ${PANE ?? '?'}) from their phone. These tools reach the phone and this Mac.`
-          + ' Tools named plugin_<id>_<tool> come from pane-remote plugins the user installed; plugin_todo_* is the user\'s todo list shared by all their agents and shown on their phone: add items the user should see or act on later (unfinished follow-ups, decisions waiting for them), and check it when they ask what is pending.',
+          + ' Tools named plugin_<id>_<tool> come from pane-remote plugins the user installed; plugin_todo_* is the user\'s todo list shared by all their agents and shown on their phone: add items the user should see or act on later (unfinished follow-ups, decisions waiting for them), and check it when they ask what is pending. plugin_todo_list returns only your own items by default; pass project: "all" only when the user explicitly asks about everything. "Your tasks" / "what\'s left" without mentioning todo means your own session task list, not the todo list.',
       } })
     }
     if (m.method === 'ping') return out({ id: m.id, result: {} })

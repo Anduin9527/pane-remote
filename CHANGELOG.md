@@ -8,6 +8,11 @@ earlier work predates the public repository.
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-10-23 — Todo list scoped to the calling session
+
+### Changed
+- `plugin_todo_list` without `project` now returns only the caller's own items (added or claimed by that session, or under its working directory) and just counts the rest (`others.count`); `project: "all"` lists everyone's. Agent instructions and the skill say to use "all" only when the user explicitly asks, and that "your tasks" means the session's own task list. Todo plugin 0.3.1.
+
 ## [0.13.1] - 2026-10-23 — Move a window to another display
 
 ### Added

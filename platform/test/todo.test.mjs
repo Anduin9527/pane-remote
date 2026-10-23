@@ -126,3 +126,20 @@ test('agent 的 list：open = 没做完的，not_started / in_progress / blocked
   assert.equal(tools.list({ status: 'in_progress' }, agentCtx()).total, 1)
   assert.equal(tools.list({}, agentCtx()).items[0].log, undefined, '列表不带动态')
 })
+
+test('list 工具默认只看本会话自己这摊，别的只报个数', () => {
+  const { store, tools } = load()
+  const me = { cwd: '/w/a', session: 's1', agent: 'claude', pane: 2 }
+  store.add({ title: 'mine-by-session', project: '/w/other' }, { by: 'agent', session: 's1' })
+  store.add({ title: 'mine-by-cwd', project: '/w/a/sub' }, { by: 'agent', session: 's9' })
+  const claimed = store.add({ title: 'claimed', project: '/w/z' }, { by: 'agent', session: 's9' })
+  store.start(claimed.id, { by: 'agent', session: 's1' })
+  store.add({ title: 'theirs', project: '/w/b' }, { by: 'agent', session: 's2' })
+  const r = tools.list({}, { caller: me })
+  assert.equal(r.scope, 'mine')
+  assert.deepEqual(r.items.map((d) => d.title).sort(), ['claimed', 'mine-by-cwd', 'mine-by-session'])
+  assert.equal(r.others.count, 1)
+  assert.equal(tools.list({ project: 'all' }, { caller: me }).total, 4)
+  assert.deepEqual(tools.list({ project: 'current' }, { caller: me }).items.map((d) => d.title), ['mine-by-cwd'])
+  assert.equal(tools.list({}, {}).total, 4) // 不知道是谁调的：照旧全部
+})

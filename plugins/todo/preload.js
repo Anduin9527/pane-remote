@@ -40,6 +40,11 @@
     if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || isNaN(Date.parse(s))) throw new Error('due 要写成 YYYY-MM-DD')
     return s
   }
+  /** 是不是这个会话自己这摊：它记的、它认领的，或者在它的工作目录（及以下） */
+  function isMine(d, m) {
+    if (m.session && ((d.source && d.source.session === m.session) || (d.claim && d.claim.session === m.session))) return true
+    return !!(m.cwd && d.project && (d.project === m.cwd || String(d.project).indexOf(m.cwd + '/') === 0))
+  }
   function today() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') }
   function base(p) { p = String(p || '').replace(/\/+$/, ''); return p ? p.slice(p.lastIndexOf('/') + 1) || p : '' }
   function pick(v, list, name) { if (list.indexOf(v) < 0) throw new Error(name + ' 只能是 ' + list.join(' / ')); return v }
@@ -248,6 +253,7 @@
     list: function (opts) {
       opts = opts || {}
       var status = opts.status || 'active'
+      if (opts.mine) opts.mine = { cwd: String(opts.mine.cwd || '').replace(/\/+$/, ''), session: opts.mine.session || '' }
       var project = opts.project && opts.project !== 'all' ? String(opts.project).replace(/\/+$/, '') : ''
       var q = text(opts.query, 200).toLowerCase()
       var tag = text(opts.tag, 24).replace(/^#/, '')
@@ -261,6 +267,7 @@
         if (opts.assignee && (d.assignee || 'undecided') !== opts.assignee) return false
         if (opts.overdue && !(d.due && st !== 'done' && d.due < day)) return false
         if (project && !(d.project === project || String(d.project || '').indexOf(project + '/') === 0)) return false
+        if (opts.mine && !isMine(d, opts.mine)) return false
         if (tag && (d.tags || []).indexOf(tag) < 0) return false
         if (q && (d.title + '\n' + (d.note || '') + '\n' + (d.blocker || '')).toLowerCase().indexOf(q) < 0) return false
         return true
@@ -337,10 +344,20 @@
     var input = { title: p.title, note: p.note, priority: p.priority, assignee: p.assignee, due: p.due, tags: p.tags, links: p.links, project: p.project === undefined ? actor.cwd : projectArg(p.project, ctx) }
     return { added: brief(store.add(input, actor)) }
   })
+  // 不指定 project 时只看自己这摊：本会话记的 / 认领的，加上工作目录（及以下）的；别的会话、别的项目的只报个数。
+  // 用户明确问「所有待办」时才传 project: "all"
   reg('list', function (p, ctx) {
     var limit = Math.max(1, Math.min(200, Number(p.limit) || 50))
-    var items = store.list({ status: p.status === 'open' ? 'active' : p.status === 'not_started' ? 'open' : p.status, assignee: p.assignee, overdue: p.overdue, project: projectArg(p.project, ctx) || 'all', query: p.query, tag: p.tag })
-    return { total: items.length, items: items.slice(0, limit).map(function (v) { return brief(v) }) }
+    var c = (ctx && ctx.caller) || {}
+    var opts = { status: p.status === 'open' ? 'active' : p.status === 'not_started' ? 'open' : p.status, assignee: p.assignee, overdue: p.overdue, query: p.query, tag: p.tag }
+    var scoped = p.project == null && !!(c.cwd || c.session)
+    var items = store.list(Object.assign({}, opts, scoped ? { mine: { cwd: c.cwd, session: c.session } } : { project: projectArg(p.project, ctx) || 'all' }))
+    var out = { scope: scoped ? 'mine' : (p.project || 'all'), total: items.length, items: items.slice(0, limit).map(function (v) { return brief(v) }) }
+    if (scoped) {
+      var others = store.list(Object.assign({}, opts, { project: 'all' })).length - items.length
+      if (others > 0) out.others = { count: others, hint: '别的会话 / 项目的待办没列出来；用户明确要看全部时再传 project: "all"' }
+    }
+    return out
   })
   reg('get', function (p) { return { item: brief(store.get(p.id), true) } })
   reg('update', function (p, ctx) {

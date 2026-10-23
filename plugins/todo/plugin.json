@@ -1,7 +1,7 @@
 {
   "pluginName": "待办",
   "description": "跨 agent 的待办清单：在 pane-remote 里跑的 agent 经 MCP 记下要你处理或之后要做的事；手机上查看、编辑、勾掉，或者一键发回对应的会话去执行 / 检查",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "main": "index.html",
   "logo": "logo.svg",
   "preload": "preload.js",
@@ -100,7 +100,7 @@
       }
     },
     "list": {
-      "description": "List items on the user's shared todo list. status: open = everything not done (default), not_started, in_progress (an agent is on it), blocked (waiting for the user), done, all.",
+      "description": "List items on the user's shared todo list. By default only your own items (this session's, or in your working directory); other sessions' and projects' items are only counted. status: open = everything not done (default), not_started, in_progress (an agent is on it), blocked (waiting for the user), done, all.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -132,7 +132,7 @@
           "project": {
             "type": "string",
             "maxLength": 500,
-            "description": "\"current\" = your working directory (and below), an absolute path, or \"all\" (default)"
+            "description": "omit = your own items only (added or claimed by this session, or under your working directory; others are only counted); \"current\" = your working directory (and below); an absolute path; \"all\" = everyone's items, only when the user explicitly asks for all of them"
           },
           "query": {
             "type": "string",

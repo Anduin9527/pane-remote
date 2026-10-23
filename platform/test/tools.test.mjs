@@ -93,7 +93,7 @@ test('同步：手机插件页写的，工具运行时马上看得到；工具�
   const ctx = { client: 'phone1', test: false, visible: () => true, prompt: async () => 'once' }
   await pf._rpc.call(ctx, 'todo', 'db.push', { docs: [{ _id: 'todo/x1', _rev: '1-a', title: '手机上记的', status: 'open', priority: 'normal', tags: [], created: 1, updated: 1 }] })
   await wait(50)
-  const l = await pf.agentTools.call({ name: 'plugin_todo_list', args: {}, caller })
+  const l = await pf.agentTools.call({ name: 'plugin_todo_list', args: { project: 'all' }, caller })
   assert.ok(l.value.items.some((i) => i.title === '手机上记的'))
   const pull = await pf._rpc.call(ctx, 'todo', 'db.pull', {})
   assert.ok(pull.docs.some((d) => d._id === 'todo/x1'))
