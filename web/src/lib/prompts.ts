@@ -10,10 +10,39 @@ const WAIT_RES = [
 ]
 const YN_RE = /[[(](y\/n|Y\/n|y\/N)[\])]\s*[:?？]?\s*$/
 const OPT_RE = /^[\s│┃|]*([❯›>▶])?\s*(\d{1,2})[.)]\s+(.+?)[\s│┃|]*$/
+const FOOTER_RE = /Enter to |Esc to |to navigate|Tab to /i
 export const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;:?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Za-z0-9]/g, '')
 
 export type PromptButton = { label: string; send: string[]; kind: 'option' | 'yes' | 'no' | 'esc' | 'enter'; selected?: boolean }
 export type Prompt = { question: string; buttons: PromptButton[] }
+
+/** 从当前选中项挪到第 to 项再回车：往后按 ↓，往前按 ↑（不靠绕回，第一项按 ↑ 会跳到最后一项） */
+const arrows = (from: number, to: number) => [...Array(Math.abs(to - from)).fill(to > from ? '\x1b[B' : '\x1b[A'), '\r']
+
+/** 没编号、只能用方向键选的选择器（横排如 MCP 确认框「❯ Accept    Decline」，竖排如信任目录），和 prompt-detect.mjs 的 selector 一致 */
+export function selector(tail: string[]): { text: string; selected: boolean }[] | null {
+  for (let i = tail.length - 1; i >= 0; i--) {
+    const raw = tail[i].replace(/[\s│┃|]+$/, '')
+    if (!/[❯›▶]/.test(raw) || FOOTER_RE.test(raw)) continue
+    const toks = raw.replace(/^[\s│┃|]+/, '').split(/\s{2,}/)
+    if (toks.length >= 2 && toks.length <= 4) {
+      const opts = toks.map((t) => ({ text: t.replace(/^[❯›▶]\s*/, '').trim(), selected: /^[❯›▶]/.test(t) }))
+      if (opts.filter((o) => o.selected).length === 1 && opts.every((o) => o.text && o.text.length <= 30 && !/[❯›▶]/.test(o.text) && !/^\d{1,2}[.)]/.test(o.text))) return opts
+      continue
+    }
+    const m = raw.match(/^(\s*)[❯›▶]\s+(\S.*)$/)
+    if (!m || /^\d{1,2}[.)]\s/.test(m[2])) continue
+    const col = raw.length - m[2].length
+    const same = (l: string | undefined) => l != null && !FOOTER_RE.test(l) && l.match(/^\s*/)![0].length === col && l.trim().length <= 60
+    const up: { text: string; selected: boolean }[] = []
+    const down: { text: string; selected: boolean }[] = []
+    for (let j = i - 1; same(tail[j]) && up.length < 6; j--) up.unshift({ text: tail[j].trim(), selected: false })
+    for (let j = i + 1; same(tail[j]) && down.length < 6; j++) down.push({ text: tail[j].trim(), selected: false })
+    const opts = [...up, { text: m[2].trim(), selected: true }, ...down]
+    if (opts.length >= 2) return opts
+  }
+  return null
+}
 
 export function detectPrompt(lines: string[]): Prompt | null {
   const tail = lines.slice(-40).map((l) => stripAnsi(l).replace(/\r/g, '').trimEnd()).filter((l) => l.trim()).slice(-15)
@@ -38,8 +67,12 @@ export function detectPrompt(lines: string[]): Prompt | null {
     if (n === 1) opts.length = 0
     if (n === opts.length + 1) opts.push({ n, text: m[3].trim(), selected: !!m[1] })
   }
+  const sel = waitHit && opts.length < 2 ? selector(tail) : null
   if (waitHit && opts.length >= 2) {
     for (const o of opts) buttons.push({ label: `${o.n}. ${o.text}`, send: [String(o.n)], kind: 'option', selected: o.selected })
+  } else if (sel) {
+    const cur = sel.findIndex((o) => o.selected)
+    sel.forEach((o, k) => buttons.push({ label: o.text, send: arrows(cur, k), kind: 'option', selected: o.selected }))
   } else if (ynHit) {
     buttons.push({ label: 'y', send: ['y', '\r'], kind: 'yes' }, { label: 'n', send: ['n', '\r'], kind: 'no' })
   }

@@ -4,13 +4,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 import webpush from 'web-push'
 import { config } from './config.mjs'
+import { detect, choices, dialogSig, stripAnsi } from './prompt-detect.mjs'
 
 const DATA = config.dataDir
 const SUBS_FILE = path.join(DATA, 'subscriptions.json')
 const VAPID_FILE = path.join(DATA, 'vapid.json')
 const SCAN_MS = Number(process.env.SCAN_MS || 3000)
 const IDLE_SECONDS = Number(process.env.NOTIFY_IDLE_SECONDS || 120) // 电脑键鼠空闲超过这么久才推（人在电脑前就不打扰手机）
-const TAIL = 15
 
 fs.mkdirSync(DATA, { recursive: true, mode: 0o700 })
 let vapid
@@ -73,55 +73,6 @@ export async function notify(payload) {
   return { sent: results.filter((r) => r.status === 'fulfilled').length, failed: results.length - results.filter((r) => r.status === 'fulfilled').length }
 }
 
-// ---------- 检测「在等人操作」 ----------
-// 只看最后几行：Claude Code / codex 的选择器、权限确认、计划确认，常见的 y/n 提示
-const WAIT_RES = [
-  /Enter to (select|confirm|submit|continue)/i,
-  /Esc to (cancel|go back|exit)/i,
-  /Do you want to (proceed|make this edit|create|allow|run|overwrite)/i,
-  /Would you like to proceed/i,
-  /Press enter to (confirm|continue)/i,
-  /Allow (once|always|this command)/i,
-]
-const YN_RE = /[[(](y\/n|Y\/n|y\/N)[\])]\s*[:?？]?\s*$/
-const OPT_RE = /^[\s│┃|]*([❯›>▶])?\s*(\d{1,2})[.)]\s+(.+?)[\s│┃|]*$/
-/** 等待界面里可以直接点的选项：编号选项（从 1 连续）、y/n、Esc（和前端 prompts.ts 规则一致） */
-function choices(text) {
-  const tail = stripAnsi(text).replace(/\r/g, '').split('\n').map((l) => l.trimEnd()).filter((l) => l.trim()).slice(-TAIL)
-  const out = []
-  const opts = []
-  for (const l of tail) {
-    const m = l.match(OPT_RE)
-    if (!m) continue
-    const n = Number(m[2])
-    if (n === 1) opts.length = 0
-    if (n === opts.length + 1) opts.push({ label: `${n}. ${m[3].trim()}`.slice(0, 80), send: [String(n)], selected: !!m[1] })
-  }
-  const waitHit = tail.some((l) => WAIT_RES.some((re) => re.test(l)))
-  if (waitHit && opts.length >= 2) out.push(...opts)
-  else if (tail.slice(-3).some((l) => YN_RE.test(l))) out.push({ label: 'y', send: ['y', '\r'] }, { label: 'n', send: ['n', '\r'] })
-  if (tail.some((l) => /Esc to (cancel|go back|exit)/i.test(l))) out.push({ label: 'Esc', send: ['\x1b'] })
-  return out
-}
-const stripAnsi = (s) => s.replace(/\x1b\[[0-9;:?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Za-z0-9]/g, '')
-function detect(text) {
-  const lines = stripAnsi(text).replace(/\r/g, '').split('\n').map((l) => l.trimEnd()).filter((l) => l.trim())
-  const tail = lines.slice(-TAIL)
-  let hit = tail.findIndex((l) => WAIT_RES.some((re) => re.test(l)))
-  // y/n 提示：必须在行尾，而且是最后 3 行之一（光标停在那儿等输入），避免命令文本里出现的 [y/N] 误报
-  if (hit < 0) {
-    const k = tail.slice(-3).findIndex((l) => YN_RE.test(l))
-    if (k >= 0) hit = tail.length - Math.min(3, tail.length) + k
-  }
-  if (hit < 0) return null
-  // 问题文字：命中行往上找最近一个以问号结尾的行，找不到就用命中行
-  let question = ''
-  for (let i = tail.length - 1; i >= 0; i--) {
-    const l = tail[i].replace(/^[\s│┃|>❯›]+|[\s│┃|]+$/g, '')
-    if (/[?？]$/.test(l)) { question = l; break }
-  }
-  return (question || tail[hit].trim()).slice(0, 160)
-}
 
 const state = new Map() // pane → { sig, missing, hash, changedAt, seenAt, prompt, doneAt, inputAt, pushedAt }
 const COOLDOWN_MS = 15000 // 同一个 pane 15 秒内只推一次（hook 和画面检测可能同时命中）
@@ -156,14 +107,19 @@ let lastIdle = 1e9
 const cleanTitle = (info, pane) => (info?.title || `pane ${pane}`).replace(/^[⠀-⣿✳✻✽·◐◓◑◒⠂⠐*]+\s*/, '')
 
 /** 推送前的统一判断：有订阅、不是测试 workspace、手机没在看、人不在电脑前、冷却时间已过 */
+const WAIT_WHY = new Set(['screen', 'notify', 'permission'])
 async function pushFor(pane, isWatching, payload, why) {
   const st = state.get(pane)
   const info = lastList.find((p) => String(p.pane_id) === pane)
   if (!subs.length || !st) return false
   if (isWatching(pane)) { console.log(`skip ${why} pane ${pane}: viewing on phone`); return true }
   if (lastIdle < IDLE_SECONDS) return false
-  if (Date.now() - st.pushedAt < COOLDOWN_MS) return true
+  // 冷却只挡同一类：「做完了」刚推过，紧跟着的「等你操作」照推（subagent 在后台跑时，主对话先停、几秒后它弹授权，
+  // 以前这条被冷却吞掉，画面检测还把它记成推过了）。同一个 tag，新通知会替换旧的
+  const wait = WAIT_WHY.has(why)
+  if (Date.now() - st.pushedAt < COOLDOWN_MS && !(wait && !st.pushedWait)) return true
   st.pushedAt = Date.now()
+  st.pushedWait = wait
   const r = await notify({ ...payload, title: `${cleanTitle(info, pane)} ${payload.title}`, pane, tag: `pane-${pane}` })
   console.log(`notify(${why}) pane ${pane}: ${payload.body} → ${JSON.stringify(r)}`)
   return true
@@ -235,6 +191,9 @@ async function handleEvent(ev, replayed) {
   if (ev.kind === 'stop' || ev.kind === 'failure') {
     st.doneAt = t
     if (prefs.stop && !stale) await pushFor(pane, isWatching, { title: ev.kind === 'failure' ? '出错停下了' : '做完了', body: ev.msg || '轮到你了' }, ev.kind)
+  } else if (ev.kind === 'notify' && /^Elicitation response/i.test(ev.msg || '')) {
+    // MCP 确认框答完之后 Claude Code 发的回执（「…: accept」），不是在等人；倒说明刚才那个框处理掉了，下一个同样的框要再推
+    st.sig = null
   } else if ((ev.kind === 'notify' || ev.kind === 'permission') && !stale) {
     await pushFor(pane, isWatching, { title: '等你操作', body: ev.msg || '需要你确认' }, ev.kind)
   }
@@ -306,10 +265,12 @@ export function startMonitor({ bridge, isWatching, active, onOpen, onAgent, onIn
         if (isWatching(pane)) st.seenAt = now
         if (q) {
           st.missing = 0
-          if (q !== st.sig && subs.length) {
+          // 指纹带上对话框正文：问题文字一样（MCP 每次都问「Run it on project …?」）但内容不同，也算新问题
+          const sig = `${q}\n${dialogSig(body)}`
+          if (sig !== st.sig && subs.length) {
             state.set(pane, st)
             // 人在电脑前时 pushFor 返回 false：不记下，问题一直挂着的话电脑空闲够久后再推
-            if (await pushFor(pane, isWatching, { title: '等你操作', body: q }, 'screen')) st.sig = q
+            if (await pushFor(pane, isWatching, { title: '等你操作', body: q }, 'screen')) st.sig = sig
           }
         } else if (st.sig && ++st.missing >= 2) {
           st.sig = null // 界面消失（已处理）后再出现新问题才会再推
@@ -326,4 +287,4 @@ export function startMonitor({ bridge, isWatching, active, onOpen, onAgent, onIn
     }
   }, SCAN_MS)
 }
-export { detect }
+export { detect } from "./prompt-detect.mjs"

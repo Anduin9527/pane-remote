@@ -8,6 +8,14 @@ earlier work predates the public repository.
 
 ## [Unreleased]
 
+## [0.13.3] - 2026-10-23 — Prompts from background subagents reach the phone
+
+### Fixed
+- A permission prompt that a background subagent raises right after the main turn ends is pushed; the 15-second cooldown after "done" no longer swallows it.
+- Repeated confirmations with the same question (an MCP server asking "Run it on project …?" for each query) are pushed each time: prompts are told apart by the whole dialog, not just the question line.
+- MCP confirmation dialogs (`❯ Accept    Decline`) and other selectors without numbers (the trust-folder prompt) get buttons on the phone; tapping one sends the arrow keys and Enter.
+- The "Elicitation response …: accept" receipt Claude Code sends after you answer is no longer pushed as "waiting for you".
+
 ## [0.13.2] - 2026-10-23 — Todo list scoped to the calling session
 
 ### Changed
