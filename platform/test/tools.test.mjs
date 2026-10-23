@@ -26,12 +26,12 @@ async function answerNextAsk(pf, answer) {
   for (let i = 0; i < 100; i++) { const [a] = pf._asks.list(); if (a) { if (answer != null) pf.answerAsk(a.id, answer); return a } await wait(20) }
   throw new Error('没有等到询问')
 }
-const caller = { agent: 'claude', pane: 3, cwd: '/work/app' }
+const caller = { agent: 'claude', pane: 3, cwd: '/work/app', session: 'sess-aaaa-1111' }
 
 test('列表：只列描述文件里声明、有 preload 的工具，名字带插件前缀', () => {
   const { pf } = makePlatform()
   const tools = pf.agentTools.list().filter((t) => t.plugin === 'todo')
-  assert.deepEqual(tools.map((t) => t.name).sort(), ['plugin_todo_add', 'plugin_todo_done', 'plugin_todo_list', 'plugin_todo_remove', 'plugin_todo_update'])
+  assert.deepEqual(tools.map((t) => t.name).sort(), ['plugin_todo_add', 'plugin_todo_comment', 'plugin_todo_done', 'plugin_todo_get', 'plugin_todo_list', 'plugin_todo_remove', 'plugin_todo_start', 'plugin_todo_update'])
   assert.match(tools[0].description, /^\[pane-remote 插件「待办」\]/)
   assert.equal(tools.find((t) => t.tool === 'add').inputSchema.required[0], 'title')
   assert.equal(pf.agentTools.list().some((t) => t.plugin === 'hello'), false, 'hello 没有声明工具')
@@ -46,7 +46,7 @@ test('调用：第一次在手机上问 mcp 权限，始终允许后不再问；
   assert.equal(pushed.length, 1, '手机没在看：推送')
   const r = await p
   assert.equal(r.value.added.title, '回头补测试')
-  assert.deepEqual(r.value.added.source, { by: 'agent', agent: 'claude', pane: 3, cwd: '/work/app' })
+  assert.deepEqual(r.value.added.source, { by: 'agent', agent: 'claude', pane: 3, cwd: '/work/app', session: 'sess-aaaa-1111' })
   assert.equal(r.value.added.project, '/work/app')
   const l = await pf.agentTools.call({ name: 'plugin_todo_list', args: { project: 'current' }, caller })
   assert.equal(pf._asks.list().length, 0, '记住了，不再问')
@@ -128,4 +128,28 @@ test('沙盒：preload 读不了文件、拿不到 require 和服务端的环境
     assert.equal(r.cp, 'ERR_ACCESS_DENIED')
   }
   await assert.rejects(pf.agentTools.call({ name: 'plugin_evil_boom', args: {}, caller }), /故意的/)
+})
+
+test('platform.sessions：列出、按会话 id 找到 pane 发送、留言取一次就没了；要权限', async () => {
+  const sent = []
+  const sessions = {
+    list: async () => [{ pane: 7, agent: 'claude', session: 'sess-bbbb-2222', cwd: '/w/app', title: 't', status: 'idle', startedAt: 1 }],
+    send: async (pane, text) => { sent.push([pane, text]) },
+  }
+  const dataDir = tmp()
+  const pf = createPlatform({ dataDir, pluginsDir: path.join(REPO, 'plugins'), WebSocketServer, notify: async () => ({}), recordIncident: () => ({}), sessions, log: () => {} })
+  made.push(pf)
+  const asked = []
+  const ctx = { client: 'p1', test: false, visible: () => true, prompt: async (r) => { asked.push(r.permission); return 'always' } }
+  assert.equal((await pf._rpc.call(ctx, 'todo', 'platform.sessions.list', {}))[0].pane, 7)
+  assert.deepEqual(asked, ['platform.sessions'])
+  const r = await pf._rpc.call(ctx, 'todo', 'platform.sessions.send', { session: 'sess-bbbb-2222', text: '[待办 x] 去做' })
+  assert.deepEqual([r.pane, sent[0]], [7, [7, '[待办 x] 去做']])
+  await assert.rejects(pf._rpc.call(ctx, 'todo', 'platform.sessions.send', { session: 'sess-gone-0000', text: 'x' }), (e) => e.code === 'ENOSESSION')
+  await pf._rpc.call(ctx, 'todo', 'platform.sessions.note', { session: 'sess-bbbb-2222', text: '用户把 x 勾掉了' })
+  const notes = pf.takeSessionNotes('sess-bbbb-2222')
+  assert.deepEqual(notes.map((n) => [n.plugin, n.name, n.text]), [['todo', '待办', '用户把 x 勾掉了']])
+  assert.deepEqual(pf.takeSessionNotes('sess-bbbb-2222'), [], '取走就没了')
+  pf.flush()
+  assert.ok(fs.existsSync(path.join(dataDir, 'plugins/session-notes.json')), '留言存盘（服务端重启不丢）')
 })

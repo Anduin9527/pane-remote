@@ -23,7 +23,10 @@ The user controls this terminal (a WezTerm pane on their Mac) from a phone app c
 
 ## Plugin tools and the shared todo list
 - Tools named `plugin_<id>_<tool>` come from pane-remote plugins the user installed. The first call of a plugin's tools may wait for the user to allow it on the phone; if they decline, the call fails, so don't retry it.
-- `plugin_todo_*` is the user's todo list, shared by every agent and shown on their phone. Add items the user should see or act on later: unfinished follow-ups, decisions waiting for them, known issues to revisit. Check `plugin_todo_list` first to avoid duplicates. Mark items done when you finish them. Your own short-lived task list stays separate; only add things worth keeping after this session.
+- `plugin_todo_*` is the user's todo list, shared by every agent and shown on their phone. Add items the user should see or act on later (unfinished follow-ups, decisions waiting for them, known issues). Set `assignee` (agent / human / undecided) and `due` when you know them. Check `plugin_todo_list` first to avoid duplicates.
+- When you work on an item, call `plugin_todo_start` first (others then see it is taken; it refuses if another live session has it). Record progress with `plugin_todo_comment`; when you need the user's decision, use `plugin_todo_comment` with `needs_reply: true` (it is pushed to their phone, and their reply arrives in this session). Finish with `plugin_todo_done`.
+- The user may send you a message starting with `[待办 <id>]` / `[todo <id>]` from the phone: that is a request to run or check that item; follow it and keep the item updated.
+- Lines starting with `[pane-remote] Updates for this session` (in your context or appended to a tool result) tell you what the user did on the phone to items you created (done, edited, deleted, commented). Take them into account; don't redo finished items.
 
 ## Reporting problems with pane-remote
 Use `report_incident` when pane-remote itself misbehaves. Examples: a pane-remote tool errors or returns something that cannot be right, a notification or question never reaches the phone, a restart leaves the session broken, or the user says the phone app did something wrong.

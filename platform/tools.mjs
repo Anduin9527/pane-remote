@@ -56,11 +56,12 @@ export function createToolHost(deps) {
   }
 
   /** 这次调用没有手机连接可以问权限：用「在手机上问你」的卡片（不在看就推送），5 分钟没回答算这次不允许 */
+  // 工具里再要别的权限（推送、AI……）：同样用卡片问，问的是「插件要用 XX」
   const askPrompt = (m, caller, toolName) => async (req) => {
-    if (req.permission !== 'mcp') return 'dismiss' // 工具里再要别的权限（比如 notification）：没有界面能弹询问，按「以后再说」
     const who = [caller?.agent, caller?.pane != null ? `#${caller.pane}` : '', caller?.cwd ? path.basename(String(caller.cwd)) : ''].filter(Boolean).join(' · ')
+    const what = req.permission === 'mcp' ? '想把工具提供给 agent 使用' : `的工具要用「${req.info?.title || req.permission}」${req.scope ? `（${req.scope}）` : ''}${req.reason ? `：${req.reason}` : ''}`
     const r = await deps.asks.ask({ test: false }, m, {
-      question: `「${m.name}」想把工具提供给 agent 使用${who ? `（这次是 ${who} 调用 ${toolName}）` : `（这次调用 ${toolName}）`}。允许吗？`,
+      question: `「${m.name}」${what}${who ? `（这次是 ${who} 调用 ${toolName}）` : toolName ? `（这次调用 ${toolName}）` : ''}。允许吗？`,
       options: ['始终允许', '仅这次', '禁止'],
       confirm: true,
       timeout: 300,
@@ -76,7 +77,7 @@ export function createToolHost(deps) {
     const m = deps.catalog.get(hit.plugin)
     const t0 = Date.now()
     const audit = (result, error) => deps.audit.record({ plugin: m.id, method: `mcp.${hit.tool}`, result, impl: 'tools', ms: Date.now() - t0, ...(error ? { error } : {}) })
-    const who = caller && typeof caller === 'object' ? { agent: str(caller.agent, 40) || null, pane: Number.isInteger(caller.pane) ? caller.pane : null, cwd: str(caller.cwd, 1000) || null } : null
+    const who = caller && typeof caller === 'object' ? { agent: str(caller.agent, 40) || null, pane: Number.isInteger(caller.pane) ? caller.pane : null, cwd: str(caller.cwd, 1000) || null, session: /^[\w-]{8,80}$/.test(String(caller.session || '')) ? String(caller.session) : null } : null
     try {
       await deps.perms.permit({ client: 'agent', test: false, visible: () => false, prompt: askPrompt(m, who, hit.tool) }, m, 'mcp')
     } catch (e) {
@@ -144,6 +145,8 @@ export function createToolHost(deps) {
           const id = ++seq
           const timer = setTimeout(() => { pending.delete(id); reject(err(`工具 ${tool} 超过 ${CALL_MS / 60000} 分钟没有返回`, 'ETIMEOUT')) }, CALL_MS)
           pending.set(id, { resolve, reject, timer })
+          rt.caller = caller // 工具里调平台能力要问权限时，卡片上写是谁在调
+          rt.tool = tool
           proc.send({ t: 'run', id, tool, args, caller, requestId: crypto.randomBytes(6).toString('hex') })
         })
       },
@@ -183,8 +186,8 @@ export function createToolHost(deps) {
           reply(msg.id, { ok: true, value: { applied: applied.length } })
         } catch (e) { reply(msg.id, { ok: false, error: { message: e.message } }) }
       } else if (msg.t === 'call') {
-        // 插件在工具里调平台能力（whatevertools.platform.*、showNotification）：照常查权限、记审计；没有界面能弹权限询问
-        const ctx = { client: 'agent', test: false, visible: () => false, prompt: async () => 'dismiss' }
+        // 插件在工具里调平台能力（whatevertools.platform.*、showNotification）：照常查权限、记审计；要问权限时用手机上的卡片问
+        const ctx = { client: 'agent', test: false, visible: () => false, prompt: askPrompt(m, rt.caller, rt.tool) }
         deps.rpc.call(ctx, m.id, str(msg.method, 100), msg.args).then((value) => reply(msg.id, { ok: true, value }), (e) => reply(msg.id, { ok: false, error: { message: e.message, code: e.code } }))
       } else if (msg.t === 'error') {
         deps.recordIncident?.({ source: 'plugin', component: `plugin:${m.id}`, kind: 'tools', msg: str(msg.msg, 300), detail: str(msg.stack || msg.msg, 6000), ctx: { plugin: m.id, version: m.version } })

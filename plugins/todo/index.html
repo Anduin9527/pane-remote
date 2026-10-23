@@ -8,70 +8,179 @@
     :root {
       color-scheme: light dark;
       --bg: #fff; --fg: #0a0a0a; --muted: #737373; --line: #e5e5e5; --soft: #f5f5f5; --card: #fff;
-      --accent: #16a34a; --high: #dc2626; --low: #a3a3a3; --chip: #f4f4f5;
+      --accent: #16a34a; --high: #dc2626; --chip: #f4f4f5; --shade: rgb(0 0 0 / .35); --run: #2563eb; --wait: #d97706;
+      --run-soft: #eff6ff; --wait-soft: #fffbeb; --high-soft: #fef2f2;
     }
     @media (prefers-color-scheme: dark) {
-      :root { --bg: #0a0a0a; --fg: #fafafa; --muted: #a3a3a3; --line: #262626; --soft: #171717; --card: #111; --accent: #22c55e; --high: #f87171; --low: #525252; --chip: #1c1c1e; }
+      :root { --bg: #0a0a0a; --fg: #fafafa; --muted: #a3a3a3; --line: #262626; --soft: #171717; --card: #141414; --accent: #22c55e; --high: #f87171; --chip: #1c1c1e; --shade: rgb(0 0 0 / .6); --run: #60a5fa; --wait: #fbbf24;
+        --run-soft: #172033; --wait-soft: #2a2110; --high-soft: #2a1414; }
     }
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     html, body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, -apple-system, "PingFang SC", sans-serif; }
     body { padding-bottom: calc(env(safe-area-inset-bottom) + 24px); }
+    body.locked { overflow: hidden; }
     button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
-    input, textarea { font: inherit; color: inherit; }
+    input, textarea, select { font: inherit; color: inherit; }
+    svg { display: block; }
+    [hidden] { display: none !important; }
 
     header { position: sticky; top: 0; z-index: 2; background: var(--bg); padding: 12px 16px 8px; border-bottom: 1px solid var(--line); }
-    .seg { display: flex; background: var(--soft); border-radius: 10px; padding: 3px; gap: 2px; }
-    .seg button { flex: 1; height: 32px; border-radius: 8px; font-size: 14px; color: var(--muted); }
+    .top { display: flex; gap: 6px; align-items: center; }
+    .seg { flex: 1; display: flex; background: var(--soft); border-radius: 10px; padding: 3px; gap: 2px; }
+    .seg button { flex: 1; height: 32px; border-radius: 8px; font-size: 14px; color: var(--muted); white-space: nowrap; }
     .seg button[aria-pressed="true"] { background: var(--card); color: var(--fg); font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / .08); }
+    .icon-btn { position: relative; flex: none; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; color: var(--muted); }
+    .icon-btn[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+    .icon-btn svg { width: 20px; height: 20px; }
+    .badge { position: absolute; top: 1px; right: 1px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--muted); color: var(--bg); font-size: 10px; line-height: 16px; font-weight: 600; text-align: center; }
     .chips { display: flex; gap: 6px; overflow-x: auto; margin: 10px -16px 0; padding: 0 16px; scrollbar-width: none; }
     .chips::-webkit-scrollbar { display: none; }
     .chip { flex: none; height: 28px; padding: 0 10px; border-radius: 14px; background: var(--chip); font-size: 13px; color: var(--muted); white-space: nowrap; }
     .chip[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
     .chip small { opacity: .7; margin-left: 3px; }
+    .chip.warn:not([aria-pressed="true"]) { color: var(--high); }
 
-    .add { display: flex; gap: 8px; padding: 12px 16px 4px; }
-    .add input { flex: 1; min-width: 0; height: 42px; border: 1px solid var(--line); border-radius: 10px; padding: 0 12px; background: var(--card); outline: none; }
-    .add input:focus { border-color: var(--accent); }
-    .add button { flex: none; height: 42px; padding: 0 14px; border-radius: 10px; background: var(--accent); color: #fff; font-weight: 600; }
-    .add button:disabled { opacity: .4; }
+    .add { display: flex; gap: 8px; padding: 12px 16px 4px; align-items: flex-end; }
+    .add .box { flex: 1; min-width: 0; }
+    .add input, .add textarea { width: 100%; min-height: 42px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--card); outline: none; display: block; }
+    .add textarea { resize: none; height: 84px; }
+    .add input:focus, .add textarea:focus { border-color: var(--accent); }
+    .add.ai textarea { border-color: var(--run); }
+    .add > button { flex: none; height: 42px; padding: 0 14px; border-radius: 10px; background: var(--accent); color: #fff; font-weight: 600; }
+    .add > button:disabled { opacity: .4; }
+    .add.ai > button.go { background: var(--run); }
+    .add .spark { width: 42px; padding: 0; background: var(--soft); color: var(--run); display: grid; place-items: center; }
+    .add .spark[aria-pressed="true"] { background: var(--run); color: #fff; }
+    .add .spark svg { width: 20px; height: 20px; }
+    .trash-bar { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px 4px; font-size: 13px; color: var(--muted); }
+    .trash-bar button { color: var(--high); font-size: 14px; padding: 6px 10px; border-radius: 8px; }
+    .trash-bar button.armed { background: var(--high); color: #fff; }
 
     .group { padding: 14px 16px 2px; font-size: 12px; color: var(--muted); display: flex; gap: 6px; align-items: baseline; }
     .group b { font-weight: 600; color: var(--fg); font-size: 13px; }
     .group span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    .group i { font-style: normal; margin-left: auto; }
     ul { list-style: none; margin: 0; padding: 0; }
-    li { border-bottom: 1px solid var(--line); }
+    li { border-bottom: 1px solid var(--line); background: var(--bg); }
+    li.dragging { position: relative; z-index: 5; box-shadow: 0 8px 24px rgb(0 0 0 / .18); border-radius: 10px; }
     .row { display: flex; gap: 12px; padding: 12px 16px; align-items: flex-start; }
     .check { flex: none; width: 24px; height: 24px; margin-top: 1px; border-radius: 50%; border: 2px solid var(--line); display: grid; place-items: center; transition: background .15s, border-color .15s; }
     .check.high { border-color: var(--high); }
+    .check.prog { border-color: var(--run); border-style: dashed; }
+    .check.wait { border-color: var(--wait); }
     .check svg { width: 14px; height: 14px; opacity: 0; }
-    .done .check { background: var(--accent); border-color: var(--accent); }
+    .done .check { background: var(--accent); border-color: var(--accent); border-style: solid; }
     .done .check svg { opacity: 1; }
+    .trashed .check { visibility: hidden; }
     .body { flex: 1; min-width: 0; text-align: left; }
     .title { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
-    .done .title { color: var(--muted); text-decoration: line-through; }
+    .done .title, .trashed .title { color: var(--muted); }
+    .done .title { text-decoration: line-through; }
     .note { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 1px; }
-    .meta { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 4px; font-size: 12px; color: var(--muted); }
+    .ask-line { color: var(--wait); font-size: 13px; margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .meta { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 4px; font-size: 12px; color: var(--muted); align-items: center; }
+    .pill { padding: 0 6px; border-radius: 6px; line-height: 18px; font-weight: 600; }
+    .pill.prog { background: var(--run-soft); color: var(--run); }
+    .pill.wait { background: var(--wait-soft); color: var(--wait); }
+    .pill.late { background: var(--high-soft); color: var(--high); }
     .meta .p-high { color: var(--high); font-weight: 600; }
     .meta .tag { color: var(--accent); }
-
-    .edit { padding: 0 16px 14px 52px; display: grid; gap: 10px; }
-    .edit label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
-    .edit input, .edit textarea { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--card); outline: none; font-size: 15px; }
-    .edit input:focus, .edit textarea:focus { border-color: var(--accent); }
-    .edit textarea { min-height: 72px; resize: vertical; }
-    .edit .seg button { height: 30px; font-size: 13px; }
-    .edit .info { font-size: 12px; color: var(--muted); word-break: break-all; }
-    .edit .actions { display: flex; justify-content: space-between; align-items: center; }
-    .edit .actions button { height: 34px; padding: 0 12px; border-radius: 8px; font-size: 14px; }
-    .del { color: var(--high); }
-    .del.armed { background: var(--high); color: #fff; }
-    .close { background: var(--soft); }
+    .meta .ran { color: var(--run); }
+    .handle { flex: none; width: 28px; height: 28px; margin: -2px -8px 0 0; display: grid; place-items: center; color: var(--muted); touch-action: none; cursor: grab; }
+    .handle svg { width: 18px; height: 18px; }
 
     .empty { padding: 64px 32px; text-align: center; color: var(--muted); }
-    .empty svg { width: 44px; height: 44px; opacity: .5; margin-bottom: 8px; }
+    .empty svg { width: 44px; height: 44px; opacity: .5; margin: 0 auto 8px; }
     .more { display: block; width: 100%; padding: 14px; color: var(--muted); font-size: 13px; }
 
-    #toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 20px); transform: translate(-50%, 20px); opacity: 0; pointer-events: none;
+    /* 底部面板 */
+    .shade { position: fixed; inset: 0; z-index: 10; background: var(--shade); opacity: 0; pointer-events: none; transition: opacity .2s; }
+    .shade.on { opacity: 1; pointer-events: auto; }
+    .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 11; max-height: 90vh; overflow-y: auto; overscroll-behavior: contain; background: var(--bg);
+      border-radius: 16px 16px 0 0; padding: 8px 16px calc(env(safe-area-inset-bottom) + 16px); transform: translateY(105%); transition: transform .22s ease; }
+    .sheet.on { transform: none; }
+    .grab { width: 36px; height: 5px; border-radius: 3px; background: var(--line); margin: 0 auto 10px; }
+    .s-title { font-size: 17px; font-weight: 600; word-break: break-word; }
+    .s-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; font-size: 12px; }
+    .s-note { color: var(--muted); font-size: 14px; white-space: pre-wrap; word-break: break-word; margin-top: 6px; max-height: 30vh; overflow: auto; }
+    .s-meta { font-size: 12px; color: var(--muted); margin-top: 6px; }
+    .s-links a { display: block; font-size: 13px; color: var(--run); word-break: break-all; margin-top: 2px; }
+    .askbox { margin-top: 12px; padding: 12px; border-radius: 12px; background: var(--wait-soft); }
+    .askbox .q { font-size: 14px; white-space: pre-wrap; word-break: break-word; }
+    .askbox .q b { color: var(--wait); }
+    .askbox textarea { width: 100%; margin-top: 8px; min-height: 64px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--card); outline: none; resize: vertical; }
+    .askbox .row2 { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; gap: 8px; font-size: 12px; color: var(--muted); }
+    .askbox .row2 button { height: 36px; padding: 0 16px; border-radius: 10px; background: var(--wait); color: #fff; font-weight: 600; font-size: 14px; }
+    .big { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0 10px; }
+    .big button { height: 52px; border-radius: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 6px; }
+    .big .run { background: var(--run); color: #fff; }
+    .big .chk { background: var(--soft); }
+    .big svg { width: 18px; height: 18px; }
+    .target { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 10px; background: var(--soft); font-size: 13px; }
+    .target .t { flex: 1; min-width: 0; }
+    .target .t b { font-weight: 600; }
+    .target .t small { display: block; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .target .warn { color: var(--high); }
+    .target button { flex: none; color: var(--run); font-size: 14px; padding: 4px 6px; }
+    .switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 2px; font-size: 14px; }
+    .switch small { display: block; color: var(--muted); font-size: 12px; }
+    .tog { flex: none; width: 46px; height: 28px; border-radius: 14px; background: var(--line); position: relative; transition: background .15s; }
+    .tog::after { content: ''; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / .2); transition: transform .15s; }
+    .tog[aria-checked="true"] { background: var(--accent); }
+    .tog[aria-checked="true"]::after { transform: translateX(18px); }
+    .kv { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 13px; color: var(--muted); }
+    .kv > span { flex: none; width: 56px; }
+    .kv .seg button { height: 30px; font-size: 13px; }
+    .list-btns { border-top: 1px solid var(--line); margin-top: 8px; }
+    .list-btns button { display: flex; width: 100%; align-items: center; gap: 12px; padding: 14px 2px; border-bottom: 1px solid var(--line); font-size: 15px; text-align: left; }
+    .list-btns button:last-child { border-bottom: 0; }
+    .list-btns svg { width: 20px; height: 20px; color: var(--muted); }
+    .list-btns .danger, .list-btns .danger svg { color: var(--high); }
+    .list-btns .danger.armed { background: var(--high); color: #fff; border-radius: 10px; padding-left: 10px; }
+    .list-btns .danger.armed svg { color: #fff; }
+    .field { display: grid; gap: 4px; font-size: 12px; color: var(--muted); margin-top: 12px; }
+    .field input, .field textarea, .field select { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--card); outline: none; font-size: 15px; }
+    .field input:focus, .field textarea:focus { border-color: var(--accent); }
+    .field textarea { min-height: 84px; resize: vertical; }
+    .field .seg button { height: 30px; font-size: 13px; }
+    .field .inline { display: flex; gap: 8px; align-items: center; }
+    .field .inline button { flex: none; color: var(--run); font-size: 13px; }
+    .prompt { min-height: 180px !important; font-size: 13px !important; line-height: 1.5; }
+    .foot { display: flex; gap: 10px; margin-top: 16px; }
+    .foot button { flex: 1; height: 46px; border-radius: 12px; font-weight: 600; background: var(--soft); }
+    .foot .primary { background: var(--run); color: #fff; }
+    .foot .primary:disabled { opacity: .5; }
+    .s-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+    .s-head button { color: var(--run); font-size: 15px; padding: 4px 0; min-width: 40px; text-align: left; }
+    .s-head button:last-child { text-align: right; }
+    .s-head b { flex: 1; text-align: center; font-size: 16px; }
+    .s-head span { min-width: 40px; }
+    .pick button, .opt-list button { display: block; width: 100%; text-align: left; padding: 12px 4px; border-bottom: 1px solid var(--line); }
+    .pick b { font-weight: 600; }
+    .pick small { display: block; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pick .origin { color: var(--accent); }
+    .pick .busy { color: var(--wait); }
+    .opt-list button { display: flex; justify-content: space-between; }
+    .opt-list button[aria-checked="true"] { color: var(--run); font-weight: 600; }
+    .sect { font-size: 12px; color: var(--muted); margin: 14px 2px 2px; }
+    .hint { color: var(--muted); font-size: 12px; margin: 8px 2px; }
+    .timeline { margin-top: 12px; border-top: 1px solid var(--line); }
+    .timeline > button { width: 100%; text-align: left; padding: 12px 2px; font-size: 14px; color: var(--muted); }
+    .ev { display: flex; gap: 8px; padding: 6px 2px; font-size: 13px; }
+    .ev .when { flex: none; width: 72px; color: var(--muted); font-size: 12px; }
+    .ev .what { flex: 1; min-width: 0; word-break: break-word; white-space: pre-wrap; }
+    .ev .what b { font-weight: 600; }
+    .ev.question .what { color: var(--wait); }
+    .ev.reply .what { color: var(--accent); }
+    .ops label { display: flex; gap: 10px; padding: 10px 2px; border-bottom: 1px solid var(--line); font-size: 14px; align-items: flex-start; }
+    .ops input { margin-top: 3px; width: 18px; height: 18px; accent-color: var(--run); }
+    .ops small { display: block; color: var(--muted); font-size: 12px; }
+    .ops .opk { font-weight: 600; color: var(--run); margin-right: 4px; }
+    .aireply { font-size: 14px; padding: 10px 12px; border-radius: 10px; background: var(--run-soft); margin: 8px 0; white-space: pre-wrap; }
+    .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -2px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 20px); z-index: 20; transform: translate(-50%, 20px); opacity: 0; pointer-events: none;
       background: var(--fg); color: var(--bg); border-radius: 10px; padding: 10px 14px; font-size: 14px; display: flex; gap: 14px; align-items: center; transition: .2s; max-width: calc(100% - 32px); }
     #toast.on { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
     #toast button { color: var(--accent); font-weight: 600; }
@@ -79,200 +188,28 @@
 </head>
 <body>
   <header>
-    <div class="seg" id="status" role="group">
-      <button data-v="open" aria-pressed="true"></button>
-      <button data-v="done" aria-pressed="false"></button>
-      <button data-v="all" aria-pressed="false"></button>
+    <div class="top">
+      <div class="seg" id="status" role="group">
+        <button data-v="active" aria-pressed="true"></button>
+        <button data-v="done" aria-pressed="false"></button>
+        <button data-v="all" aria-pressed="false"></button>
+      </div>
+      <button class="icon-btn" id="viewBtn"></button>
+      <button class="icon-btn" id="trashBtn" aria-pressed="false"></button>
     </div>
+    <div class="chips" id="filters"></div>
     <div class="chips" id="projects"></div>
   </header>
   <form class="add" id="addForm">
-    <input id="addInput" maxlength="200" enterkeyhint="done" autocomplete="off" />
+    <button type="button" class="spark" id="aiBtn" aria-pressed="false"></button>
+    <div class="box"><input id="addInput" maxlength="200" enterkeyhint="done" autocomplete="off" /><textarea id="aiInput" maxlength="2000" hidden></textarea></div>
     <button id="addBtn" type="submit" disabled></button>
   </form>
+  <div class="trash-bar" id="trashBar" hidden><span id="trashHint"></span><button id="emptyBtn" type="button"></button></div>
   <main id="list"></main>
+  <div class="shade" id="shade"></div>
+  <div class="sheet" id="sheet" role="dialog" aria-modal="true"></div>
   <div id="toast" role="status"><span></span><button type="button" hidden></button></div>
-
-  <script>
-    'use strict'
-    const store = window.todoStore
-    const zh = /^zh/i.test(navigator.language || 'zh')
-    const T = zh ? {
-      open: '未完成', done: '已完成', all: '全部', allProjects: '全部项目', noProject: '未分项目', add: '记下', placeholder: '记一条待办…',
-      title: '标题', note: '备注', priority: '优先级', high: '高', normal: '普通', low: '低', tags: '标签（逗号分开）', del: '删除', confirmDel: '再点一次删除', close: '收起',
-      empty: { open: '没有未完成的待办', done: '还没有完成的', all: '还没有待办' }, emptyHint: '在 pane-remote 里跑的 agent 会把要你处理的事记到这里，也可以自己在上面记。',
-      added: '已记下', removed: '已删除', undo: '撤销', reopened: '已恢复', finished: '已完成', more: '再显示 {n} 条', phone: '手机', by: '{a} · #{p}',
-      created: '{t} 由 {who} 记下', doneAt: '{t} 完成', project: '项目', justNow: '刚刚', min: '{n} 分钟前', hour: '{n} 小时前', day: '{n} 天前',
-    } : {
-      open: 'Open', done: 'Done', all: 'All', allProjects: 'All projects', noProject: 'No project', add: 'Add', placeholder: 'Add a todo…',
-      title: 'Title', note: 'Note', priority: 'Priority', high: 'High', normal: 'Normal', low: 'Low', tags: 'Tags (comma separated)', del: 'Delete', confirmDel: 'Tap again to delete', close: 'Close',
-      empty: { open: 'Nothing open', done: 'Nothing done yet', all: 'No todos yet' }, emptyHint: 'Agents running in pane-remote put things that need you here; you can add your own above.',
-      added: 'Added', removed: 'Deleted', undo: 'Undo', reopened: 'Reopened', finished: 'Done', more: 'Show {n} more', phone: 'phone', by: '{a} · #{p}',
-      created: 'Added {t} by {who}', doneAt: 'Done {t}', project: 'Project', justNow: 'just now', min: '{n} min ago', hour: '{n} h ago', day: '{n} d ago',
-    }
-    const fmt = (s, o) => s.replace(/\{(\w+)\}/g, (_, k) => (o[k] == null ? '' : o[k]))
-    const $ = (id) => document.getElementById(id)
-    const el = (tag, attrs, ...kids) => {
-      const e = document.createElement(tag)
-      for (const k in attrs || {}) { const v = attrs[k]; if (v == null || v === false) continue; if (k === 'class') e.className = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else e.setAttribute(k, v === true ? '' : v) }
-      for (const c of kids.flat()) if (c != null && c !== false) e.append(c.nodeType ? c : String(c))
-      return e
-    }
-    const CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>'
-    const ago = (t) => {
-      const s = Math.max(0, (Date.now() - t) / 1000)
-      if (s < 60) return T.justNow
-      if (s < 3600) return fmt(T.min, { n: Math.round(s / 60) })
-      if (s < 86400) return fmt(T.hour, { n: Math.round(s / 3600) })
-      if (s < 86400 * 30) return fmt(T.day, { n: Math.round(s / 86400) })
-      return new Date(t).toLocaleDateString()
-    }
-    const tilde = (p) => String(p || '').replace(/^\/(Users|home)\/[^/]+(?=\/|$)/, '~')
-    const who = (src) => !src || src.by === 'phone' ? T.phone : src.agent ? (src.pane != null ? fmt(T.by, { a: src.agent, p: src.pane }) : src.agent) : 'agent'
-
-    // ---------- 状态（筛选记在 dbStorage 里，换手机、重开都在） ----------
-    let status = utools.dbStorage.getItem('ui.status') || 'open'
-    let project = utools.dbStorage.getItem('ui.project') || ''
-    let openId = null, armedDel = null, limit = 100
-    for (const b of $('status').children) b.textContent = T[b.dataset.v]
-    $('addInput').placeholder = T.placeholder
-    $('addBtn').textContent = T.add
-
-    // ---------- 提示条（带撤销） ----------
-    let toastTimer
-    function toast(msg, undo) {
-      const t = $('toast'), btn = t.querySelector('button')
-      t.querySelector('span').textContent = msg
-      btn.hidden = !undo
-      btn.textContent = T.undo
-      btn.onclick = () => { t.classList.remove('on'); undo && undo() }
-      t.classList.add('on')
-      clearTimeout(toastTimer)
-      toastTimer = setTimeout(() => t.classList.remove('on'), undo ? 5000 : 2000)
-    }
-    function attempt(fn) { try { return fn() } catch (e) { toast(e.message); console.warn(e) } }
-
-    // ---------- 渲染 ----------
-    function render() {
-      // 正在编辑（输入框有焦点）时先不重画，失焦后补上：别把正在打的字冲掉
-      const focus = document.activeElement
-      if (focus && focus.closest && focus.closest('.edit')) { pendingRender = true; return }
-      pendingRender = false
-      for (const b of $('status').children) b.setAttribute('aria-pressed', String(b.dataset.v === status))
-      const everything = store.list({ status: 'all' })
-      // 项目标签：按当前状态筛选后的数量
-      const counts = new Map()
-      for (const d of everything) if (status === 'all' || d.status === status) counts.set(d.project || '', (counts.get(d.project || '') || 0) + 1)
-      if (project && !counts.has(project) && !everything.some((d) => d.project === project)) project = ''
-      const chips = $('projects')
-      chips.replaceChildren(
-        el('button', { class: 'chip', 'aria-pressed': String(!project), onclick: () => setProject('') }, T.allProjects),
-        ...[...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a) || a.localeCompare(b)).filter((p) => p).map((p) =>
-          el('button', { class: 'chip', 'aria-pressed': String(project === p), title: p, onclick: () => setProject(p) }, store.base(p), el('small', null, counts.get(p)))),
-      )
-      chips.hidden = counts.size < 2 && !project
-      const items = store.list({ status, project: project || 'all' })
-      const list = $('list')
-      if (!items.length) {
-        const icon = el('div')
-        list.replaceChildren(el('div', { class: 'empty' }, icon, el('div', null, T.empty[status]), el('p', null, T.emptyHint)))
-        icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>'
-        return
-      }
-      const shown = items.slice(0, limit)
-      const groups = new Map()
-      for (const d of shown) { const k = project ? project : d.project || ''; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(d) }
-      const out = []
-      for (const [k, ds] of groups) {
-        if (!project && (groups.size > 1 || k)) out.push(el('div', { class: 'group' }, el('b', null, k ? store.base(k) : T.noProject), k ? el('span', null, tilde(k)) : null))
-        out.push(el('ul', null, ds.map(item)))
-      }
-      if (items.length > limit) out.push(el('button', { class: 'more', onclick: () => { limit += 100; render() } }, fmt(T.more, { n: items.length - limit })))
-      list.replaceChildren(...out)
-    }
-    let pendingRender = false
-    document.addEventListener('focusout', () => setTimeout(() => { if (pendingRender) render() }))
-
-    function item(d) {
-      const check = el('button', { class: 'check' + (d.priority === 'high' && d.status === 'open' ? ' high' : ''), 'aria-label': d.status === 'done' ? T.open : T.done, onclick: () => toggle(d) })
-      check.innerHTML = CHECK
-      const meta = el('div', { class: 'meta' },
-        d.priority === 'high' ? el('span', { class: 'p-high' }, T.high) : d.priority === 'low' ? el('span', null, T.low) : null,
-        d.tags.map((t) => el('span', { class: 'tag' }, '#' + t)),
-        el('span', null, who(d.source)),
-        el('span', null, ago(d.status === 'done' && d.done_at ? d.done_at : d.created)),
-      )
-      const li = el('li', { class: d.status === 'done' ? 'done' : '' },
-        el('div', { class: 'row' }, check,
-          el('button', { class: 'body', onclick: () => { openId = openId === d.id ? null : d.id; armedDel = null; render() } },
-            el('div', { class: 'title' }, d.title),
-            d.note && openId !== d.id ? el('div', { class: 'note' }, d.note.split('\n')[0]) : null,
-            meta)))
-      if (openId === d.id) li.append(editor(d))
-      return li
-    }
-
-    function editor(d) {
-      const save = (patch) => attempt(() => store.update(d.id, patch))
-      const title = el('input', { value: d.title, maxlength: 200, onchange: (e) => { const v = e.target.value.trim(); if (v) save({ title: v }); else e.target.value = d.title } })
-      const note = el('textarea', { maxlength: 4000, onchange: (e) => save({ note: e.target.value }) })
-      note.value = d.note
-      const pri = el('div', { class: 'seg' }, store.PRIORITIES.map((p) => el('button', { type: 'button', 'aria-pressed': String(d.priority === p), onclick: () => { save({ priority: p }); render() } }, T[p])))
-      const tags = el('input', { value: d.tags.join(', '), onchange: (e) => save({ tags: e.target.value }) })
-      const info = [fmt(T.created, { t: new Date(d.created).toLocaleString(), who: who(d.source) })]
-      if (d.done_at) info.push(fmt(T.doneAt, { t: new Date(d.done_at).toLocaleString() }))
-      if (d.project) info.push(`${T.project}：${tilde(d.project)}`)
-      const del = el('button', { type: 'button', class: 'del' + (armedDel === d.id ? ' armed' : ''), onclick: () => {
-        if (armedDel !== d.id) { armedDel = d.id; render(); return }
-        armedDel = null; openId = null
-        const removed = attempt(() => store.remove(d.id))
-        render()
-        if (removed) toast(T.removed, () => attempt(() => { store.add({ title: removed.title, note: removed.note, priority: removed.priority, tags: removed.tags, project: removed.project }, removed.source); render() }))
-      } }, armedDel === d.id ? T.confirmDel : T.del)
-      return el('div', { class: 'edit' },
-        el('label', null, T.title, title),
-        el('label', null, T.note, note),
-        el('label', null, T.priority, pri),
-        el('label', null, T.tags, tags),
-        el('div', { class: 'info' }, info.join(' · ')),
-        el('div', { class: 'actions' }, del, el('button', { type: 'button', class: 'close', onclick: () => { document.activeElement && document.activeElement.blur(); openId = null; armedDel = null; setTimeout(render) } }, T.close)))
-    }
-
-    function toggle(d) {
-      const done = d.status !== 'done'
-      if (!attempt(() => store.setDone(d.id, done))) return
-      render()
-      toast(done ? T.finished : T.reopened, () => { attempt(() => store.setDone(d.id, !done)); render() })
-    }
-    function setProject(p) { project = p; utools.dbStorage.setItem('ui.project', p); limit = 100; render() }
-    for (const b of $('status').children) b.onclick = () => { status = b.dataset.v; utools.dbStorage.setItem('ui.status', status); limit = 100; openId = null; render() }
-
-    // ---------- 新建 ----------
-    const input = $('addInput')
-    input.addEventListener('input', () => { $('addBtn').disabled = !input.value.trim() })
-    $('addForm').addEventListener('submit', (e) => {
-      e.preventDefault()
-      const title = input.value.trim()
-      if (!title) return
-      if (attempt(() => store.add({ title, project }, { by: 'phone' }))) {
-        input.value = ''
-        $('addBtn').disabled = true
-        if (status === 'done') { status = 'open'; utools.dbStorage.setItem('ui.status', status) }
-        render()
-      }
-    })
-
-    // 主输入框里「记成待办」带进来的文字：直接记下
-    utools.onPluginEnter(({ code, payload }) => {
-      if (code === 'add' && typeof payload === 'string' && payload.trim()) {
-        if (attempt(() => store.add({ title: payload.trim().slice(0, 200), project }, { by: 'phone' }))) { toast(T.added); render() }
-      } else render()
-    })
-    // agent 经插件工具写的、别的设备改的：服务端推过来后重画
-    utools.onDbPull(() => render())
-    // 时间（「3 分钟前」）每分钟刷新一次
-    setInterval(() => { if (document.visibilityState === 'visible') render() }, 60000)
-    render()
-  </script>
+  <script src="app.js"></script>
 </body>
 </html>

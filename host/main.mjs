@@ -104,6 +104,8 @@ const calls = {
   },
   // 插件工具（给 agent 的 MCP）：服务端那边查权限（可能要在手机上问你）、起插件的工具运行时
   'plugins.tools.list': () => relayRequest({ op: 'plugins.tools.list' }, 15000),
+  // 给 agent 会话的留言（插件 platform.sessions.note 留的）：会话的 hook / MCP 来取，取走就删
+  'sessions.notes.take': ({ session }) => relayRequest({ op: 'sessions.notes.take', session: String(session || '').slice(0, 80) }, 5000),
   'plugins.tools.changed': ({ sig } = {}) => { toolsFeed.publish({ sig: String(sig ?? '').slice(0, 100) }); return true },
   'plugins.tools.call': ({ name, args, caller }) => relayRequest({ op: 'plugins.tools.call', name: String(name || '').slice(0, 64), args: args && typeof args === 'object' ? args : {}, caller: caller && typeof caller === 'object' ? caller : null }, 6 * 60000),
   ...ai.calls,

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Claude Code 的 UserPromptSubmit hook 启动脚本（见 notes-hook.mjs）：node 的找法同 bin/mcp。找不到 node 就什么都不做，绝不挡住用户的消息
+NODE=""
+ENV_FILE=${PANE_REMOTE_BRIDGE_ENV:-$HOME/.config/pane-remote/bridge.env}
+[ -f "$ENV_FILE" ] && NODE=$(sed -n 's/^NODE=//p' "$ENV_FILE" | head -1)
+[ -x "$NODE" ] || NODE=$(command -v node)
+[ -x "$NODE" ] || for n in /opt/homebrew/bin/node /usr/local/bin/node; do [ -x "$n" ] && NODE=$n && break; done
+[ -x "$NODE" ] || exit 0
+exec "$NODE" "$(cd "$(dirname "$0")" && pwd)/notes-hook.mjs"

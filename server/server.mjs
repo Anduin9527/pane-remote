@@ -704,6 +704,33 @@ function authorized(req) {
 
 // ---------- 插件平台（platform/，可选模块 plugins，默认开）：依赖是 npm 上的 @whatevertools/*（install.sh 装），没装就只是没有插件功能 ----------
 let platform = null
+// 插件的 platform.sessions：在跑 agent 的 pane（pane 列表 + 每个 pane 的 agent inspect，5 秒缓存）、往 pane 里发一段话
+let sessionsCache = null
+const agentSessions = {
+  async list() {
+    if (sessionsCache && Date.now() - sessionsCache.t < 5000) return sessionsCache.p
+    const p = (async () => {
+      const panes = (await listPanes()).filter((x) => x.workspace !== 'pane-remote-test')
+      const infos = await Promise.all(panes.map(async (x) => { try { return { x, a: JSON.parse((await bridge(`agent inspect ${x.pane}`)) || '{}') } } catch { return null } }))
+      return infos.filter((i) => i?.a?.agent).map(({ x, a }) => ({
+        pane: x.pane, agent: a.agent, session: a.session || null, cwd: a.cwd || x.dir || '', title: x.title || '', status: a.status || '',
+        startedAt: a.startedAt ? Math.round(a.startedAt * 1000) : null,
+      }))
+    })()
+    sessionsCache = { t: Date.now(), p }
+    p.catch(() => { sessionsCache = null })
+    return p
+  },
+  // 多行按粘贴发（和输入框一样），停一下再回车：Claude Code 正忙时会排进队列
+  async send(pane, text) {
+    const b64 = (t) => Buffer.from(t, 'utf8').toString('base64')
+    await bridge(`send ${pane} ${b64(text.includes('\n') ? `\x1b[200~${text}\x1b[201~` : text)}`)
+    await new Promise((r) => setTimeout(r, 150))
+    await bridge(`send ${pane} ${b64('\r')}`)
+    push.markInput(String(pane))
+    sessionsCache = null
+  },
+}
 if (config.modules.plugins !== false) try {
   const { createPlatform } = await import('../platform/index.mjs')
   platform = createPlatform({
@@ -714,11 +741,12 @@ if (config.modules.plugins !== false) try {
     recordIncident: (r) => incidents.record(r),
     host, // AI、电脑剪贴板 / 打开网址、只读文件走 pane-host
     version: APP_VERSION,
+    sessions: agentSessions,
   })
 } catch (e) { console.log(`plugins: platform disabled (${e.message})`) }
 
 // 反向通道：pane-host 连上就开一条 relay.serve 流，电脑上的本机程序（agent 的 MCP）经它请服务端办事——
-// 现在是插件工具（plugins.tools.list / plugins.tools.call，见 platform/tools.mjs）。流里带 rid 的片段是请求，s.reply 回结果。
+// 现在是插件工具（plugins.tools.list / plugins.tools.call，见 platform/tools.mjs）和给会话的留言（sessions.notes.take）。流里带 rid 的片段是请求，s.reply 回结果。
 // local 和 relay 两种模式一样：都是 pane-host 的这条连接
 let relayServe = null
 function openRelayServe() {
@@ -729,6 +757,7 @@ function openRelayServe() {
     Promise.resolve().then(() => {
       if (c.op === 'plugins.tools.list') return { tools: platform.agentTools.list() }
       if (c.op === 'plugins.tools.call') return platform.agentTools.call({ name: String(c.name || ''), args: c.args, caller: c.caller })
+      if (c.op === 'sessions.notes.take') return { notes: platform.takeSessionNotes(c.session) }
       throw Object.assign(new Error(`unknown op ${c.op}`), { code: 'EBADOP' })
     }).then((value) => s.reply(c.rid, { ok: true, value }), (e) => {
       if (!e.code) console.log(`relay.serve ${c.op}: ${e.message}`)

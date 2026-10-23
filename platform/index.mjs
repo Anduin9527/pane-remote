@@ -141,7 +141,25 @@ export function createPlatform(deps) {
     if (from !== 'tools') tools.applyDb(m.id, docs)
     for (const c of clients.values()) if (c.id !== from) send(c, { t: 'db', plugin: m.id, docs })
   }
-  const rpc = createRpc({ catalog, perms, audit, dbFor, shared, asks, notify: deps.notify, recordIncident: deps.recordIncident, host: deps.host, home, fsDirs, dbChanged })
+  // 给 agent 会话的留言（platform.sessions.note）：按会话 id 排队、存盘，会话下次收到用户消息时（hook）或调 pane-remote 工具时取走。
+  // 每个会话最多 30 条，7 天没取就丢
+  const notesFile = path.join(root, 'session-notes.json')
+  let notesData = (() => { try { return JSON.parse(fs.readFileSync(notesFile, 'utf8')) } catch { return {} } })()
+  const saveNotes = () => { try { fs.mkdirSync(root, { recursive: true }); fs.writeFileSync(notesFile + '.tmp', JSON.stringify(notesData), { mode: 0o600 }); fs.renameSync(notesFile + '.tmp', notesFile) } catch (e) { console.error(`plugins: save session notes ${e.message}`) } }
+  const sessionNotes = {
+    add(session, note) {
+      const old = Date.now() - 7 * 86400000
+      for (const k of Object.keys(notesData)) { notesData[k] = notesData[k].filter((n) => n.t > old); if (!notesData[k].length) delete notesData[k] }
+      notesData[session] = [...(notesData[session] || []), { t: Date.now(), ...note }].slice(-30)
+      saveNotes()
+    },
+    take(session) {
+      const list = notesData[session] || []
+      if (list.length) { delete notesData[session]; saveNotes() }
+      return list
+    },
+  }
+  const rpc = createRpc({ catalog, perms, audit, dbFor, shared, asks, notify: deps.notify, recordIncident: deps.recordIncident, host: deps.host, home, fsDirs, dbChanged, sessions: deps.sessions, sessionNotes })
   const tools = createToolHost({ catalog, perms, audit, dbFor, rpc, asks, dbChanged, recordIncident: deps.recordIncident, platform: PLATFORM, version: VERSION, apiVersion: PLUGIN_API, log: deps.log })
 
   const prompts = new Map() // id → { resolve, reject, timer }
@@ -321,6 +339,8 @@ export function createPlatform(deps) {
     flush: () => { for (const db of dbs.values()) db.flushSync(); tools.stopAll() },
     /** 插件工具（经 Mac 上的 pane-host 给 agent 的 MCP）：list() 工具列表；call({ name, args, caller }) → { value, plugin, tool } */
     agentTools: { list: () => tools.list(), call: (r) => tools.call(r) },
+    /** 给会话的留言：会话的 hook / MCP 经 pane-host 来取（取走就删） */
+    takeSessionNotes: (session) => (/^[\w-]{8,80}$/.test(String(session || '')) ? sessionNotes.take(String(session)) : []),
     // 测试用
     _rpc: rpc, _tools: tools, _perms: perms, _audit: audit, _catalog: catalog, _asks: asks, _fsDirs: fsDirs,
   }

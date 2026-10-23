@@ -14,7 +14,7 @@ import { APIS, findApi } from '@whatevertools/core'
 export const PLATFORM = 'pane-remote'
 // 插件 API 版本：和系统版本分开，只在插件能用的接口变了才升（加接口升次版本，改 / 删接口升主版本）。
 // 插件在 whatevertools.json 的 paneRemote.requires 里写范围（如 ">=0.2.0"），不满足的不加载、列进插件目录的问题里
-export const PLUGIN_API = '0.3.0'
+export const PLUGIN_API = '0.4.0'
 
 const unsupported = (method, why) => Object.assign(new Error(`[pane-remote] 不支持 ${method}${why ? `：${why}` : ''}`), { code: 'EWTUNSUPPORTED', method })
 const bad = (msg) => Object.assign(new Error(msg), { code: 'EBADARG' })
@@ -127,11 +127,40 @@ export const CAPS = {
   },
   // 插件工具经 MCP 暴露给 agent：用描述文件的 tools 声明 + preload 里 utools.registerTool 实现（tools.mjs），不在运行中注册
   'platform.agent.tools.register': { impl: 'none', support: 'none', why: '工具写在描述文件的 tools 里，在 preload 里用 utools.registerTool 实现（见 docs/plugins.md「插件工具」）' },
-  'platform.sessions.list': { impl: 'none', support: 'none', why: '计划中：等统一会话接口' },
+  // ---------- agent 会话（服务端按 pane 认会话；会话 id 是 agent 自己的，比如 Claude Code 的 sessionId，pane 重启后也认得出） ----------
+  'platform.sessions.list': {
+    impl: 'relay', perm: 'platform.sessions', support: 'native', note: '在跑 agent 的 pane：{ pane, agent, session, cwd, title, status, startedAt }',
+    run: ({ deps }) => sessionsOf(deps).list(),
+  },
+  'platform.sessions.send': {
+    impl: 'relay', perm: 'platform.sessions', support: 'native', note: '往会话里输入一段文字并回车（多行按粘贴发）；按 session 找它现在在哪个 pane，找不到再看 pane',
+    run: async ({ ctx, m, args, deps }) => {
+      const text = str(args?.text, 8000).trim()
+      if (!text) throw bad('要发的文字不能为空')
+      const list = await sessionsOf(deps).list()
+      const s = (args?.session && list.find((x) => x.session === args.session)) || (args?.pane != null && !args?.session ? list.find((x) => x.pane === Number(args.pane)) : null)
+      if (!s) throw Object.assign(new Error(args?.session ? '这个会话现在没在任何 pane 里运行' : '没有这个 agent 会话'), { code: 'ENOSESSION' })
+      if (ctx.test) return { pane: s.pane, agent: s.agent, session: s.session, test: true }
+      await sessionsOf(deps).send(s.pane, text)
+      return { pane: s.pane, agent: s.agent, session: s.session }
+    },
+  },
+  'platform.sessions.note': {
+    impl: 'relay', perm: 'platform.sessions', support: 'native', note: '给会话留言：它下次收到你的消息时（Claude Code 的提问 hook）或调 pane-remote 工具时一起看到，不打断它',
+    run: ({ m, args, deps }) => {
+      const session = str(args?.session, 80)
+      const text = str(args?.text, 2000).trim()
+      if (!/^[\w-]{8,80}$/.test(session) || !text) throw bad('要有会话 id 和留言内容')
+      deps.sessionNotes.add(session, { plugin: m.id, name: m.name, text })
+      return { queued: true }
+    },
+  },
 }
 
 /** 插件数据库的全部文档，含删除的墓碑（docs / tombstones 是 DocDb 的内部字段，没有对外的全量接口） */
 export const allDocs = (db) => [...Object.values(db.docs), ...Object.entries(db.tombstones).map(([id, rev]) => ({ _id: id, _rev: rev, _deleted: true }))]
+
+const sessionsOf = (deps) => { if (!deps.sessions) throw unsupported('platform.sessions', '这个服务端没有接上会话'); return deps.sessions }
 
 function httpUrl(u) {
   const url = str(u, 2000)

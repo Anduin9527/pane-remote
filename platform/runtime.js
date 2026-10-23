@@ -321,6 +321,12 @@
         remove: function (group, key) { return call('platform.storage.remove', { group: group, key: key }) },
         keys: function (group) { return call('platform.storage.keys', { group: group }) },
       },
+      // agent 会话：列出在跑的、往会话里发一段话（执行 / 检查之类）、给会话留言（它下次收到用户消息时看到）
+      sessions: {
+        list: function () { return call('platform.sessions.list', {}) },
+        send: function (o) { return call('platform.sessions.send', o || {}) },
+        note: function (o) { return call('platform.sessions.note', o || {}) },
+      },
       agent: {
         ask: function (o) { return call('platform.agent.ask', o || {}) },
         notify: function (o) { return call('platform.agent.notify', o || {}) },

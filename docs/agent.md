@@ -40,6 +40,8 @@ skill（`agent/plugin/skills/pane-remote/SKILL.md`）告诉 agent 什么时候�
 
 手机上的提问在「待办」里也能看到、直接回答。没答的问题在推送里点开就是那个 pane。
 
+插件工具（名字是 `plugin_<插件 id>_<工具名>`，比如待办的 `plugin_todo_*`）也在这里，见 [插件平台](plugins.md)「插件工具」。插件给会话的留言（比如你在手机上勾掉了它记的待办）由插件里的 `hooks/hooks.json`（Claude Code 的 UserPromptSubmit hook）在你下一次发消息时带给 agent，其他 agent 在下一次调 pane-remote 工具时附在结果后面，都不打断它。
+
 **说明**：「要你在手机上确认」是防 agent 手滑，不是安全边界——agent 本来就能执行 shell 命令。
 
 ## 重启并注入

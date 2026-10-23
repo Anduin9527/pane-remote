@@ -14,6 +14,7 @@ export const PLATFORM_PERMISSIONS = [
   { id: 'platform.incident', title: '问题报告', description: '把插件发现的问题记进 pane-remote 的问题报告', default: 'grant', risk: 'low' },
   { id: 'platform.storage', title: '共享存储', description: '读写和其他插件共用的存储组', default: 'ask', scoped: true, risk: 'medium' },
   { id: 'platform.agent', title: '向你提问 / 推送', description: '像 agent 的 ask_phone / notify_phone 一样在手机上问你、给你推送', default: 'ask', risk: 'medium' },
+  { id: 'platform.sessions', title: 'agent 会话', description: '查看在跑的 agent 会话、往会话里发消息让它干活、给会话留言（它下次收到你的消息时一起看到）', default: 'ask', risk: 'high' },
 ]
 for (const p of PLATFORM_PERMISSIONS) if (!PERMISSION_MAP[p.id]) { PERMISSIONS.push(p); PERMISSION_MAP[p.id] = p }
 

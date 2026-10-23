@@ -1,7 +1,21 @@
 {
   "id": "todo",
   "permissions": {
-    "mcp": { "reason": "让在 pane-remote 里跑的 agent 记待办、查看、勾掉" }
+    "mcp": {
+      "reason": "让在 pane-remote 里跑的 agent 记待办、查看、勾掉"
+    },
+    "platform.sessions": {
+      "reason": "把待办发回记下它的会话去执行 / 检查；你在手机上处理了待办时告诉那个会话"
+    },
+    "platform.agent": {
+      "reason": "agent 在待办里问你问题时推送到手机"
+    },
+    "ai": {
+      "reason": "「一段话」：用 Mac 上的 agent 把你说的话拆成待办操作"
+    }
   },
-  "paneRemote": { "requires": ">=0.3.0", "keepAlive": 600 }
+  "paneRemote": {
+    "requires": ">=0.4.0",
+    "keepAlive": 600
+  }
 }

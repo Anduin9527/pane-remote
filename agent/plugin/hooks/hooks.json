@@ -1,0 +1,8 @@
+{
+  "description": "pane-remote: bring plugin notes for this session (e.g. what you did on the phone to todos it created) into the next turn",
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/notes-hook\"", "timeout": 5 }] }
+    ]
+  }
+}

@@ -1,81 +1,336 @@
 {
   "pluginName": "待办",
-  "description": "跨 agent 的待办清单：在 pane-remote 里跑的 agent 经 MCP 记下要你处理或之后要做的事，手机上查看、勾掉、编辑",
-  "version": "0.1.0",
+  "description": "跨 agent 的待办清单：在 pane-remote 里跑的 agent 经 MCP 记下要你处理或之后要做的事；手机上查看、编辑、勾掉，或者一键发回对应的会话去执行 / 检查",
+  "version": "0.2.0",
   "main": "index.html",
   "logo": "logo.svg",
   "preload": "preload.js",
   "features": [
-    { "code": "todo", "explain": "打开待办清单", "cmds": ["待办", "todo", "代办", "清单"] },
-    { "code": "add", "explain": "把输入的文字记成一条待办", "cmds": [{ "type": "over", "label": "记成待办", "minLength": 1, "maxLength": 200 }] }
+    {
+      "code": "todo",
+      "explain": "打开待办清单",
+      "cmds": [
+        "待办",
+        "todo",
+        "代办",
+        "清单"
+      ]
+    },
+    {
+      "code": "add",
+      "explain": "把输入的文字记成一条待办",
+      "cmds": [
+        {
+          "type": "over",
+          "label": "记成待办",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      ]
+    }
   ],
   "tools": {
     "add": {
-      "description": "Add an item to the user's shared todo list (shown on their phone, shared by every agent they run). Use it for things the user should see or act on later: follow-ups you could not finish, decisions waiting for the user, reminders, known issues to revisit. Not a replacement for your own short-lived task list; add only items worth keeping after this session. The calling agent, pane and working directory are recorded automatically.",
+      "description": "Add an item to the user's shared todo list (shown on their phone, shared by every agent they run). Use it for things the user should see or act on later: follow-ups you could not finish, decisions waiting for the user, reminders, known issues to revisit. Set assignee: agent if an agent can do it without the user, human if it needs the user. Not a replacement for your own short-lived task list. The calling agent, pane, session and working directory are recorded automatically; call plugin_todo_list first to avoid duplicates.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "title": { "type": "string", "maxLength": 200, "description": "one line, in the user's language" },
-          "note": { "type": "string", "maxLength": 4000, "description": "details: context, links, file paths, what is left to do" },
-          "priority": { "type": "string", "enum": ["high", "normal", "low"], "description": "default normal" },
-          "tags": { "type": "array", "items": { "type": "string", "maxLength": 24 }, "maxItems": 8 },
-          "project": { "type": "string", "maxLength": 500, "description": "absolute project path; defaults to your working directory" }
+          "title": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "one line, in the user's language"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 4000,
+            "description": "details: context, file paths, what is left to do"
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "high",
+              "normal",
+              "low"
+            ]
+          },
+          "assignee": {
+            "type": "string",
+            "enum": [
+              "agent",
+              "human",
+              "undecided"
+            ],
+            "description": "who should do it: agent = an agent can do it, human = needs the user, undecided"
+          },
+          "due": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "due date YYYY-MM-DD (null clears it)"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 24
+            },
+            "maxItems": 8
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 500
+            },
+            "maxItems": 10,
+            "description": "URLs, file paths, PR links"
+          },
+          "project": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "absolute project path; defaults to your working directory"
+          }
         },
-        "required": ["title"]
+        "required": [
+          "title"
+        ]
       }
     },
     "list": {
-      "description": "List items on the user's shared todo list. Check it before adding to avoid duplicates, or when the user asks what is pending.",
+      "description": "List items on the user's shared todo list. status: open = everything not done (default), not_started, in_progress (an agent is on it), blocked (waiting for the user), done, all.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "status": { "type": "string", "enum": ["open", "done", "all"], "description": "default open" },
-          "project": { "type": "string", "maxLength": 500, "description": "\"current\" = your working directory (and below), an absolute path, or \"all\" (default)" },
-          "query": { "type": "string", "maxLength": 200, "description": "substring search in title and note" },
-          "tag": { "type": "string", "maxLength": 24 },
-          "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "default 50" }
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "not_started",
+              "in_progress",
+              "blocked",
+              "done",
+              "all"
+            ]
+          },
+          "assignee": {
+            "type": "string",
+            "enum": [
+              "agent",
+              "human",
+              "undecided"
+            ],
+            "description": "who should do it: agent = an agent can do it, human = needs the user, undecided"
+          },
+          "overdue": {
+            "type": "boolean",
+            "description": "only items past their due date"
+          },
+          "project": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "\"current\" = your working directory (and below), an absolute path, or \"all\" (default)"
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "tag": {
+            "type": "string",
+            "maxLength": 24
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "description": "default 50"
+          }
         }
       }
     },
-    "update": {
-      "description": "Change a todo item (title, note, priority, tags, project, or status open/done).",
+    "get": {
+      "description": "Get one todo item with its activity log (comments, questions, replies from the user, status changes, runs sent from the phone).",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "id": { "type": "string", "maxLength": 64 },
-          "title": { "type": "string", "maxLength": 200 },
-          "note": { "type": "string", "maxLength": 4000, "description": "replaces the note" },
-          "priority": { "type": "string", "enum": ["high", "normal", "low"] },
-          "tags": { "type": "array", "items": { "type": "string", "maxLength": 24 }, "maxItems": 8 },
-          "project": { "type": "string", "maxLength": 500 },
-          "status": { "type": "string", "enum": ["open", "done"] }
+          "id": {
+            "type": "string",
+            "maxLength": 64
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "start": {
+      "description": "Claim a todo item before you work on it: status becomes in_progress and the user sees which session is on it. Refuses if another live session already claimed it (pass force: true to take over).",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "force": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "comment": {
+      "description": "Add a progress note to a todo item's activity log, or ask the user something with needs_reply: true (status becomes blocked, the question is pushed to their phone, and their reply comes back to this session).",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "needs_reply": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "text"
+        ]
+      }
+    },
+    "update": {
+      "description": "Change a todo item: title, note, priority, assignee, due, tags, links, project, or status (open / in_progress / blocked / done; blocked needs blocker = what you need from the user).",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 4000,
+            "description": "replaces the note"
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "high",
+              "normal",
+              "low"
+            ]
+          },
+          "assignee": {
+            "type": "string",
+            "enum": [
+              "agent",
+              "human",
+              "undecided"
+            ],
+            "description": "who should do it: agent = an agent can do it, human = needs the user, undecided"
+          },
+          "due": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "due date YYYY-MM-DD (null clears it)"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 24
+            },
+            "maxItems": 8
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 500
+            },
+            "maxItems": 10,
+            "description": "URLs, file paths, PR links"
+          },
+          "project": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "in_progress",
+              "blocked",
+              "done"
+            ]
+          },
+          "blocker": {
+            "type": "string",
+            "maxLength": 2000
+          }
+        },
+        "required": [
+          "id"
+        ]
       }
     },
     "done": {
-      "description": "Mark a todo item as done (or reopen it with reopen: true), optionally appending a short note about how it was resolved.",
+      "description": "Mark a todo item as done (or reopen it with reopen: true), optionally with a short note about how it was resolved.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "id": { "type": "string", "maxLength": 64 },
-          "note": { "type": "string", "maxLength": 1000, "description": "appended to the note, e.g. what was done" },
-          "reopen": { "type": "boolean" }
+          "id": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "reopen": {
+            "type": "boolean"
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       }
     },
     "remove": {
-      "description": "Delete a todo item permanently. Only when the user asks for it or the item was added by mistake; finished work should be marked done instead.",
+      "description": "Move a todo item to the trash (the user can restore it within 30 days). Only when the user asks for it or the item was added by mistake; finished work should be marked done instead.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
-        "properties": { "id": { "type": "string", "maxLength": 64 } },
-        "required": ["id"]
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "id"
+        ]
       }
     }
   }

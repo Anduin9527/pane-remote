@@ -59,7 +59,7 @@ pane-remote 专属的配置写在 `whatevertools.json` 的 `paneRemote` 里：
 示例：
 
 - `plugins/hello/`（plugin.json + index.html）：dbStorage、通知、复制、问题报告、共享存储、在手机上提问。
-- `plugins/todo/`（plugin.json + preload.js + index.html）：给 agent 的 MCP 工具（`tools` + `registerTool`）、`onDbPull` 实时更新、手机上的待办清单。
+- `plugins/todo/`（plugin.json + preload.js + index.html + app.js）：给 agent 的 MCP 工具（`tools` + `registerTool`）、`onDbPull` 实时更新、`platform.sessions`（发回会话执行、留言）、`platform.ai.complete`（一段话拆成操作）。
 - `plugins/ai-demo/`（whatevertools.json + index.html）：`utools.allAiModels()` 选模型和推理等级、`utools.ai(…, onChunk)` 流式回答、停止（abort）、从相册附一张图（先在页面里缩到长边 1280 的 JPEG）。
 
 ## 入口匹配
@@ -149,6 +149,7 @@ pane-remote 专属的权限项：
 | `platform.incident` | 授予 | 把插件发现的问题记进问题报告 |
 | `platform.storage` | 询问（按组） | 读写共享存储组；「始终允许」只对问的那个组有效 |
 | `platform.agent` | 询问 | 在手机上提问、推送 |
+| `platform.sessions` | 询问 | 查看 agent 会话、往会话里发消息、给会话留言 |
 
 ## 能力表与 support
 
@@ -315,6 +316,25 @@ utools.registerTool('add', async ({ title }, ctx) => {
 - 只认声明在描述文件 `tools` 里、插件有 preload 的工具；工具名只许字母数字 `_` `-`，`inputSchema` 必须是对象。`platform.agent.tools.register`（运行中注册）不做：工具列表要在插件没运行时就能给出来。
 
 示例：`plugins/todo/`（待办）。
+
+## agent 会话（platform.sessions）
+
+插件可以看到在跑的 agent 会话、往会话里发一段话让它干活、给会话留言。要权限 `platform.sessions`（默认询问，风险高：发给会话的话 agent 会照着做）。
+
+```js
+const list = await whatevertools.platform.sessions.list()
+// [{ pane: 2, agent: 'claude', session: '7b7c…', cwd: '/path/to/project', title, status: 'busy' | 'idle' | …, startedAt }]
+
+// 发一段话（多行按粘贴发）并回车；按 session 找它现在在哪个 pane（pane 重启换了编号也认得），没有 session 再看 pane
+await whatevertools.platform.sessions.send({ session: '7b7c…', text: '…' })   // → { pane, agent, session }；会话不在了回 ENOSESSION
+
+// 留言：不打断它，它下次收到用户的消息时（Claude Code 的 UserPromptSubmit hook）或调 pane-remote 工具时一起看到
+await whatevertools.platform.sessions.note({ session: '7b7c…', text: '用户在手机上把 X 勾掉了' })
+```
+
+- 会话 id 是 agent 自己的（Claude Code 的 sessionId）。agent 经 MCP 调插件工具时，`ctx.caller.session` 就是它，插件记下来，以后发回同一个会话。
+- 留言存在服务端（`plugins/session-notes.json`），每个会话最多 30 条、7 天没取就丢；取走就删。取的路径：agent 插件的 `hooks/hooks.json`（UserPromptSubmit → `bin/notes-hook` → pane-host `sessions.notes.take` → 服务端），或者 MCP 每次工具调用顺便取、附在结果后面。
+- 插件工具运行时里同样能用（`whatevertools.platform.sessions`）。工具里要用到别的权限（推送、AI……）时，没有界面能弹询问，用「在手机上问你」的卡片问。
 
 ## 数据同步
 

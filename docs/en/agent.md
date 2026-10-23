@@ -40,6 +40,8 @@ The skill (`agent/plugin/skills/pane-remote/SKILL.md`) tells the agent when to u
 
 Questions also show up in the inbox, where you can answer them directly. Tapping the push opens that pane.
 
+Plugin tools (named `plugin_<plugin id>_<tool>`, such as the Todo plugin's `plugin_todo_*`) show up here too; see [Plugin platform](plugins.md), "Plugin tools". Notes plugins leave for a session (e.g. you checked off a todo it created) reach Claude Code through the plugin's `hooks/hooks.json` (a UserPromptSubmit hook) with your next message, and other agents with their next pane-remote tool call, appended to the result; neither interrupts the agent.
+
 **Note**: the phone confirmations protect against agent mistakes; they are not a security boundary. The agent can already run shell commands.
 
 ## Restart and load

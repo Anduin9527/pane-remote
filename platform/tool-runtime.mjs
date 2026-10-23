@@ -128,6 +128,11 @@ function buildApi(boot) {
       remove: (group, key) => callPlatform('platform.storage.remove', { group, key }),
       keys: (group) => callPlatform('platform.storage.keys', { group }),
     },
+    sessions: {
+      list: () => callPlatform('platform.sessions.list', {}),
+      send: (o) => callPlatform('platform.sessions.send', o || {}),
+      note: (o) => callPlatform('platform.sessions.note', o || {}),
+    },
     agent: {
       ask: (o) => callPlatform('platform.agent.ask', o || {}),
       notify: (o) => callPlatform('platform.agent.notify', o || {}),

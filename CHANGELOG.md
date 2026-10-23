@@ -8,6 +8,23 @@ earlier work predates the public repository.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-23 — Todo collaboration
+
+### Added
+- Todo: who should do it (agent / needs the user / undecided), status in progress (with the claiming session) and waiting for you (the agent's question), due dates with overdue marking, links, an activity log, and a recycle bin (restore within 30 days, empty, delete forever). Deleting from the phone and the agent's `remove` both go to the trash.
+- Todo: tap an item to run it or check it now; the prompt (with the item id and how to report back) goes to the session that created it, or once to another session you pick. Optional subagent mode is remembered. Running marks the item in progress.
+- Todo: agents can claim items (`plugin_todo_start`, refuses if another live session has it), comment, and ask you (`plugin_todo_comment` with `needs_reply`: pushed to the phone; your reply is sent straight back to that session). New tools `get`, `start`, `comment`; `list` filters by status, who and overdue.
+- Todo: what you do on the phone (done, reopen, edit, comment, delete, restore) is passed to the session that created or claimed the item, without interrupting it: it sees it with your next message or its next pane-remote tool call. Old items get their session id backfilled from the pane they were added in.
+- Todo: quick filters (needs me, agent can do, in progress, undecided, overdue), sort (smart, due, priority, newest, recently updated, manual), group by project, tag, priority, status or who, and drag to reorder (manual order is synced).
+- Todo: free-text input analyzed by AI (the plugin AI API) into operations (add, edit, done, delete, comment, run, check), shown for confirmation before they are applied.
+- Plugin API 0.4.0: `platform.sessions.list / send / note` (permission `platform.sessions`). Session notes reach Claude Code through a UserPromptSubmit hook in the agent plugin (`agent/plugin/hooks/hooks.json`) and any agent through pane-remote tool results. Tool handlers get `ctx.caller.session`.
+
+### Changed
+- Permissions needed inside a plugin tool runtime (push, AI…) are asked with the phone card instead of being refused.
+
+### Fixed
+- Todo filter chips with no items no longer render as "null".
+
 ## [0.10.1] - 2026-10-23
 
 ### Changed

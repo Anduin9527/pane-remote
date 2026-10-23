@@ -155,8 +155,30 @@ async function refreshPluginTools(maxAgeMs = 20000, timeoutMs = 4000) {
     return false
   }
 }
+// 这个 agent 的会话 id（Claude Code 的 sessionId 之类）：插件记下它，pane 重启、换了编号后也能找回这个会话。
+// 用 bridge 的 agent inspect 查（/clear 之后会变），缓存 1 分钟
+let sessionCache = { t: 0, id: null }
+function mySession() {
+  if (PANE == null) return null
+  if (Date.now() - sessionCache.t < 60000) return sessionCache.id
+  let id = null
+  try { id = JSON.parse(bridge(`agent inspect ${PANE}`) || '{}').session || null } catch {} // ignore: 查不到就不记
+  sessionCache = { t: Date.now(), id }
+  return id
+}
+// 插件给这个会话的留言（用户在手机上对它建的待办做了什么）：调 pane-remote 工具时顺便取走，附在结果后面
+async function takeNotes() {
+  const session = mySession()
+  if (!session) return ''
+  try {
+    const r = await hostCall('sessions.notes.take', { session }, 1500)
+    return formatNotes(r?.notes)
+  } catch { return '' }
+}
+const formatNotes = (notes) => (Array.isArray(notes) && notes.length ? `\n\n[pane-remote] Updates for this session since you last heard:\n${notes.map((n) => `- ${n.name || n.plugin}: ${n.text}`).join('\n')}` : '')
+
 async function callPluginTool(name, args) {
-  const caller = { agent: AGENT, pane: PANE, cwd: process.cwd() }
+  const caller = { agent: AGENT, pane: PANE, cwd: process.cwd(), session: mySession() }
   try {
     return await hostCall('plugins.tools.call', { name, args, caller }, 7 * 60000)
   } catch (e) {
@@ -306,7 +328,7 @@ async function handle(m) {
         try {
           const r = await callPluginTool(name, m.params.arguments || {})
           const v = r?.value
-          const text = typeof v === 'string' ? v : JSON.stringify(v ?? null, null, 1)
+          const text = (typeof v === 'string' ? v : JSON.stringify(v ?? null, null, 1)) + await takeNotes()
           return out({ id: m.id, result: { content: [{ type: 'text', text }], ...(v && typeof v === 'object' && !Array.isArray(v) && pluginTools.get(name).outputSchema ? { structuredContent: v } : {}) } })
         } catch (e) {
           if (!(e instanceof UserError)) incident({ source: 'mac', component: 'mcp', ikind: 'plugin-tool', msg: `${name}: ${String(e.message || e).slice(0, 500)}`, detail: e.stack, fixing: FIXING || undefined })
@@ -317,7 +339,7 @@ async function handle(m) {
       if (!t) return out({ id: m.id, error: { code: -32602, message: `unknown tool ${name}${pluginToolsErr ? `（插件工具列表拿不到：${pluginToolsErr}）` : ''}` } })
       try {
         const r = await t.run(m.params.arguments || {})
-        return out({ id: m.id, result: { content: [{ type: 'text', text: typeof r === 'string' ? r : JSON.stringify(r, null, 1) }] } })
+        return out({ id: m.id, result: { content: [{ type: 'text', text: (typeof r === 'string' ? r : JSON.stringify(r, null, 1)) + await takeNotes() }] } })
       } catch (e) {
         // 意外的出错（bridge 失败、代码错误）自动记一条问题报告；正常的拒绝（UserError）不记
         if (!(e instanceof UserError)) incident({ source: 'mac', component: 'mcp', ikind: m.params.name, msg: `${m.params.name}: ${String(e.message || e).slice(0, 500)}`, detail: e.stack, fixing: FIXING || undefined })

@@ -59,7 +59,7 @@ The reasons in `permissions` are shown in permission prompts; declaring a permis
 Samples:
 
 - `plugins/hello/` (plugin.json + index.html): dbStorage, notifications, copy, incident reports, shared storage, asking on the phone.
-- `plugins/todo/` (plugin.json + preload.js + index.html): MCP tools for agents (`tools` + `registerTool`), live updates with `onDbPull`, a todo list on the phone.
+- `plugins/todo/` (plugin.json + preload.js + index.html + app.js): MCP tools for agents (`tools` + `registerTool`), live updates with `onDbPull`, `platform.sessions` (send an item back to its session to run or check it, leave notes), `platform.ai.complete` (free text turned into operations).
 - `plugins/ai-demo/` (whatevertools.json + index.html): pick a model and reasoning level with `utools.allAiModels()`, streamed answers with `utools.ai(…, onChunk)`, stop (abort), attach a photo (downscaled in the page to a JPEG with a 1280 px long edge).
 
 ## Entry matching
@@ -149,6 +149,7 @@ pane-remote specific permissions:
 | `platform.incident` | granted | Record problems the plugin finds in the incident reports |
 | `platform.storage` | ask (per group) | Read and write a shared storage group; Always allow only covers the group asked about |
 | `platform.agent` | ask | Ask questions on the phone, send pushes |
+| `platform.sessions` | ask | See running agent sessions, send them a message, leave them notes |
 
 ## Capability table and support
 
@@ -315,6 +316,25 @@ How it runs:
 - Only tools declared in the manifest's `tools` of a plugin with a preload count; tool names may only contain letters, digits, `_` and `-`, and `inputSchema` must be an object. Registering at runtime (`platform.agent.tools.register`) is not supported: the list has to be known while the plugin isn't running.
 
 Example: `plugins/todo/` (Todo).
+
+## Agent sessions (platform.sessions)
+
+Plugins can see the running agent sessions, send a session a message to act on, and leave it notes. Needs the `platform.sessions` permission (ask by default; high risk: the agent acts on what is sent).
+
+```js
+const list = await whatevertools.platform.sessions.list()
+// [{ pane: 2, agent: 'claude', session: '7b7c…', cwd: '/path/to/project', title, status: 'busy' | 'idle' | …, startedAt }]
+
+// Type a message (multi-line goes as a paste) and press Enter; finds the session's current pane by id (survives pane renumbering), otherwise uses pane
+await whatevertools.platform.sessions.send({ session: '7b7c…', text: '…' })   // → { pane, agent, session }; ENOSESSION if it is gone
+
+// Note: doesn't interrupt; the session sees it with the user's next message (Claude Code UserPromptSubmit hook) or its next pane-remote tool call
+await whatevertools.platform.sessions.note({ session: '7b7c…', text: 'The user checked off X on their phone' })
+```
+
+- The session id is the agent's own (Claude Code's sessionId). When an agent calls a plugin tool over MCP, `ctx.caller.session` is that id; plugins store it to send things back to the same session later.
+- Notes are kept on the server (`plugins/session-notes.json`), at most 30 per session, dropped after 7 days unread, deleted once taken. They are taken by the agent plugin's `hooks/hooks.json` (UserPromptSubmit → `bin/notes-hook` → pane-host `sessions.notes.take` → server) or by the MCP on each tool call, appended to the result.
+- Also available in the plugin tool runtime. Permissions needed there (push, AI…) are asked with the phone card, since there is no UI to prompt.
 
 ## Data sync
 
