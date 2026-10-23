@@ -26,6 +26,7 @@
   import Lock from '@lucide/svelte/icons/lock'
   import Undo2 from '@lucide/svelte/icons/undo-2'
   import Monitor from '@lucide/svelte/icons/monitor'
+  import MonitorUp from '@lucide/svelte/icons/monitor-up'
   import ChevronDown from '@lucide/svelte/icons/chevron-down'
   import Ellipsis from '@lucide/svelte/icons/ellipsis'
   import Maximize from '@lucide/svelte/icons/maximize'
@@ -82,13 +83,13 @@
   let hi = $state(load('screenHi', '0') === '1') // 清晰模式：按屏幕的实际像素发（流量大约 4 倍）
 
   // ---------- 显示器：只用来显示选屏按钮；位置换算在电脑上的转码代理里 ----------
-  type Disp = { name: string }
+  type Disp = { name: string; x: number; y: number; w: number; h: number } // 位置是系统坐标（点，原点在主屏左下角）
   let displays = $state<Disp[]>([])
   let selected = $state(Number(load('screenDisplay', '0')) || 0)
   async function loadDisplays() {
     try {
       const { displays: ds } = await getJson<{ displays: Disp[] }>('displays')
-      displays = ds.map((d) => ({ name: d.name }))
+      displays = ds.map((d) => ({ name: d.name, x: d.x, y: d.y, w: d.w, h: d.h }))
     } catch { displays = [] }
     if (selected >= displays.length) selected = 0
   }
@@ -116,7 +117,7 @@
     else sendView()
   }
   // ---------- 按窗口看 ----------
-  type Win = { id: number; pid: number; app: string; bundle: string; title: string; onScreen: boolean; w: number; h: number }
+  type Win = { id: number; pid: number; app: string; bundle: string; title: string; onScreen: boolean; x?: number; y?: number; w: number; h: number }
   type App = { bundle: string; name: string; running: boolean; tray?: boolean }
   let winView = $state<Win | null>(null) // 正在看的窗口；null = 看整块屏
   let winStale = $state(false)
@@ -179,6 +180,28 @@
     clearTimeout(confirmTimer)
     confirmTimer = setTimeout(() => (confirmKey = ''), 3000)
     return false
+  }
+  // ---------- 把窗口挪到另一块显示器（大小不变、放不下就缩；挪完正在看的窗口画面会跟着走） ----------
+  let movingId = $state(0) // 哪个窗口在选目标屏（窗口列表里）
+  let moveBusy = $state(false)
+  /** 窗口中心在哪块屏上：窗口坐标是左上角原点，显示器是左下角原点 */
+  function dispOf(w: { x?: number; y?: number; w: number; h: number }) {
+    if (w.x == null || w.y == null || !displays.length) return -1
+    const mainH = displays[0].h, cx = w.x + w.w / 2, cy = w.y + w.h / 2
+    return displays.findIndex((d) => cx >= d.x && cx < d.x + d.w && cy >= mainH - d.y - d.h && cy < mainH - d.y)
+  }
+  async function moveWin(w: Win, display: number) {
+    if (moveBusy) return
+    moveBusy = true
+    try {
+      await postJson('api/screen/move', { id: w.id, display })
+      showNote(t('已挪到 {name}', { name: shortName(displays[display]?.name || '') }))
+      movingId = 0; moreOpen = false
+      await loadWindows()
+      const nw = wins.find((x) => x.id === w.id)
+      if (nw && winView?.id === w.id) winView = { ...winView, x: nw.x, y: nw.y }
+    } catch (e) { const m = tr((e as Error).message); showNote(m); pickErr = m }
+    moveBusy = false
   }
   async function closeWin(w: Win) {
     try { await postJson('api/screen/close', { id: w.id }); await new Promise((r) => setTimeout(r, 600)); await loadWindows() } catch (e) { pickErr = tr((e as Error).message) }
@@ -859,6 +882,15 @@
   const chip = 'h-7 flex-none rounded-full bg-white/10 px-2.5 text-[12px] text-white/80 active:bg-white/25'
 </script>
 
+{#snippet moveChips(w: Win)}
+  {@const cur = dispOf(w)}
+  <div class="flex flex-wrap gap-1.5 px-2.5 pt-1 pb-2">
+    {#each displays as d, i (i)}
+      <button class={cn(chip, i === cur && 'bg-primary/30 text-white')} disabled={moveBusy || i === cur} onclick={() => moveWin(w, i)}>{i === 0 ? '★ ' : ''}{shortName(d.name)}{i === cur ? ` · ${t('现在在这')}` : ''}</button>
+    {/each}
+  </div>
+{/snippet}
+
 {#snippet quitBtns(bundle: string)}
   {#if stuck.includes(bundle)}
     <button class={cn(chip, 'flex-none', confirmKey === `force:${bundle}` ? 'bg-red-600 text-white' : 'text-red-300')} onclick={() => quitApp(bundle, true)}>{confirmKey === `force:${bundle}` ? t('确认强制退出？') : t('强制退出')}</button>
@@ -933,6 +965,10 @@
           <button class="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left active:bg-white/10" onclick={startResize}>
             <Scaling class="size-4 text-white/60" /><span class="flex-1">{t('调整窗口大小')}</span>
           </button>
+          {#if displays.length > 1}
+            <div class="flex items-center gap-2 px-2.5 pt-2 pb-1 text-white/80"><MonitorUp class="size-4 text-white/60" /><span class="flex-1">{t('挪到别的显示器')}</span></div>
+            {@render moveChips(winView)}
+          {/if}
           <button class="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left active:bg-white/10" onclick={() => { restoreFront(); moreOpen = false }}>
             <Undo2 class="size-4 text-white/60" /><span class="flex-1">{t('切回原来的前台 app')}</span>
           </button>
@@ -977,10 +1013,14 @@
                   {#if thumb(w)}<span class="flex-none text-[11px] text-white/40">{t('台前调度收起（点了会切到前台）')}</span>
                   {:else if !w.onScreen}<span class="flex-none text-[11px] text-white/40">{t('别的桌面 / 最小化')}</span>{/if}
                 </button>
+                {#if displays.length > 1 && w.bundle !== 'com.apple.Spotlight'}
+                  <button class={cn('grid size-9 flex-none place-items-center rounded-lg text-white/50 active:bg-white/15', movingId === w.id && 'bg-white/15 text-white')} aria-label={t('挪到别的显示器')} onclick={() => (movingId = movingId === w.id ? 0 : w.id)}><MonitorUp class="size-4" /></button>
+                {/if}
                 {#if w.bundle !== 'com.apple.Spotlight'}
                   <button class="grid size-9 flex-none place-items-center rounded-lg text-white/50 active:bg-white/15" aria-label={t('关闭这个窗口')} onclick={() => closeWin(w)}><X class="size-4" /></button>
                 {/if}
               </div>
+              {#if movingId === w.id}{@render moveChips(w)}{/if}
             {/each}
           {/each}
           {#if idle.length}

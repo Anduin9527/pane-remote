@@ -8,6 +8,11 @@ earlier work predates the public repository.
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-10-23 — Move a window to another display
+
+### Added
+- Screen module: move a window to another display, from the window list (monitor button on each row) or from More while viewing that window. Size is kept (shrunk if it doesn't fit) and so is its relative position; the window stream follows it. New `mousectl` command `w move <windowID> <display>`, bridge `screen-move`, endpoint `POST /api/screen/move`.
+
 ## [0.13.0] - 2026-10-23 — Agent tasks in Todo
 
 ### Added

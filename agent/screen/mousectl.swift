@@ -13,6 +13,7 @@
 //   `w place <windowID> <size|fill|left|right|aspect|check> [a] [b]`  用辅助功能直接设窗口位置 / 大小（不拖、不切前台）：
 //       size = 宽 a × 高 b（点，左上角不动）；fill / left / right = 占满 / 左半 / 右半个所在显示器的可用区域；aspect = 按 a:b 的比例尽量大、居中；check = 只看能不能改
 //       回一行 `ok <x> <y> <宽> <高>` 或 `error: …`
+//   `w move <windowID> <屏序号>`  把窗口挪到另一块显示器（序号跟 NSScreen.screens 一样，0 是主屏）：大小不变（放不下就缩），在可用区域里的相对位置不变；回同上
 //   `w quit <bundleId> <0|1>`  退出 app：0 = 正常退出（app 能保存），1 = 强制退出
 //   `w stream <windowID|s屏序号> <0|1>`  这条连接从此变成二进制画面流：只录这个窗口（或整块显示器），1 = 按像素（清晰）、0 = 按点
 //       [1, W u16, H u16] 画面尺寸   [2, x, y, w, h (u16), w*h*4 字节 BGRA] 变了的区域
@@ -281,6 +282,46 @@ func placeWindow(_ id: CGWindowID, _ mode: String, _ a: Double, _ b: Double) -> 
   AXUIElementSetAttributeValue(w, kAXSizeAttribute as CFString, AXValueCreate(.cgSize, &size)!)
   usleep(150_000)
   return out(frame())
+}
+/** 把窗口挪到第 idx 块显示器：保持大小（放不下就缩到可用区域里）和它在原屏可用区域里的相对位置 */
+func moveWindow(_ id: CGWindowID, _ idx: Int) -> String {
+  guard let w = axWindow(id) else { return "error: window not found" }
+  let screens = NSScreen.screens
+  guard idx >= 0, idx < screens.count else { return "error: no such display" }
+  var fs: CFTypeRef?
+  if AXUIElementCopyAttributeValue(w, "AXFullScreen" as CFString, &fs) == .success, (fs as? Bool) == true { return "error: 全屏的窗口不能挪，先退出全屏" }
+  var ps: DarwinBoolean = false
+  AXUIElementIsAttributeSettable(w, kAXPositionAttribute as CFString, &ps)
+  guard ps.boolValue else { return "error: 这个窗口不能挪" }
+  AXUIElementSetAttributeValue(w, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+  func frame() -> CGRect {
+    var p = CGPoint.zero, s = CGSize.zero, r: CFTypeRef?
+    if AXUIElementCopyAttributeValue(w, kAXPositionAttribute as CFString, &r) == .success { AXValueGetValue(r as! AXValue, .cgPoint, &p) }
+    if AXUIElementCopyAttributeValue(w, kAXSizeAttribute as CFString, &r) == .success { AXValueGetValue(r as! AXValue, .cgSize, &s) }
+    return CGRect(origin: p, size: s)
+  }
+  let cur = frame()
+  let mainH = screens.first?.frame.height ?? 0
+  let u = { (f: NSRect) in CGRect(x: f.minX, y: mainH - f.maxY, width: f.width, height: f.height) }(screens[idx].visibleFrame)
+  let from = usableRect(around: cur)
+  var t = cur
+  t.size = CGSize(width: min(cur.width, u.width), height: min(cur.height, u.height))
+  // 相对位置：窗口在原屏可用区域里左上角的比例（能挪动的余量里占几成）
+  let fx = from.width > cur.width ? (cur.minX - from.minX) / (from.width - cur.width) : 0.5
+  let fy = from.height > cur.height ? (cur.minY - from.minY) / (from.height - cur.height) : 0
+  t.origin = CGPoint(x: u.minX + max(0, min(1, fx)) * (u.width - t.width), y: u.minY + max(0, min(1, fy)) * (u.height - t.height))
+  var o = t.origin
+  AXUIElementSetAttributeValue(w, kAXPositionAttribute as CFString, AXValueCreate(.cgPoint, &o)!)
+  if t.size != cur.size {
+    var size = t.size
+    AXUIElementSetAttributeValue(w, kAXSizeAttribute as CFString, AXValueCreate(.cgSize, &size)!)
+    // 有的 app 先改位置时会被系统拦在屏幕边上，改完大小再设一次位置
+    AXUIElementSetAttributeValue(w, kAXPositionAttribute as CFString, AXValueCreate(.cgPoint, &o)!)
+  }
+  usleep(150_000)
+  let r = frame()
+  guard u.insetBy(dx: -2, dy: -40).contains(CGPoint(x: r.midX, y: r.midY)) else { return "error: 窗口没挪过去（这个 app 可能不让挪）" }
+  return "ok \(Int(r.minX)) \(Int(r.minY)) \(Int(r.width)) \(Int(r.height))"
 }
 // 系统自己的进程不让从手机上退出
 let protectedBundles: Set<String> = ["com.apple.finder", "com.apple.dock", "com.apple.loginwindow", "com.apple.systemuiserver", "com.apple.WindowManager", "com.apple.controlcenter", "com.apple.notificationcenterui", "com.apple.Spotlight"]
@@ -633,6 +674,7 @@ while true {
             let mode = String(f[3]), a = f.count > 4 ? Double(f[4]) ?? 0 : 0, b = f.count > 5 ? Double(f[5]) ?? 0 : 0
             reply(c, queue.sync { placeWindow(id, mode, a, b) })
           }
+          else if f[1] == "move", f.count == 4, let id = UInt32(f[2]), let idx = Int(f[3]) { reply(c, queue.sync { moveWindow(id, idx) }) }
           else if f[1] == "quit", f.count == 4 { let id = String(f[2]), force = f[3] == "1"; reply(c, queue.sync { quitApp(id, force: force) }) }
           else if f[1] == "stream", f.count == 4, f[2].hasPrefix("s"), let idx = Int(f[2].dropFirst()) {
             // 整块显示器：s<序号>，序号跟 NSScreen.screens 的顺序一样（0 是主屏）

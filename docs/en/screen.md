@@ -13,10 +13,11 @@ Once enabled, a screen icon appears in the phone's top bar. Tap it and sign in w
 
 ## What it does
 
-The header is a single row: close and the source dropdown (displays / current window / choose a window…) on the left; keyboard, input mode (direct touch / trackpad) and More (quality, open keyboard on text fields, sideways, fit whole screen, resize window, switch back to the previous front app) on the right.
+The header is a single row: close and the source dropdown (displays / current window / choose a window…) on the left; keyboard, input mode (direct touch / trackpad) and More (quality, open keyboard on text fields, sideways, fit whole screen, resize window, move to another display, switch back to the previous front app) on the right.
 
 - **One display**: pick it in the source dropdown (★ is the main display). Quality "Data saver" sends at point resolution (4× fewer pixels), "Sharp" sends actual pixels
 - **One window**: "Choose a window…" lists every capturable window (including ones on other desktops or parked by Stage Manager, even when Stage Manager has shrunk a background-launched window to a tiny thumbnail), with search. Only that window is captured and it stays in the background; the first tap brings it forward, and More → "Switch back to the previous front app" restores the previous front app
+- **Move to another display** (only with more than one display): the monitor button on each window in the list, or "Move to another display" under More while viewing a window; tap the target display. The size is kept (shrunk if it doesn't fit) and so is the relative position; the window you're viewing stays in view. Full-screen windows have to leave full screen first
 - **Close windows, quit apps**: each window in the list has a ×, which presses that window's own close button (same as clicking the red button on the Mac; the app shows its own save prompt if needed). Each app has "Quit" (a normal quit, so the app can save), which needs a second tap within 3 seconds; "Force quit" only appears if the app is still running 3 seconds after a normal quit, and also needs two taps. System processes such as Finder, the Dock and Spotlight can't be quit
 - **Resize windows** (in window view, More → "Resize window"): drag the right, bottom or corner handle; the phone draws the target outline and the window is resized once when you let go. Presets: "Fit phone" (as large as possible at the phone's aspect ratio, centered), "Fill", "Left half", "Right half" (all within the window's display minus the menu bar and Dock)
 - **Launch apps in the background**: below the windows are apps without windows. "Open in background" doesn't steal focus, and the new window is picked automatically once it appears. Menu-bar-only apps show "Summon" instead: Spotlight uses its shortcut from System Settings, uTools uses the show hotkey from its own settings, and other apps get their menu bar icon clicked
@@ -44,7 +45,7 @@ transcoding proxy (agent/screen/proxy.mjs, on the Mac) ── frames (display / 
 macOS Screen Sharing
 ```
 
-Window list, app list, launching, closing windows and quitting apps go through plain HTTP endpoints (`GET /api/screen/displays|windows|apps`, `POST /api/screen/launch|summon|close|quit`), which in turn ask mousectl via the bridge.
+Window list, app list, launching, closing windows and quitting apps go through plain HTTP endpoints (`GET /api/screen/displays|windows|apps`, `POST /api/screen/launch|summon|close|move|quit`), which in turn ask mousectl via the bridge.
 
 ## Where the picture comes from
 
@@ -84,6 +85,7 @@ The "front app" always comes from Accessibility (`AXFocusedApplication`), fallin
 
 - **Resize**: mousectl `w place` sets the window's position and size directly through Accessibility (`AXPosition` / `AXSize`), without dragging edges or activating the window. When growing it moves the window first so the app doesn't clip it at the screen edge. Windows that can't be resized say so
 - **Close**: presses the close button the window exposes in Accessibility (`AXCloseButton`), same as the red button
+- **Move to another display**: sets the window position through Accessibility (`AXPosition`, plus `AXSize` when it has to shrink); no dragging, no activation
 - **Quit**: `NSRunningApplication.terminate()` (normal) / `forceTerminate()` (force); mousectl refuses system processes (Finder, Dock, loginwindow, Control Center and so on)
 
 ## macOS quirks we hit

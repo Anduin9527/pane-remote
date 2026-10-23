@@ -49,6 +49,9 @@ export default {
   '屏幕加载失败，刷新页面再试': 'Failed to load the screen view. Reload the page and try again',
   // 关窗口 / 退出 app
   关闭这个窗口: 'Close this window',
+  挪到别的显示器: 'Move to another display',
+  '已挪到 {name}': 'Moved to {name}',
+  现在在这: 'here now',
   退出: 'Quit',
   '确认退出？': 'Quit? Tap again',
   强制退出: 'Force quit',
