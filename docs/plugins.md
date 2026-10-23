@@ -184,7 +184,8 @@ support 表初稿（完整的以 `GET /api/plugins/support` 为准，whatevertoo
 | `getFeatures`、`isDarkColors`、`getAppName`、`getAppVersion`、`isMacOS` 等 | emulated | 插件页 | `isMacOS/isWindows/isLinux` 都是 false（插件跑在手机上） |
 | `setExpandHeight` | mock | 插件页 | 插件总是占满屏幕 |
 | `shellOpenPath`、`showOpenDialog`、`getPath`、`getPluginTempPath`、`copyImage`、`copyFile`、`getCopiedFiles`、`screenCapture`、`simulate*`、`hideMainWindowPaste*`、`readCurrentFolderPath`、`getNativeId`、`getUser`、`runFFmpeg`、`ubrowser` | none | 电脑（还没接上） | |
-| `sharp`、`requestSchedule`、`setFeature`、面板输入框、`findInPage`、付费 | none | 无 | sharp 以后可以用 `@whatevertools/sharp-canvas` 在手机上做 |
+| `requestSchedule` / `getSchedules` / `removeSchedule` / `onScheduleTrigger` | emulated | 服务端 + 工具运行时 | 见「定时任务」；触发只在 preload 里 |
+| `sharp`、`setFeature`、面板输入框、`findInPage`、付费 | none | 无 | sharp 以后可以用 `@whatevertools/sharp-canvas` 在手机上做 |
 | `require('fs')` 等 Node 模块（preload） | none | 无 | preload 照常按 `<script>` 执行，`require` 一律报清楚的错；读电脑上的文件用 `platform.fs` |
 
 插件可以先用 `whatevertools.supports(name)` 判断（不支持的返回 `false`，旧名也认）。不支持的 API 也有同名函数，调用时抛 `code: 'EWTUNSUPPORTED'`。
@@ -316,6 +317,23 @@ utools.registerTool('add', async ({ title }, ctx) => {
 - 只认声明在描述文件 `tools` 里、插件有 preload 的工具；工具名只许字母数字 `_` `-`，`inputSchema` 必须是对象。`platform.agent.tools.register`（运行中注册）不做：工具列表要在插件没运行时就能给出来。
 
 示例：`plugins/todo/`（待办）。
+
+## 定时任务（requestSchedule）
+
+和 uTools 一样：`utools.requestSchedule({ code, label, trigger })` 请求创建（权限 `schedule`，默认询问），`trigger` 是时间戳（一次性）或 `{ cron: '分 时 日 月 周', startTime?, endTime? }`（重复）；`getSchedules()` 同步返回列表（带 successCount / failureCount / lastExecuteAt / lastStatus），`removeSchedule(code)` 删除。
+
+```js
+// preload.js：触发时在服务端的工具运行时里调（手机不用开着插件）
+utools.onScheduleTrigger(({ code }) => {
+  if (code === 'daily') return whatevertools.platform.call('system.notify', { title: '每日提醒', body: '…' })   // 回调抛错 / rejected 算失败
+})
+// 页面里：用户打开开关时
+await utools.requestSchedule({ code: 'daily', label: '每日提醒', trigger: { cron: '0 9 * * *' } })
+```
+
+- 用的是 whatevertools core 的 `Scheduler`：每分钟查一次 cron（服务端休眠后最多补 60 分钟），一次性任务用定时器，上一次没跑完不叠加。存在服务端数据目录的 `plugins/schedules.json`，服务端重启后接着跑。时间按服务端所在的时区（单机模式就是这台电脑的时区）。
+- 触发只发生在插件的 **preload** 里（工具运行时，见「插件工具」）：没有 preload 的插件不能创建定时任务；页面里注册的 `onScheduleTrigger` 不会被调。回调里要用的权限（推送等）没授权过时，用手机上的卡片问——所以最好在页面里打开开关时就先用一次（比如发一条确认通知），免得到点才问。
+- 每个插件最多 20 个。每次触发记审计（`schedule.<code>`）。
 
 ## agent 会话（platform.sessions）
 

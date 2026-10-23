@@ -151,6 +151,16 @@ export function createToolHost(deps) {
         })
       },
       db(docs) { if (!dead && docs.length) try { proc.send({ t: 'db', docs }) } catch {} }, // ignore: 正在退出
+      trigger(code) {
+        return new Promise((resolve, reject) => {
+          const id = ++seq
+          const timer = setTimeout(() => { pending.delete(id); reject(err(`定时任务 ${code} 超过 ${CALL_MS / 60000} 分钟没有完成`, 'ETIMEOUT')) }, CALL_MS)
+          pending.set(id, { resolve, reject, timer })
+          rt.caller = null
+          rt.tool = `定时任务 ${code}`
+          proc.send({ t: 'schedule', id, code })
+        })
+      },
     }
     const bootTimer = setTimeout(() => { failReady(err(`插件「${m.name}」的工具运行时 ${BOOT_MS / 1000} 秒没起来`, 'ETOOLDOWN')); rt.stop('boot timeout') }, BOOT_MS)
     const reply = (id, p) => { try { proc.send({ t: 'reply', id, ...p }) } catch {} } // ignore: 子进程已经退出
@@ -159,7 +169,7 @@ export function createToolHost(deps) {
       if (msg.t === 'hello') {
         const db = await deps.dbFor(m)
         const docs = [...Object.values(db.docs), ...Object.entries(db.tombstones).map(([id, rev]) => ({ _id: id, _rev: rev, _deleted: true }))]
-        proc.send({ t: 'init', code, filename: `/plugins/${m.id}/${m.preload}`, boot: { plugin: { id: m.id, name: m.name, version: m.version, features: m.features }, platform: { name: deps.platform, version: deps.version, api: deps.apiVersion }, docs } })
+        proc.send({ t: 'init', code, filename: `/plugins/${m.id}/${m.preload}`, boot: { plugin: { id: m.id, name: m.name, version: m.version, features: m.features }, platform: { name: deps.platform, version: deps.version, api: deps.apiVersion }, docs, schedules: deps.schedules?.(m.id) || [] } })
       } else if (msg.t === 'ready') {
         clearTimeout(bootTimer)
         if (msg.error) {
@@ -202,9 +212,26 @@ export function createToolHost(deps) {
     return rt
   }
 
+  /** 定时任务触发：在插件的工具运行时里调 onScheduleTrigger（回调出错 / 返回 rejected 算失败） */
+  async function runSchedule(pluginId, code) {
+    const m = deps.catalog.get(pluginId)
+    if (!m) throw err(`插件不在了：${pluginId}`, 'ENOPLUGIN')
+    if (!m.preload) throw err(`插件「${m.name}」没有 preload，收不到定时任务`, 'ENOTOOL')
+    const t0 = Date.now()
+    try {
+      const rt = await runtime(m)
+      await rt.trigger(code)
+      deps.audit.record({ plugin: m.id, method: `schedule.${code}`, result: 'ok', impl: 'tools', ms: Date.now() - t0 })
+    } catch (e) {
+      deps.audit.record({ plugin: m.id, method: `schedule.${code}`, result: 'error', impl: 'tools', ms: Date.now() - t0, error: e.message })
+      throw e
+    }
+  }
+
   return {
     list,
     call,
+    runSchedule,
     /** 插件的数据在别处改了（手机上的插件页）：推给正在跑的运行时 */
     applyDb(pluginId, docs) { runtimes.get(pluginId)?.db(docs) },
     stopAll() { for (const rt of [...runtimes.values()]) rt.stop('shutdown') },

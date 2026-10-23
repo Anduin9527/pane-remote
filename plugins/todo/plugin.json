@@ -1,7 +1,7 @@
 {
   "pluginName": "待办",
   "description": "跨 agent 的待办清单：在 pane-remote 里跑的 agent 经 MCP 记下要你处理或之后要做的事；手机上查看、编辑、勾掉，或者一键发回对应的会话去执行 / 检查",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "main": "index.html",
   "logo": "logo.svg",
   "preload": "preload.js",

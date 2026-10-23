@@ -153,3 +153,36 @@ test('platform.sessions：列出、按会话 id 找到 pane 发送、留言取�
   pf.flush()
   assert.ok(fs.existsSync(path.join(dataDir, 'plugins/session-notes.json')), '留言存盘（服务端重启不丢）')
 })
+
+test('定时任务：request 存下来，触发时在工具运行时里调 onScheduleTrigger；待办过期提醒推送，全局关掉 / 单条静音都生效', async () => {
+  const { pf, pushed, dataDir } = makePlatform()
+  const m = pf._catalog.get('todo')
+  for (const p of ['schedule', 'notification', 'storage']) pf._perms.set(m, p, 'grant')
+  const ctx = { client: 'p1', test: false, visible: () => false, prompt: async () => 'dismiss' }
+  const list = await pf._rpc.call(ctx, 'todo', 'schedule.request', { code: 'overdue-reminder', label: '待办过期提醒', trigger: { cron: '0 9 * * *' } })
+  assert.deepEqual(list.map((t) => [t.code, t.trigger.cron]), [['overdue-reminder', '0 9 * * *']])
+  await assert.rejects(pf._rpc.call(ctx, 'todo', 'schedule.request', { code: 'x', label: 'x', trigger: { cron: 'bad' } }), /cron/)
+  // 一条过期、一条今天截止、一条静音的、一条没截止
+  const d = new Date(); const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  const doc = (id, extra) => ({ _id: `todo/${id}`, _rev: '1-a', title: id, status: 'open', priority: 'normal', tags: [], created: 1, updated: 1, ...extra })
+  await pf._rpc.call(ctx, 'todo', 'db.push', { docs: [doc('late', { due: '2000-01-01' }), doc('today', { due: today }), doc('muted', { due: '2000-01-01', remind_muted: true }), doc('nodue')] })
+  await pf._scheduler.fire('todo', 'overdue-reminder')
+  assert.equal(pushed.length, 1)
+  assert.match(pushed[0].title, /1 条过期，1 条今天截止/)
+  assert.match(pushed[0].body, /late；today/)
+  assert.doesNotMatch(pushed[0].body, /muted/)
+  assert.equal(pf._scheduler.list('todo')[0].successCount, 1)
+  // 全局关掉（dbStorage remind.off）：不推送，任务照样算成功
+  await pf._rpc.call(ctx, 'todo', 'db.push', { docs: [{ _id: '\u0000storage/remind.off', _rev: '1-z', value: true }] })
+  await new Promise((r) => setTimeout(r, 50))
+  await pf._scheduler.fire('todo', 'overdue-reminder')
+  assert.equal(pushed.length, 1)
+  assert.equal(pf._scheduler.list('todo')[0].successCount, 2)
+  // 删除；存盘（重启后还在）
+  await pf._rpc.call(ctx, 'todo', 'schedule.remove', { code: 'overdue-reminder' })
+  assert.equal(pf._scheduler.list('todo').length, 0)
+  await pf._rpc.call(ctx, 'todo', 'schedule.request', { code: 'again', label: 'a', trigger: { cron: '*/5 * * * *' } })
+  pf.flush()
+  assert.match(fs.readFileSync(path.join(dataDir, 'plugins/schedules.json'), 'utf8'), /again/)
+  await assert.rejects(pf._rpc.call(ctx, 'hello', 'schedule.request', { code: 'h', label: 'h', trigger: { cron: '* * * * *' } }), (e) => e.code === 'EWTPERM' || /preload/.test(e.message))
+})

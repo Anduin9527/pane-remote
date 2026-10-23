@@ -18,7 +18,8 @@ export const PLATFORM_PERMISSIONS = [
 ]
 for (const p of PLATFORM_PERMISSIONS) if (!PERMISSION_MAP[p.id]) { PERMISSIONS.push(p); PERMISSION_MAP[p.id] = p }
 
-class FileHostStore extends MemoryHostStore {
+/** 存成一个 JSON 文件的 HostStore（权限、定时任务共用） */
+export class FileHostStore extends MemoryHostStore {
   constructor(file) {
     super()
     this.file = file

@@ -44,6 +44,8 @@
     nRestore: '用户在手机上从回收站恢复了待办「{t}」({id})', nPurge: '用户在手机上彻底删除了待办「{t}」({id})', nEdit: '用户在手机上修改了待办「{t}」({id})：{f}',
     nComment: '用户在待办「{t}」({id}) 下评论：{c}', nReply: '[待办 {id}] 用户回复了你在「{t}」里的问题：{c}', nType: '用户把待办「{t}」({id}) 的处理类型改成了「{v}」', nSentOther: '用户把待办「{t}」({id}) 发给了 {to} 去{k}',
     aiWorking: '正在分析…', aiNone: '没有看出要做什么', aiApply: '执行 {n} 项', aiNoModel: 'Mac 上没有可用的 AI 模型', aiDone: '已执行 {n} 项',
+    remind: '过期提醒', remindHint: '每天 {t} 推送过期和今天截止的待办（单独静音的除外）', remindOff: '已关闭，不会推送', remindAt: '提醒时间', remindOn: '过期提醒已打开：每天 {t}',
+    remindItem: '提醒这条', remindItemHint: '过期或今天截止时一起推送', remindFail: '没打开过期提醒：{e}',
     opAdd: '新建', opUpdate: '修改', opDone: '完成', opReopen: '重新打开', opTrash: '删除', opComment: '评论', opRun: '发去执行', opCheck: '发去检查', opMissing: '（找不到这条）',
   } : {
     active: 'Open', done: 'Done', all: 'All', trash: 'Trash', allProjects: 'All projects', noProject: 'No project', add: 'Add', placeholder: 'Add a todo…',
@@ -77,6 +79,8 @@
     nRestore: 'The user restored todo "{t}" ({id}) from the trash', nPurge: 'The user permanently deleted todo "{t}" ({id})', nEdit: 'The user edited todo "{t}" ({id}): {f}',
     nComment: 'The user commented on todo "{t}" ({id}): {c}', nReply: '[todo {id}] The user answered your question in "{t}": {c}', nType: 'The user set todo "{t}" ({id}) to "{v}"', nSentOther: 'The user sent todo "{t}" ({id}) to {to} to {k}',
     aiWorking: 'Analyzing…', aiNone: 'Nothing to do found', aiApply: 'Apply {n}', aiNoModel: 'No AI model available on the Mac', aiDone: 'Applied {n}',
+    remind: 'Overdue reminder', remindHint: 'Every day at {t}, push overdue and due-today todos (except muted ones)', remindOff: 'Off, nothing is pushed', remindAt: 'Time', remindOn: 'Overdue reminder on: every day at {t}',
+    remindItem: 'Remind me about this one', remindItemHint: 'Included when it is overdue or due today', remindFail: 'Could not turn on the reminder: {e}',
     opAdd: 'Add', opUpdate: 'Edit', opDone: 'Done', opReopen: 'Reopen', opTrash: 'Delete', opComment: 'Comment', opRun: 'Run', opCheck: 'Check', opMissing: ' (not found)',
   }
   const PHONE = { by: 'phone' }
@@ -440,6 +444,38 @@
     box.replaceChildren(...kids.filter(Boolean))
   }
 
+  // ---------- 过期提醒（插件定时任务：每天固定时间在服务端触发 preload 里的回调，推送到手机） ----------
+  const remindTime = () => kv.getItem('remind.time') || '09:00'
+  const remindOn = () => !kv.getItem('remind.off') && utools.getSchedules().some((t) => t.code === store.REMIND_CODE)
+  async function enableReminder(time, quiet) {
+    const [h, m] = time.split(':').map(Number)
+    try {
+      await utools.requestSchedule({ code: store.REMIND_CODE, label: zh ? '待办过期提醒' : 'Todo overdue reminder', trigger: { cron: `${m} ${h} * * *` } })
+      setKv('remind.time', time)
+      setKv('remind.off', false)
+      // 顺便要到通知权限（不然到点推送时没人能答应）：在页面里就是一条提示
+      await platform.call('system.notify', { body: fmt(T.remindOn, { t: time }) }).catch(() => {})
+    } catch (e) { if (!quiet) toast(fmt(T.remindFail, { e: e.message })); else console.warn('[todo] reminder', e.message) }
+    renderSheet()
+  }
+  function disableReminder() {
+    setKv('remind.off', true)
+    try { if (utools.getSchedules().some((t) => t.code === store.REMIND_CODE)) utools.removeSchedule(store.REMIND_CODE) } catch (e) { console.warn(e) }
+    renderSheet()
+  }
+  function reminderSection() {
+    const on = remindOn()
+    const times = []
+    for (let h = 6; h <= 22; h++) for (const mm of ['00', '30']) times.push(`${String(h).padStart(2, '0')}:${mm}`)
+    const sel = el('select', { onchange: (e) => enableReminder(e.target.value) }, times.map((t) => { const o = el('option', { value: t }, t); if (t === remindTime()) o.selected = true; return o }))
+    return [
+      el('div', { class: 'sect' }, T.remind),
+      el('div', { class: 'switch' }, el('div', null, T.remind, el('small', null, on ? fmt(T.remindHint, { t: remindTime() }) : T.remindOff)),
+        el('button', { type: 'button', class: 'tog', role: 'switch', 'aria-checked': String(on), 'aria-label': T.remind, onclick: () => (on ? disableReminder() : enableReminder(remindTime())) })),
+      on ? el('label', { class: 'field' }, T.remindAt, sel) : null,
+    ]
+  }
+
   function viewSheet() {
     const opt = (cur, v, label, set) => el('button', { type: 'button', role: 'radio', 'aria-checked': String(cur === v), onclick: () => { set(v); render() } }, label, cur === v ? '✓' : '')
     return [
@@ -449,6 +485,7 @@
       el('div', { class: 'hint' }, T.dragHint),
       el('div', { class: 'sect' }, T.group),
       el('div', { class: 'opt-list' }, [['project', T.gProject], ['tag', T.gTag], ['priority', T.gPriority], ['status', T.gStatus], ['type', T.gType], ['none', T.gNone]].map(([v, l]) => opt(groupBy, v, l, (x) => { groupBy = x; setKv('ui.group', x) }))),
+      ...reminderSection(),
     ]
   }
 
@@ -528,6 +565,10 @@
       if (v === d.assignee) return
       if (attempt(() => store.update(d.id, { assignee: v }, PHONE))) { noteSession(d, 'nType', { v: T[v] }); render() }
     }))
+    if (d.due && d.status !== 'done') {
+      out.push(el('div', { class: 'switch' }, el('div', null, T.remindItem, el('small', null, T.remindItemHint)),
+        el('button', { type: 'button', class: 'tog', role: 'switch', 'aria-checked': String(!d.remind_muted), 'aria-label': T.remindItem, onclick: () => { attempt(() => store.setRemindMuted(d.id, !d.remind_muted)); renderSheet() } })))
+    }
     if (sheet.commenting) {
       const ta = el('textarea', { placeholder: T.commentPh, maxlength: 2000, oninput: (e) => { sheet.comment = e.target.value } })
       ta.value = sheet.comment || ''
@@ -861,6 +902,11 @@
   setInterval(() => { if (document.visibilityState === 'visible' && !sheet && !dragging) render() }, 60000)
   attempt(() => store.purgeOld())
   render()
+  // 过期提醒默认开：第一次打开时建好定时任务（会问「定时任务」和「通知」权限），之后照你的开关来
+  if (!kv.getItem('remind.setup')) {
+    setKv('remind.setup', true)
+    if (!kv.getItem('remind.off') && !utools.getSchedules().some((t) => t.code === store.REMIND_CODE)) enableReminder(remindTime(), true)
+  }
   // 有 agent 记的老待办没有会话 id：先找一次会话，补上
   if (store.list({ status: 'all' }).some((d) => d.source && d.source.by === 'agent' && !d.source.session)) loadSessions()
   window.__todoApp = { render, analyze, applyOps } // 测试用

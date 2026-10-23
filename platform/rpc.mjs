@@ -14,7 +14,7 @@ import { APIS, findApi } from '@whatevertools/core'
 export const PLATFORM = 'pane-remote'
 // 插件 API 版本：和系统版本分开，只在插件能用的接口变了才升（加接口升次版本，改 / 删接口升主版本）。
 // 插件在 whatevertools.json 的 paneRemote.requires 里写范围（如 ">=0.2.0"），不满足的不加载、列进插件目录的问题里
-export const PLUGIN_API = '0.4.0'
+export const PLUGIN_API = '0.5.0'
 
 const unsupported = (method, why) => Object.assign(new Error(`[pane-remote] 不支持 ${method}${why ? `：${why}` : ''}`), { code: 'EWTUNSUPPORTED', method })
 const bad = (msg) => Object.assign(new Error(msg), { code: 'EBADARG' })
@@ -127,6 +127,20 @@ export const CAPS = {
   },
   // 插件工具经 MCP 暴露给 agent：用描述文件的 tools 声明 + preload 里 utools.registerTool 实现（tools.mjs），不在运行中注册
   'platform.agent.tools.register': { impl: 'none', support: 'none', why: '工具写在描述文件的 tools 里，在 preload 里用 utools.registerTool 实现（见 docs/plugins.md「插件工具」）' },
+  // ---------- 定时任务（uTools 的 requestSchedule / getSchedules / removeSchedule；用 core 的 Scheduler，存服务端数据目录） ----------
+  // 触发时在插件的工具运行时里跑 preload 注册的 onScheduleTrigger（手机不用开着插件）；没有 preload 的插件触发记失败
+  'schedule.request': {
+    impl: 'relay', perm: 'schedule', support: 'emulated', note: '触发时在插件的无界面运行时里调 preload 注册的 onScheduleTrigger；时间按服务端所在时区',
+    run: ({ m, args, deps }) => {
+      if (!m.preload) throw bad('定时任务要在 preload 里用 onScheduleTrigger 处理：这个插件没有 preload')
+      const trigger = typeof args?.trigger === 'number' ? args.trigger : args?.trigger && typeof args.trigger === 'object' ? { cron: str(args.trigger.cron, 100), ...(Number.isFinite(args.trigger.startTime) ? { startTime: args.trigger.startTime } : {}), ...(Number.isFinite(args.trigger.endTime) ? { endTime: args.trigger.endTime } : {}) } : null
+      if (deps.scheduler.list(m.id).length >= 20 && !deps.scheduler.list(m.id).some((t) => t.code === args?.code)) throw bad('每个插件最多 20 个定时任务')
+      deps.scheduler.add(m.id, { code: str(args?.code, 64), label: str(args?.label, 100), trigger })
+      return deps.scheduler.list(m.id)
+    },
+  },
+  'schedule.list': { impl: 'relay', perm: 'schedule', support: 'emulated', run: ({ m, deps }) => deps.scheduler.list(m.id) },
+  'schedule.remove': { impl: 'relay', perm: 'schedule', support: 'emulated', run: ({ m, args, deps }) => { deps.scheduler.remove(m.id, str(args?.code, 64)); return deps.scheduler.list(m.id) } },
   // ---------- agent 会话（服务端按 pane 认会话；会话 id 是 agent 自己的，比如 Claude Code 的 sessionId，pane 重启后也认得出） ----------
   'platform.sessions.list': {
     impl: 'relay', perm: 'platform.sessions', support: 'native', note: '在跑 agent 的 pane：{ pane, agent, session, cwd, title, status, startedAt }',
@@ -246,6 +260,7 @@ const LOCAL = {
   'system.isMac': 'emulated', 'system.isWindows': 'emulated', 'system.isLinux': 'emulated', 'system.isDark': 'emulated', 'system.onThemeChange': 'emulated',
   'db.put': 'emulated', 'db.get': 'emulated', 'db.remove': 'emulated', 'db.bulk': 'emulated', 'db.all': 'emulated', 'db.getAttachmentType': 'emulated', 'db.onPull': 'emulated',
   'kv.set': 'emulated', 'kv.get': 'emulated', 'kv.remove': 'emulated', 'features.list': 'emulated', 'panel.setHeight': 'mock',
+  'schedule.onTrigger': 'emulated', // 只在插件的 preload 里收到（定时任务在工具运行时里触发）
   'tools.register': 'emulated', // ai.chat 的工具调用；描述文件 tools 里声明了的，还经 MCP 给 agent 用（tools.mjs）
 }
 

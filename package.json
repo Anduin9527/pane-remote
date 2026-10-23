@@ -1,6 +1,6 @@
 {
   "name": "pane-remote",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "private": true,
   "description": "用手机查看和操作电脑上 WezTerm 里的终端、Claude Code / Codex 会话",
   "license": "MIT",

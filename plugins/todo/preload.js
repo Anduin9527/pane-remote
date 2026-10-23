@@ -70,6 +70,7 @@
       log: d.log || [],
       runs: d.runs || [],
       order: typeof d.order === 'number' ? d.order : null,
+      remind_muted: !!d.remind_muted,
       created: d.created,
       updated: d.updated,
       done_at: d.done_at || null,
@@ -231,6 +232,14 @@
       ids.forEach(function (id, i) { save(id, function (d) { if (d.order === i) return false; d.order = i }) })
     },
     get: function (id) { return view(get(id)) },
+    /** 这一条不提醒过期（全局开关在 dbStorage 的 remind.off） */
+    setRemindMuted: function (id, muted) { return save(id, function (d) { if (!!d.remind_muted === !!muted) return false; d.remind_muted = !!muted }) },
+    /** 要提醒的：没做完、过期或今天截止、没静音 */
+    dueForReminder: function () {
+      var day = today()
+      var list = this.list({ status: 'active', sort: 'due' }).filter(function (d) { return d.due && d.due <= day && !d.remind_muted })
+      return { overdue: list.filter(function (d) { return d.due < day }), today: list.filter(function (d) { return d.due === day }) }
+    },
     /**
      * status：active（没做完的：open + in_progress + blocked，默认）| open | in_progress | blocked | done | all | trash
      * 另外 assignee、project（路径，含子目录；'all'）、tag、overdue、query（搜标题和备注）
@@ -285,6 +294,22 @@
     },
   }
   window.todoStore = store
+
+  // ---------- 过期提醒（定时任务 REMIND_CODE，页面里打开 / 关掉；触发时在这里推送） ----------
+  store.REMIND_CODE = 'overdue-reminder'
+  if (typeof window.utools.onScheduleTrigger === 'function') {
+    window.utools.onScheduleTrigger(function (a) {
+      if (!a || a.code !== store.REMIND_CODE) return
+      if (window.utools.dbStorage.getItem('remind.off')) return
+      var r = store.dueForReminder()
+      var n = r.overdue.length + r.today.length
+      if (!n) return
+      var head = [r.overdue.length ? r.overdue.length + ' 条过期' : '', r.today.length ? r.today.length + ' 条今天截止' : ''].filter(Boolean).join('，')
+      var names = r.overdue.concat(r.today).slice(0, 4).map(function (d) { return d.title.slice(0, 24) }).join('；')
+      // 推送到手机（点开进待办）；失败（没有通知权限之类）就让这次任务记失败
+      return window.whatevertools.platform.call('system.notify', { title: '待办：' + head, body: names + (n > 4 ? ' 等' : '') })
+    })
+  }
 
   // ---------- 给 agent 的工具（说明和参数在 plugin.json 的 tools 里） ----------
   if (typeof window.utools.registerTool !== 'function') return

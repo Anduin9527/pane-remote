@@ -106,6 +106,7 @@
   var docs = {}, tombs = {}, atts = (BOOT.db && BOOT.db.atts) || {}, attCache = {}
   ;((BOOT.db && BOOT.db.docs) || []).forEach(function (d) { if (d._deleted) tombs[d._id] = d._rev; else docs[d._id] = d })
   var outbox = {}, outN = 0, flushTimer = null, failing = false
+  var schedules = BOOT.schedules || []
   function clone(v) { return v === undefined ? v : JSON.parse(JSON.stringify(v)) }
   function revN(rev) { return rev ? Number(String(rev).split('-')[0]) || 0 : 0 }
   function nextRev(prev) { return (revN(prev) + 1) + '-' + Math.random().toString(16).slice(2, 10) + Date.now().toString(16) }
@@ -279,6 +280,17 @@
       models: function () { return call('ai.models', {}) },
     },
     tools: { register: function (name, handler) { if (typeof handler === 'function') tools[String(name)] = handler } },
+    // 定时任务：创建 / 删除经服务端；列表同步返回（启动时带一份，改了就更新）。触发只发生在插件的 preload（工具运行时）里，页面里注册的回调不会被调
+    schedule: {
+      request: function (s) { return call('schedule.request', s || {}).then(function (list) { schedules = list || schedules }) },
+      list: function () { return clone(schedules) },
+      remove: function (code) {
+        if (!schedules.some(function (t) { return t.code === code })) throw new Error('定时任务不存在：' + code)
+        schedules = schedules.filter(function (t) { return t.code !== code })
+        fire(call('schedule.remove', { code: code }).then(function (list) { schedules = list || schedules }))
+      },
+      onTrigger: function () {},
+    },
     platform: {
       info: function () { return { name: BOOT.platform.name, version: BOOT.platform.version, api: BOOT.platform.api, plugin: P.id } },
       call: call, // 以后加的 platform.* 方法不用改运行时也能调

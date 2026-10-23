@@ -184,7 +184,8 @@ Support table summary (the full one is `GET /api/plugins/support`, one row for e
 | `getFeatures`, `isDarkColors`, `getAppName`, `getAppVersion`, `isMacOS`, … | emulated | plugin page | `isMacOS/isWindows/isLinux` are all false (the plugin runs on the phone) |
 | `setExpandHeight` | mock | plugin page | Plugins always fill the screen |
 | `shellOpenPath`, `showOpenDialog`, `getPath`, `getPluginTempPath`, `copyImage`, `copyFile`, `getCopiedFiles`, `screenCapture`, `simulate*`, `hideMainWindowPaste*`, `readCurrentFolderPath`, `getNativeId`, `getUser`, `runFFmpeg`, `ubrowser` | none | computer (not yet) | |
-| `sharp`, `requestSchedule`, `setFeature`, panel input box, `findInPage`, payments | none | — | |
+| `requestSchedule` / `getSchedules` / `removeSchedule` / `onScheduleTrigger` | emulated | server + tool runtime | see "Schedules"; triggers only reach the preload |
+| `sharp`, `setFeature`, panel input box, `findInPage`, payments | none | — | |
 | Node modules via `require('fs')` etc. (preload) | none | — | preload still runs as a `<script>`; `require` throws a clear error. Use `platform.fs` for files on the computer |
 
 Plugins can check with `whatevertools.supports(name)` first (false for unsupported, old names work). Unsupported APIs still exist as functions and throw `code: 'EWTUNSUPPORTED'`.
@@ -316,6 +317,23 @@ How it runs:
 - Only tools declared in the manifest's `tools` of a plugin with a preload count; tool names may only contain letters, digits, `_` and `-`, and `inputSchema` must be an object. Registering at runtime (`platform.agent.tools.register`) is not supported: the list has to be known while the plugin isn't running.
 
 Example: `plugins/todo/` (Todo).
+
+## Schedules (requestSchedule)
+
+Same as uTools: `utools.requestSchedule({ code, label, trigger })` asks to create one (permission `schedule`, asks by default). `trigger` is a timestamp (one-off) or `{ cron: 'min hour day month weekday', startTime?, endTime? }` (repeating). `getSchedules()` returns the list synchronously (with successCount / failureCount / lastExecuteAt / lastStatus); `removeSchedule(code)` deletes one.
+
+```js
+// preload.js: called in the server's tool runtime when it fires (the plugin doesn't need to be open on the phone)
+utools.onScheduleTrigger(({ code }) => {
+  if (code === 'daily') return whatevertools.platform.call('system.notify', { title: 'Daily reminder', body: '…' })   // a throw / rejection counts as failure
+})
+// in the page, when the user turns it on
+await utools.requestSchedule({ code: 'daily', label: 'Daily reminder', trigger: { cron: '0 9 * * *' } })
+```
+
+- Built on the whatevertools core `Scheduler`: cron is checked every minute (after the server sleeps it catches up at most 60 minutes), one-off tasks use timers, and a run that hasn't finished is not started again. Stored in `plugins/schedules.json` in the server data directory, so schedules survive restarts. Times follow the server's time zone (in single-machine mode, this computer's).
+- Triggers only reach the plugin's **preload** (the tool runtime, see "Plugin tools"): a plugin without a preload can't create schedules, and `onScheduleTrigger` registered in the page is never called. Permissions the callback needs (push…) that were never granted are asked with the phone card, so it is best to use them once when the user turns the switch on in the page (for example a confirmation notification) instead of asking when it fires.
+- At most 20 per plugin. Every run is audited (`schedule.<code>`).
 
 ## Agent sessions (platform.sessions)
 

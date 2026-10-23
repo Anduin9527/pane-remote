@@ -14,10 +14,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { DocDb } from '@whatevertools/core'
+import { DocDb, Scheduler, HookRegistry } from '@whatevertools/core'
 import { FileBackend } from '@whatevertools/db-file'
 import { createCatalog } from './catalog.mjs'
-import { createPermissions } from './permissions.mjs'
+import { createPermissions, FileHostStore } from './permissions.mjs'
 import { createAudit } from './audit.mjs'
 import { createRpc, createShared, createAsks, supportTable, runtimeTable, cleanDir, allDocs, PLATFORM, PLUGIN_API, PRIVATE_DIR } from './rpc.mjs'
 import { createToolHost } from './tools.mjs'
@@ -159,8 +159,16 @@ export function createPlatform(deps) {
       return list
     },
   }
-  const rpc = createRpc({ catalog, perms, audit, dbFor, shared, asks, notify: deps.notify, recordIncident: deps.recordIncident, host: deps.host, home, fsDirs, dbChanged, sessions: deps.sessions, sessionNotes })
-  const tools = createToolHost({ catalog, perms, audit, dbFor, rpc, asks, dbChanged, recordIncident: deps.recordIncident, platform: PLATFORM, version: VERSION, apiVersion: PLUGIN_API, log: deps.log })
+  // 定时任务：core 的 Scheduler（每分钟查 cron、一次性任务用定时器），存 plugins/schedules.json；触发时交给工具运行时
+  const scheduler = new Scheduler({
+    store: new FileHostStore(path.join(root, 'schedules.json')),
+    hooks: new HookRegistry(),
+    run: (pid, code) => tools.runSchedule(pid, code),
+    log: (msg) => console.log(`plugins: ${msg}`),
+  })
+  const rpc = createRpc({ catalog, perms, audit, dbFor, shared, asks, notify: deps.notify, recordIncident: deps.recordIncident, host: deps.host, home, fsDirs, dbChanged, sessions: deps.sessions, sessionNotes, scheduler })
+  for (const pid of new Set(scheduler.o.store.keys('schedules/').map((k) => k.slice('schedules/'.length)))) scheduler.load(pid)
+  const tools = createToolHost({ catalog, perms, audit, dbFor, rpc, asks, dbChanged, recordIncident: deps.recordIncident, platform: PLATFORM, version: VERSION, apiVersion: PLUGIN_API, log: deps.log, schedules: (id) => scheduler.list(id) })
 
   const prompts = new Map() // id → { resolve, reject, timer }
   function promptVia(c, pluginId) {
@@ -238,6 +246,7 @@ export function createPlatform(deps) {
     return {
       plugin: { id: m.id, name: m.name, version: m.version, description: m.description, features: m.features, logo: m.logo },
       platform: { name: PLATFORM, version: VERSION, api: PLUGIN_API },
+      schedules: scheduler.list(m.id), // getSchedules() 是同步的：带一份，request / remove 后更新
       ...runtimeBoot,
       db: {
         docs: allDocs(db),
@@ -336,12 +345,12 @@ export function createPlatform(deps) {
     upgrade,
     /** /api/agent/answer 也能答插件的问题（推送点进来、Inbox 里答） */
     answerAsk: (id, answer, text) => (asks.has(id) ? asks.answer(id, answer, text) : false),
-    flush: () => { for (const db of dbs.values()) db.flushSync(); tools.stopAll() },
+    flush: () => { for (const db of dbs.values()) db.flushSync(); tools.stopAll(); scheduler.stop() },
     /** 插件工具（经 Mac 上的 pane-host 给 agent 的 MCP）：list() 工具列表；call({ name, args, caller }) → { value, plugin, tool } */
     agentTools: { list: () => tools.list(), call: (r) => tools.call(r) },
     /** 给会话的留言：会话的 hook / MCP 经 pane-host 来取（取走就删） */
     takeSessionNotes: (session) => (/^[\w-]{8,80}$/.test(String(session || '')) ? sessionNotes.take(String(session)) : []),
     // 测试用
-    _rpc: rpc, _tools: tools, _perms: perms, _audit: audit, _catalog: catalog, _asks: asks, _fsDirs: fsDirs,
+    _rpc: rpc, _tools: tools, _scheduler: scheduler, _perms: perms, _audit: audit, _catalog: catalog, _asks: asks, _fsDirs: fsDirs,
   }
 }

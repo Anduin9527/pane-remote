@@ -8,6 +8,13 @@ earlier work predates the public repository.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-23 — Plugin schedules, overdue reminders
+
+### Added
+- Plugins can schedule work, the uTools way: `requestSchedule` (one-off timestamp or 5-field cron with optional start / end), `getSchedules`, `removeSchedule`, and `onScheduleTrigger` in the preload. Built on the whatevertools core `Scheduler`, stored in the server data directory, fired in the plugin's sandboxed tool runtime so the phone doesn't need the plugin open. Permission `schedule`.
+- Todo: overdue reminder, on by default. Every day at a time you pick (default 09:00) it pushes the overdue and due-today items; switch it off under the view settings, or mute single items. The first open sets it up and asks for the schedule and notification permissions.
+- Plugin API 0.5.0.
+
 ## [0.11.0] - 2026-10-23 — Todo collaboration
 
 ### Added

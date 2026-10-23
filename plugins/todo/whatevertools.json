@@ -12,10 +12,16 @@
     },
     "ai": {
       "reason": "「一段话」：用 Mac 上的 agent 把你说的话拆成待办操作"
+    },
+    "schedule": {
+      "reason": "每天定时检查过期和今天截止的待办"
+    },
+    "notification": {
+      "reason": "过期提醒推送到手机"
     }
   },
   "paneRemote": {
-    "requires": ">=0.4.0",
+    "requires": ">=0.5.0",
     "keepAlive": 600
   }
 }

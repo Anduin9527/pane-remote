@@ -115,6 +115,8 @@ const dbStorage = {
 
 // ---------- 插件看到的 API ----------
 const tools = new Map()
+const triggerFns = [] // onScheduleTrigger 的回调
+let schedules = []
 const unsupported = (name) => () => { throw Object.assign(new Error(`[pane-remote] 工具运行时里不支持 ${name}（这里没有界面）`), { code: 'EWTUNSUPPORTED' }) }
 function buildApi(boot) {
   const P = boot.plugin
@@ -139,15 +141,27 @@ function buildApi(boot) {
     },
   }
   const register = (name, handler) => { if (typeof handler === 'function') tools.set(String(name), handler) }
+  schedules = boot.schedules || []
+  const schedule = {
+    request: (s) => callPlatform('schedule.request', s || {}).then((list) => { schedules = list || schedules }),
+    list: () => clone(schedules),
+    remove: (code) => {
+      if (!schedules.some((t) => t.code === code)) throw new Error(`定时任务不存在：${code}`)
+      schedules = schedules.filter((t) => t.code !== code)
+      callPlatform('schedule.remove', { code }).then((list) => { schedules = list || schedules }, (e) => console.warn(e.message))
+    },
+    onTrigger: (fn) => { if (typeof fn === 'function') triggerFns.push(fn) },
+  }
   const notify = (body, title) => { callPlatform('system.notify', { body: String(body ?? ''), title: typeof title === 'string' ? title : '' }).catch((e) => console.warn(e.message)) }
   const wt = {
     identity: { platform: boot.platform, plugin: { id: P.id, name: P.name, version: P.version } },
-    supports: (name) => (['tools.register', 'registerTool', 'db.put', 'db.get', 'db.remove', 'db.bulk', 'db.all', 'kv.set', 'kv.get', 'kv.remove', 'db.onPull', 'onDbPull', 'system.notify', 'showNotification'].includes(name) ? 'emulated' : false),
+    supports: (name) => (['tools.register', 'registerTool', 'schedule.request', 'requestSchedule', 'schedule.list', 'getSchedules', 'schedule.remove', 'removeSchedule', 'schedule.onTrigger', 'onScheduleTrigger', 'db.put', 'db.get', 'db.remove', 'db.bulk', 'db.all', 'kv.set', 'kv.get', 'kv.remove', 'db.onPull', 'onDbPull', 'system.notify', 'showNotification'].includes(name) ? 'emulated' : false),
     lifecycle: { onEnter() {}, onLeave() {}, onReady(fn) { setTimeout(fn) }, exit() {} },
     window: { type: 'headless' },
     db: { put: db.put, get: db.get, remove: db.remove, bulk: db.bulkDocs, all: db.allDocs, onPull: (fn) => { if (typeof fn === 'function') pullFns.push(fn) }, promises: db.promises },
     kv: { set: dbStorage.setItem, get: dbStorage.getItem, remove: (k) => { const had = dbStorage.getItem(k) !== null; dbStorage.removeItem(k); return had } },
     tools: { register },
+    schedule,
     system: { notify, appName: () => 'pane-remote', appVersion: () => boot.platform.version, isDev: () => false, isMac: () => false, isWindows: () => false, isLinux: () => false, isDark: () => false, onThemeChange() {} },
     features: { list: () => clone(P.features || []) },
     platform,
@@ -156,6 +170,10 @@ function buildApi(boot) {
     db: { ...db, promises: { ...db.promises } },
     dbStorage,
     registerTool: register,
+    requestSchedule: schedule.request,
+    getSchedules: schedule.list,
+    removeSchedule: schedule.remove,
+    onScheduleTrigger: schedule.onTrigger,
     onDbPull: wt.db.onPull,
     onPluginEnter() {}, onPluginOut() {}, onPluginReady(fn) { setTimeout(fn) }, onPluginDetach() {},
     showNotification: (body) => notify(body),
@@ -203,6 +221,19 @@ process.on('message', async (m) => {
       send({ t: 'ready', tools: [...tools.keys()] })
     } catch (e) {
       send({ t: 'ready', error: `${e.name || 'Error'}: ${e.message}`, stack: String(e.stack || '').slice(0, 4000) })
+    }
+    return
+  }
+  if (m.t === 'schedule') {
+    // 定时任务触发：依次调 onScheduleTrigger 的回调，都完成才算成功（uTools 的规则：抛异常 / rejected 算失败）
+    try {
+      if (!triggerFns.length) throw new Error('preload 里没有用 utools.onScheduleTrigger 注册回调')
+      for (const fn of triggerFns) await fn({ code: m.code })
+      await flush()
+      send({ t: 'result', id: m.id, ok: true, value: null })
+    } catch (e) {
+      await flush().catch(() => {}) // ignore: 出错时也尽量把已经写的推上去
+      send({ t: 'result', id: m.id, ok: false, error: { message: String(e?.message || e).slice(0, 4000), code: e?.code || 'ESCHEDULE', stack: String(e?.stack || '').slice(0, 4000) } })
     }
     return
   }
