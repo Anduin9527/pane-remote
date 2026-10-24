@@ -13,6 +13,7 @@
 - 有 agent 会话的 pane 默认打开对话视图，「原始画面」一键切回终端；每个 pane 各自记住
 - **模型和思考等级**：会话栏的模型芯片一键切换 Claude Code / Codex / cursor-agent 的模型和思考等级（只在 agent 空闲时做，见 [docs/agent.md](docs/agent.md#模型和思考等级)）
 - 所有 WezTerm pane 的实时画面，手机上直接打字、按键（键盘栏、方向摇杆、Ctrl / Shift / Option）、滑动滚动、轻点
+- **电脑版**：在另一台电脑的浏览器里打开（宽屏 + 鼠标时自动切换）：会话列表常驻左边，终端直接用键盘打字（多行粘贴整段发送），看屏幕用真鼠标键盘；适合出门在外用笔记本连回家里的电脑
 - 新建标签页、拆分、关闭、重命名 pane，在电脑上切到某个 pane；电脑上把 pane 拖窄了，手机上一键调回「适合手机」的宽度（或均分整个标签页）
 - Claude Code / Codex：
   - 对话视图（按会话记录排版，比终端好读）
@@ -49,7 +50,7 @@
 | 电脑 | macOS（Apple 芯片或 Intel） |
 | 终端 | [WezTerm](https://wezfurlong.org/wezterm/)，安装脚本会装；手机上看到的就是 WezTerm 里的 pane |
 | 网络 | [Tailscale](https://tailscale.com)，电脑和手机登录同一个账号。tailnet 要打开 **MagicDNS** 和 **HTTPS Certificates**（管理后台 → DNS）。自建的 Headscale 一般签不了 HTTPS 证书，用不了 |
-| 手机 | iPhone（iOS 16.4 以上才有推送）或 Android，装 Tailscale App |
+| 手机 / 另一台电脑 | iPhone（iOS 16.4 以上才有推送）或 Android，装 Tailscale App；也可以是另一台电脑的浏览器（装 Tailscale） |
 | 可选 | Claude Code、Codex（对话视图、分叉等功能）；Chrome（预览浏览器）；Cursor（Cursor 模块）；Xcode 命令行工具（看屏幕模块） |
 
 安装脚本用 [Homebrew](https://brew.sh) 装 WezTerm 和 Tailscale；Node.js 用电脑上已有的（20 以上），没有就从 nodejs.org 下载官方版本并校验，只给 pane-remote 自己用。

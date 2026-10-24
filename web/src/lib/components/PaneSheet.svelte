@@ -18,8 +18,10 @@
   import { cn } from '$lib/utils'
   import { t as tt, tr } from '$lib/i18n'
 
-  let { open = $bindable(false), onactions, oncreate, onreconnect }: {
+  let { open = $bindable(false), inline = false, onactions, oncreate, onreconnect }: {
     open?: boolean
+    /** 电脑版：常驻在左边的侧栏，不是抽屉 */
+    inline?: boolean
     onactions: (p: Pane) => void
     onreconnect: () => Promise<void>
     oncreate: (t: { window?: number; dir?: string }) => void
@@ -33,10 +35,13 @@
   }
   // 打开时刷新 pane 列表，并接上 Cursor 的推送连接拿项目 / 会话列表（只要列表，不改电脑那边盯着的会话；没开 Cursor 模块就不接）
   let release: (() => void) | null = null
+  const shown = $derived(open || inline)
   $effect(() => {
-    if (!open) return
+    if (!shown) return
     untrack(() => { refresh(); if (appConfig.modules.cursor) release = holdCursor('list') })
-    return () => { release?.(); release = null }
+    // 侧栏一直开着：隔一会儿悄悄刷新一次列表（新开、关掉的 pane）
+    const timer = inline ? setInterval(() => loadPanes().catch(() => {}), 15000) : undefined
+    return () => { release?.(); release = null; clearInterval(timer) }
   })
   onDestroy(() => release?.())
 
@@ -82,11 +87,7 @@
 <!-- 高度上限 85%，上方始终留一块空白可以点着关闭。以前写的 max-h-[85dvh] 压不过底层组件的全屏上限（那条是 data-[…] 写法，优先级更高），
      会话多了（加上 Cursor 的会话、用量卡片后加载出来）抽屉就长到几乎整屏（894 高的屏幕上 886），上面没地方点，
      往下拖又只能拖很窄的标题栏，有时只能选一个会话才关得掉。另外加了明确的关闭按钮；只让列表自己滚 -->
-<Drawer.Root bind:open>
-  <Drawer.Content class="max-h-[85dvh] data-[vaul-drawer-direction=bottom]:max-h-[85dvh] overflow-hidden">
-    <Drawer.Header class="flex-row items-center justify-between border-b py-3">
-      <Drawer.Title>{tt('会话列表')}</Drawer.Title>
-      <div class="flex items-center gap-1.5">
+{#snippet actions()}
         <!-- 手动重连当前 pane（自动重连之外的兜底），顺带刷新列表 -->
         <Button variant="outline" size="sm" class="rounded-full" disabled={!ui.current || loading} onclick={async () => { loading = true; try { await onreconnect(); await refresh() } finally { loading = false } }}>
           <RefreshCw class={cn(loading && 'animate-spin')} /> {tt('重连')}{ui.current ? ` #${ui.current}` : ''}
@@ -94,10 +95,9 @@
         <Button size="sm" class="rounded-full" onclick={() => oncreate({ window: curPane()?.window, dir: curPane()?.dir })}>
           <Plus /> {tt('新建')}
         </Button>
-        <Button variant="ghost" size="icon-sm" class="rounded-full" aria-label={tt('关闭')} onclick={() => (open = false)}><X /></Button>
-      </div>
-    </Drawer.Header>
-    <div data-vaul-no-drag class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 pb-[calc(env(safe-area-inset-bottom)+8px)]" data-testid="session-list">
+{/snippet}
+
+{#snippet list()}
       {#if !ui.panes.length}
         <p class="p-6 text-center text-sm text-muted-foreground">{loading ? tt('读取中…') : tt('没有 pane')}</p>
       {/if}
@@ -147,7 +147,7 @@
           <span class="min-w-0 flex-1 truncate">{tt('打开 Cursor 页')}</span>
         </button>
       {:else}
-        {#if open}
+        {#if shown}
           {#await import('$lib/cursor/UsageCard.svelte') then M}<M.default />{/await}
         {/if}
         {#each cur.projects as p (p.id)}
@@ -174,6 +174,29 @@
         {/each}
       {/if}
       {/if}
+{/snippet}
+
+{#if inline}
+  <aside class="flex w-72 flex-none flex-col border-r bg-card" data-testid="session-sidebar">
+    <div class="flex items-center justify-between gap-1.5 border-b px-3 py-2">
+      <span class="font-semibold">{tt('会话列表')}</span>
+      <div class="flex items-center gap-1.5">{@render actions()}</div>
+    </div>
+    <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 pb-2" data-testid="session-list">{@render list()}</div>
+  </aside>
+{:else}
+<Drawer.Root bind:open>
+  <Drawer.Content class="max-h-[85dvh] data-[vaul-drawer-direction=bottom]:max-h-[85dvh] overflow-hidden">
+    <Drawer.Header class="flex-row items-center justify-between border-b py-3">
+      <Drawer.Title>{tt('会话列表')}</Drawer.Title>
+      <div class="flex items-center gap-1.5">
+        {@render actions()}
+        <Button variant="ghost" size="icon-sm" class="rounded-full" aria-label={tt('关闭')} onclick={() => (open = false)}><X /></Button>
+      </div>
+    </Drawer.Header>
+    <div data-vaul-no-drag class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 pb-[calc(env(safe-area-inset-bottom)+8px)]" data-testid="session-list">
+      {@render list()}
     </div>
   </Drawer.Content>
 </Drawer.Root>
+{/if}

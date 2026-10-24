@@ -15,6 +15,7 @@ No third-party server is involved: phone and Mac talk over your own Tailscale ne
 - Panes with an agent session open in the chat view by default; 「原始画面」 (Raw screen) switches back to the terminal, remembered per pane
 - **Model and reasoning effort**: the model chip in the session bar switches the model and effort of Claude Code / Codex / cursor-agent in one tap (only while the agent is idle; see [docs/en/agent.md](docs/en/agent.md#model-and-reasoning-effort))
 - Live view of every WezTerm pane; type and send keys from the phone (key bar, arrow joystick, Ctrl / Shift / Option), swipe to scroll, tap
+- **Desktop layout**: open it in a browser on another computer (switches automatically on a wide screen with a mouse): the session list stays on the left, the terminal takes the keyboard directly (multi-line paste arrives as one block), and screen view uses the real mouse and keyboard. Handy for reaching your home computer from a laptop while travelling
 - New tab, split, close and rename panes; focus a pane on the Mac; if a pane got dragged narrow on the Mac, widen it to fit your phone in one tap (or equalize the whole tab)
 - Claude Code / Codex:
   - Chat view (laid out from the session transcript, easier to read than the raw terminal)
@@ -51,7 +52,7 @@ No third-party server is involved: phone and Mac talk over your own Tailscale ne
 | Computer | macOS (Apple silicon or Intel) |
 | Terminal | [WezTerm](https://wezfurlong.org/wezterm/), installed by the script; the phone shows WezTerm's panes |
 | Network | [Tailscale](https://tailscale.com), with Mac and phone signed in to the same account. Enable **MagicDNS** and **HTTPS Certificates** for the tailnet (admin console → DNS). Self-hosted Headscale usually can't issue HTTPS certificates and won't work |
-| Phone | iPhone (iOS 16.4+ for push) or Android, with the Tailscale app |
+| Phone / another computer | iPhone (iOS 16.4+ for push) or Android, with the Tailscale app; or a browser on another computer (with Tailscale) |
 | Optional | Claude Code, Codex (chat view, fork, etc.); Chrome (preview browser); Cursor (Cursor module); Xcode command line tools (screen module) |
 
 The install script uses [Homebrew](https://brew.sh) for WezTerm and Tailscale. Node.js: the existing one (20+) is used; if there is none, the official build is downloaded from nodejs.org, checksum-verified, and used only by pane-remote.

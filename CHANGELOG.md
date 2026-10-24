@@ -8,6 +8,15 @@ earlier work predates the public repository.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-24 — Desktop layout
+
+### Added
+- Desktop layout, picked automatically on a wide screen with a mouse (at least 1024 px and a fine pointer); phones and tablets keep the touch layout.
+  - The session list stays open on the left instead of a bottom sheet; panels open centered.
+  - The terminal takes the physical keyboard directly (Ctrl keys, arrows, Esc). Multi-line paste is sent as a bracketed paste, so a shell or Claude Code receives it as one block. In full-screen programs the mouse wheel scrolls and clicks go through. The shortcut bar is hidden.
+  - Screen view uses the real mouse (move, click, right click, drag, wheel) and the real keyboard (⌘ maps to Command). Shortcuts the browser keeps for itself (⌘W, ⌘T, ⌘Q) and IME text still go through the input bar.
+- `scripts/smoke.mjs` checks the desktop layout: sidebar, typing into the terminal, bracketed paste, no shortcut bar.
+
 ## [0.13.3] - 2026-10-23 — Prompts from background subagents reach the phone
 
 ### Fixed

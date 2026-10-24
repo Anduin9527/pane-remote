@@ -39,6 +39,7 @@
   import { postJson } from '$lib/api'
   import { watchRender } from './renderWatch'
   import LiveInput, { type LiveKey, type Mod } from '$lib/components/LiveInput.svelte'
+  import { desk } from '$lib/desktop.svelte'
 
   let { open = $bindable(false), active = true, onhide, onclose }: { open?: boolean; active?: boolean; onhide?: () => void; onclose?: () => void } = $props()
 
@@ -327,7 +328,7 @@
     r.scaleViewport = false
     r.clipViewport = true // 视口由我们控制（缩放、平移），见 applyView
     r.dragViewport = false
-    r.focusOnClick = false
+    r.focusOnClick = false // 电脑版在鼠标按下时自己给焦点（onMouse）
     r.showDotCursor = false
     r.background = '#111'
     r.qualityLevel = 6
@@ -757,6 +758,46 @@
       el.removeEventListener('touchmove', onMove, opts)
       el.removeEventListener('touchend', onEnd, opts)
       el.removeEventListener('touchcancel', onEnd, opts)
+    }
+  })
+
+  // ---------- 电脑版：真鼠标、真键盘 ----------
+  // 鼠标和触摸一样在捕获阶段拦下、走 noVNC 内部的发送（不让 noVNC 自己处理 DOM 鼠标事件）；
+  // 按下时把焦点给画布，键盘交给 noVNC 自己的键盘处理（⌘ 发成 Super，Mac 上就是 Command）。
+  // 浏览器自己占着的快捷键（⌘W、⌘T、⌘Q）拦不到；中文用底栏的输入栏
+  const BTN: Record<number, number> = { 0: 1, 1: 2, 2: 4 }
+  function onMouse(e: MouseEvent) {
+    if (!rfb || !canvas() || onOverlay(e as unknown as TouchEvent)) return
+    e.stopPropagation()
+    if (e.type === 'contextmenu') { e.preventDefault(); return }
+    const p = onCanvas(e.clientX, e.clientY)
+    if (e.type === 'mousemove') return sendAt(p, null)
+    const bit = BTN[e.button]
+    if (bit == null) return
+    e.preventDefault()
+    if (e.type === 'mousedown') { rfb.focus(); sendAt(p, null); sendAt(p, held | bit) }
+    else sendAt(p, held & ~bit)
+  }
+  function onWheel(e: WheelEvent) {
+    if (!rfb || !canvas() || onOverlay(e as unknown as TouchEvent)) return
+    e.stopPropagation(); e.preventDefault()
+    const k = e.deltaMode === 1 ? 50 : 1
+    wheelAt(onCanvas(e.clientX, e.clientY), e.deltaX * k, e.deltaY * k)
+  }
+  $effect(() => {
+    const el = stage
+    if (!el || !desk.on) return
+    const opts = { passive: false, capture: true } as AddEventListenerOptions
+    const evs = ['mousedown', 'mouseup', 'mousemove', 'contextmenu'] as const
+    for (const ev of evs) el.addEventListener(ev, onMouse, opts)
+    el.addEventListener('wheel', onWheel, opts)
+    // 拖到画面外面才松开：画面里的事件已经被上面拦住，到这里的都是外面的，照样松开那个键
+    const up = (e: MouseEvent) => { if (held && rfb && canvas()) sendAt(onCanvas(e.clientX, e.clientY), held & ~(BTN[e.button] ?? 0)) }
+    window.addEventListener('mouseup', up)
+    return () => {
+      for (const ev of evs) el.removeEventListener(ev, onMouse, opts)
+      el.removeEventListener('wheel', onWheel, opts)
+      window.removeEventListener('mouseup', up)
     }
   })
 

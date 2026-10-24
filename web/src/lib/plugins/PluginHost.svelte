@@ -101,7 +101,7 @@
   {#if p}
     <!-- 高度跟可视高度走（--vvh）：iOS 键盘弹出时 fixed inset-0 不会变矮，底部输入栏会被键盘盖住 -->
     <section
-      class={cn('fixed inset-x-0 top-0 z-40 flex flex-col bg-background', x.state !== 'fg' && 'invisible')}
+      class={cn('fixed inset-x-0 top-0 z-40 flex flex-col bg-background desk:left-72', x.state !== 'fg' && 'invisible')}
       style:height="var(--vvh, 100dvh)"
       inert={x.state !== 'fg'}
       aria-hidden={x.state !== 'fg'}

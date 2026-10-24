@@ -3,6 +3,8 @@
 @import "@xterm/xterm/css/xterm.css";
 
 @custom-variant dark (&:is(.dark *));
+/* 电脑版：宽屏 + 鼠标（和 $lib/desktop.svelte.ts 的判断一致）。iPad 竖屏、手机横屏都不算 */
+@custom-variant desk (@media (min-width: 1024px) and (pointer: fine));
 
 /* shadcn 的语义色。跟随系统深浅色；终端区域永远是 Tokyo Night 深色，和 WezTerm 一致 */
 :root {

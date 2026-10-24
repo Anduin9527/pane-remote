@@ -74,7 +74,7 @@
   )
 </script>
 
-<div class="flex items-center gap-1.5 px-2.5 pt-2 pb-1">
+<div class="flex items-center gap-1.5 px-2.5 pt-2 pb-1" data-testid="keybar">
   <Joystick />
   <div class="grid min-w-0 flex-1 gap-1" style:grid-template-columns="repeat({top.length}, minmax(0, 1fr))">
     {#each top as k, i (i)}

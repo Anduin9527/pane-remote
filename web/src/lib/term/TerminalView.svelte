@@ -13,6 +13,7 @@
   import { mouseMods } from '$lib/mods.svelte'
   import { linkAt, resolveLink } from '$lib/links'
   import { t } from '$lib/i18n'
+  import { desk } from '$lib/desktop.svelte'
 
   let { viewportTick = 0, onpreview }: { viewportTick?: number; onpreview?: (url: string) => void } = $props()
 
@@ -44,7 +45,8 @@
     term = new Terminal({
       cols: ui.cols + 1, rows: Math.max(1, session.lines.length || ui.rows),
       fontFamily: FONT, fontSize: prefs.fs, lineHeight: 1.15, scrollback: 0,
-      disableStdin: true, cursorBlink: false, cursorStyle: 'bar', theme: THEME,
+      // 电脑版：实体键盘直接打字（xterm 把按键翻成控制序列，原样发进 pane）；手机上靠底部输入栏和快捷键栏
+      disableStdin: !desk.on, cursorBlink: false, cursorStyle: 'bar', theme: THEME,
       allowProposedApi: true, customGlyphs: true, drawBoldTextInBrightColors: false,
     })
     term.open(screenEl)
@@ -54,6 +56,43 @@
       try { const gl = new WebglAddon(); gl.onContextLoss(() => gl.dispose()); term.loadAddon(gl) } catch {}
     }
     term.write('\x1b[?25l\x1b[?7l') // 不显示 xterm 自己的光标，关掉自动换行（行宽以 WezTerm 为准）
+    if (desk.on) {
+      term.onData((d) => sendRaw(ui.current, d))
+      term.focus()
+    }
+  }
+
+  // ---------- 电脑版：粘贴、滚轮、鼠标点击 ----------
+  // 粘贴：多行的包成括号粘贴（\e[200~…\e[201~），shell 和 Claude Code 会当成一整段，不会每行都执行。
+  // 捕获阶段拦下，xterm 自己不再处理（它不知道程序有没有开括号粘贴，会直接把换行发出去）
+  function onPaste(e: ClipboardEvent) {
+    if (!desk.on) return
+    const text = e.clipboardData?.getData('text/plain')
+    e.preventDefault(); e.stopPropagation()
+    if (!text) return
+    const body = text.replace(/\r\n?/g, '\n')
+    sendRaw(ui.current, /\n/.test(body) ? `\x1b[200~${body}\x1b[201~` : body)
+  }
+  // 全屏程序（vim、less、Claude Code 的全屏界面）：滚轮 → SGR 滚轮，点击 → SGR 鼠标；普通画面滚轮照常滚动页面
+  let wheelAcc = 0
+  function onWheel(e: WheelEvent) {
+    if (!desk.on || !mouseMode()) return
+    e.preventDefault()
+    const cell = cellAt(e.clientX, e.clientY) || { col: Math.ceil(ui.cols / 2), row: Math.ceil(ui.rows / 2) }
+    wheelAcc += e.deltaMode === 1 ? e.deltaY * STEP : e.deltaY
+    let seq = ''
+    while (wheelAcc >= STEP) { seq += `\x1b[<65;${cell.col};${cell.row}M`; wheelAcc -= STEP }
+    while (wheelAcc <= -STEP) { seq += `\x1b[<64;${cell.col};${cell.row}M`; wheelAcc += STEP }
+    if (seq) sendRaw(ui.current, seq)
+  }
+  function onMouse(e: MouseEvent) {
+    if (!desk.on) return
+    term?.focus()
+    if (!mouseMode() || e.button !== 0) return
+    const cell = cellAt(e.clientX, e.clientY)
+    if (!cell) return
+    const b = mouseMods()
+    sendRaw(ui.current, `\x1b[<${b};${cell.col};${cell.row}${e.type === 'mousedown' ? 'M' : 'm'}`)
   }
 
   const nearBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
@@ -123,7 +162,11 @@
     scroller.addEventListener('touchstart', onTouchStart, { passive: true })
     scroller.addEventListener('touchmove', onTouchMove, { passive: false })
     scroller.addEventListener('touchend', onTouchEnd, { passive: false })
+    scroller.addEventListener('wheel', onWheel, { passive: false })
+    scroller.addEventListener('paste', onPaste, { capture: true })
     return () => {
+      scroller.removeEventListener('wheel', onWheel)
+      scroller.removeEventListener('paste', onPaste, { capture: true })
       off(); ro.disconnect(); term?.dispose(); cancelAnimationFrame(rafId)
       scroller.removeEventListener('touchstart', onTouchStart)
       scroller.removeEventListener('touchmove', onTouchMove)
@@ -132,9 +175,10 @@
   })
 
   // 切 pane：重建终端，避免上一个 pane 的残影
+  // 窗口拉宽 / 拉窄切换电脑版：键盘输入是建终端时定的，也要重建
   $effect(() => {
-    ui.current
-    untrack(() => { if (screenEl) { makeTerm(); layout() } })
+    ui.current; desk.on
+    untrack(() => { if (screenEl) { makeTerm(); pending = null; layout(); schedule() } })
   })
   // 尺寸、全屏状态、显示设置、视口变化都要重新排版
   $effect(() => {
@@ -252,6 +296,8 @@
   class="relative flex-1 overflow-auto overscroll-contain bg-[#1a1b26] text-[#c0caf5] select-none [color-scheme:dark] [-webkit-touch-callout:none]"
   style:touch-action={mouseMode() ? 'pan-x' : 'auto'}
   onscroll={() => (showToBottom = !ui.alt && !nearBottom())}
+  onmousedown={onMouse}
+  onmouseup={onMouse}
 >
   <div bind:this={screenEl} class="term-screen"></div>
   {#if ripple}

@@ -35,6 +35,7 @@
   import { openInPreview } from '$lib/preview/request.svelte'
   import { update } from '$lib/update.svelte'
   import { cn } from '$lib/utils'
+  import { desk } from '$lib/desktop.svelte'
   import { t, tr } from '$lib/i18n'
 
   // 只在需要时下载的部分（首屏只有外壳、会话列表、发送栏）：对话视图（marked / DOMPurify）、终端（xterm）、Cursor、各种面板。
@@ -242,6 +243,12 @@
 <!-- sticky：新版 iOS 的主屏幕网页 App 会在顶部叠一层半透明渐隐（Safari 网页里没有），压在顶栏上发白。
      顶部是 fixed / sticky 元素时 Safari 改用它的底色填充，不再叠渐隐。页面本身不滚动，sticky 对布局没有影响 -->
 <!-- 顶栏只有：连接状态点、当前会话名（点开会话列表）、问题 / 待办徽标、更多菜单 -->
+<!-- 电脑版（宽屏 + 鼠标）：会话列表常驻左边，右边是原来的整个界面；手机上侧栏不出现，这一层没有影响 -->
+<div class="flex min-h-0 flex-1">
+{#if desk.on}
+  <PaneSheet inline onreconnect={reconnect} onactions={(p) => { actPane = p; actOpen = true }} oncreate={openCreate} />
+{/if}
+<div class="flex min-w-0 flex-1 flex-col">
 <header class="sticky top-0 z-30 flex items-center gap-2 border-b bg-card px-3 pt-[calc(env(safe-area-inset-top)+6px)] pb-1.5">
   {#if update.available}
     <button class="flex-none rounded-full bg-primary px-2.5 text-[12px] leading-6 font-semibold text-primary-foreground active:opacity-80" onclick={() => location.reload()}>{t('更新')}</button>
@@ -255,10 +262,10 @@
       <span class={cn('size-2 rounded-full bg-muted-foreground', ui.status === 'live' && 'bg-ok', ui.status === 'err' && 'bg-destructive', reconnecting && 'animate-ping bg-primary')}></span>
     </button>
   {/if}
-  <button class="flex min-w-0 flex-1 items-center gap-2 px-1 py-1.5 text-left" aria-haspopup="dialog" data-testid="session-title" onclick={() => openSheet('sessions')}>
+  <button class="flex min-w-0 flex-1 items-center gap-2 px-1 py-1.5 text-left" aria-haspopup="dialog" data-testid="session-title" onclick={() => { if (!desk.on) openSheet('sessions') }}>
     {#if view.kind === 'cursor'}<CursorIcon class="size-4 flex-none" />{:else if plugin}<PluginsIcon class="size-4 flex-none" />{/if}
     <span class="min-w-0 truncate font-semibold">{source ? source.title() : pluginInfo(plugin)?.name || t('插件 · {id}', { id: plugin })}</span>
-    <ChevronDown class="size-4 flex-none text-muted-foreground" />
+    {#if !desk.on}<ChevronDown class="size-4 flex-none text-muted-foreground" />{/if}
   </button>
   {#if incidents.open}
     <button class="flex flex-none items-center gap-1 rounded-full bg-destructive/90 px-2 text-[11px] leading-5 font-semibold text-white" title={t('pane-remote 发现的问题')} onclick={() => openIncident()}><TriangleAlert class="size-3" />{incidents.open}</button>
@@ -325,7 +332,8 @@
     <AgentFocusBar />
     <DraftBar chat={chatMode} />
     <!-- 快捷键是给终端设计的：对话模式下不显示 -->
-    {#if !chatMode}<KeyBar bind:ctrl onedit={() => (keysOpen = true)} />{/if}
+    <!-- 电脑上有实体键盘，终端里直接打字（见 TerminalView），不需要快捷键栏 -->
+    {#if !chatMode && !desk.on}<KeyBar bind:ctrl onedit={() => (keysOpen = true)} />{/if}
     <Composer bind:ctrl chat={chatMode} onresize={fitViewport} />
   </div>
 {:else if view.kind === 'cursor'}
@@ -334,8 +342,10 @@
   <!-- 插件（含自带的预览、这台电脑、看屏幕）：插件层（PluginLayer）在前台打开它、盖在上面；这里只在载入中 / 找不到时显示 -->
   <PluginRoute id={plugin} onpick={() => openSheet('sessions')} />
 {/if}
+</div>
+</div>
 
-<PaneSheet bind:open={sessionsSheet.get, sessionsSheet.set} onreconnect={reconnect} onactions={(p) => { actPane = p; sessionsSheet.set(false); actOpen = true }} oncreate={openCreate} />
+{#if !desk.on}<PaneSheet bind:open={sessionsSheet.get, sessionsSheet.set} onreconnect={reconnect} onactions={(p) => { actPane = p; sessionsSheet.set(false); actOpen = true }} oncreate={openCreate} />{/if}
 {#if once.act}
   {#await import('$lib/components/PaneActions.svelte') then M}
     <M.default

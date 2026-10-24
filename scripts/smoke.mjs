@@ -68,15 +68,22 @@ try {
   const exceptions = [] // 所有页面（含插件 iframe）里未捕获的异常
   const sockets = [] // 页面开的 WebSocket
   const requests = [] // 页面发的请求
+  const sends = [] // 发进 pane 的内容（/api/send 的请求体）
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data)
     if (m.method === 'Runtime.exceptionThrown') exceptions.push(m.params.exceptionDetails.exception?.description?.split('\n')[0] || m.params.exceptionDetails.text)
     else if (m.method === 'Network.webSocketCreated') sockets.push(m.params.url)
-    else if (m.method === 'Network.requestWillBeSent') requests.push(m.params.request.url)
+    else if (m.method === 'Network.requestWillBeSent') { requests.push(m.params.request.url); if (m.params.request.url.includes('/api/send')) sends.push(m.params.request.postData || '') }
     else if (m.method === 'Target.attachedToTarget' && m.params.targetInfo.type === 'iframe') {
       const s = m.params.sessionId
       cdp('Runtime.enable', {}, s).catch(() => {})
       cdp('Runtime.runIfWaitingForDebugger', {}, s).catch(() => {})
+    }
+    else if (m.method === 'Fetch.requestPaused') {
+      // 电脑版那一段：测试中转连不上 Mac（没有 bridge），pane 列表和发送由这里假装回答
+      const u = m.params.request.url
+      const body = u.includes('/api/panes') ? JSON.stringify([{ pane: 1, tab: 1, window: 1, workspace: 'default', title: 'zsh', tabTitle: '', cwd: '~', dir: '/tmp', cols: 80, rows: 24, active: true }]) : '{"ok":true}'
+      cdp('Fetch.fulfillRequest', { requestId: m.params.requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(body).toString('base64') }, m.sessionId).catch(() => {})
     }
     if (m.id && pend.has(m.id)) { pend.get(m.id)(m); pend.delete(m.id) }
   }
@@ -150,7 +157,35 @@ try {
   await sleep(4000)
   ok(await ev(A, `!document.querySelector('[role=alertdialog]')`) && await ev(B, `!!document.querySelector('[role=alertdialog] button')`), '顶号：点继续可以顶回来')
 
-  // 5. 全程的报错
+  // 5. 电脑版（宽屏 + 鼠标）：会话列表常驻左边，终端直接用键盘打字，多行粘贴包成括号粘贴，没有快捷键栏
+  // 新开一个标签页，一打开就是电脑尺寸（实际用法：笔记本上直接打开）。放到前台：后台标签页不跑渲染步骤
+  const C = await openTab('#/s/p1')
+  await cdp('Page.bringToFront', {}, C)
+  await cdp('Fetch.enable', { patterns: [{ urlPattern: '*/api/panes*' }, { urlPattern: '*/api/send*' }] }, C)
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }, C)
+  // 测终端打字：这个 pane 打开原始画面（有 agent 会话的 pane 默认是对话视图）
+  await ev(C, `localStorage.setItem('termViews', JSON.stringify({ 1: 'term' }))`)
+  await ev(C, 'location.reload()')
+  await sleep(5000)
+  ok(await ev(C, `matchMedia('(min-width: 1024px) and (pointer: fine)').matches && /#1/.test(document.querySelector('[data-testid=session-sidebar] [data-testid=session-list]')?.innerText || '')`), '电脑版：会话列表常驻左边', await ev(C, `document.querySelector('[data-testid=session-sidebar]')?.innerText.slice(0, 200) ?? 'no sidebar'`))
+  if (process.env.SMOKE_SHOT) fs.writeFileSync(process.env.SMOKE_SHOT, Buffer.from((await cdp('Page.captureScreenshot', { format: 'png' }, C)).data, 'base64'))
+  const ta = `document.querySelector('.xterm-helper-textarea')`
+  await ev(C, `${ta}?.focus()`)
+  const sent0 = sends.length
+  await cdp('Input.insertText', { text: 'echo smoke' }, C)
+  await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' }, C)
+  await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }, C)
+  await sleep(1500)
+  const typed = sends.slice(sent0).map((b) => { try { return JSON.parse(b).data } catch { return '' } }).join('')
+  ok(typed.includes('echo smoke') && typed.includes('\r'), '电脑版：终端里直接打字发进 pane', JSON.stringify(typed))
+  const sent1 = sends.length
+  await ev(C, `(() => { const dt = new DataTransfer(); dt.setData('text/plain', 'line1\\nline2'); ${ta}.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })) })()`)
+  await sleep(1500)
+  const pasted = sends.slice(sent1).map((b) => { try { return JSON.parse(b).data } catch { return '' } }).join('')
+  ok(pasted === '\x1b[200~line1\nline2\x1b[201~', '电脑版：多行粘贴包成括号粘贴', JSON.stringify(pasted))
+  ok(await ev(C, `!document.querySelector('[data-testid=keybar]')`), '电脑版：不显示快捷键栏')
+
+  // 6. 全程的报错
   const ex = exceptions.filter((e) => !/Failed to fetch|NetworkError|Load failed/.test(e))
   ok(!ex.length, '页面没有未捕获的异常', ex.slice(0, 3).join(' | '))
   const cp = clientProblems()
