@@ -8,6 +8,15 @@ earlier work predates the public repository.
 
 ## [Unreleased]
 
+## [0.15.4] - 2026-10-25 — Switch accounts on restart
+
+### Added
+- Restarting a Claude session from the phone with another account's wrapper (`claude-<name>`, or an explicit `CLAUDE_CONFIG_DIR=`) copies the project's transcripts, memory and the session's tasks to that account after the old process exits and before the new one starts, so `--resume` finds the whole conversation.
+
+### Fixed
+- `pane-agent` reads process start times with `LC_ALL=C`, so they parse under a non-English locale.
+- The terminal view threw `null is not an object (evaluating 'scrollHeight')` when a scroll event arrived just after it was closed.
+
 ## [0.15.3] - 2026-10-25 — Say why a Claude session has no chat view
 
 ### Fixed

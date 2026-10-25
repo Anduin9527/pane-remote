@@ -135,7 +135,7 @@ def codex_sid(cwd, since):
 
 
 def proc_start(pid):
-    out = subprocess.run(["/bin/ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    out = subprocess.run(["/bin/ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, env=dict(os.environ, LC_ALL="C")).stdout.strip()
     try:
         return time.mktime(time.strptime(out, "%a %b %d %H:%M:%S %Y"))
     except ValueError:
@@ -448,6 +448,32 @@ def launch_cmd(info, wrapper, with_plugin):
     return f"{unset}cd {shlex.quote(info['cwd'])} && {env}{' '.join(prefix + cmd)}"
 
 
+def wrapper_conf(wrapper):
+    """启动命令对应的 Claude 配置目录：显式写了 CLAUDE_CONFIG_DIR 就用它；claude-<名字> 这类账号 wrapper 对应 ~/.claude-<名字>"""
+    m = re.search(r'CLAUDE_CONFIG_DIR=(?:"([^"]+)"|(\S+))', wrapper)
+    if m:
+        return os.path.expanduser((m.group(1) or m.group(2)).replace("$HOME", HOME))
+    exe = wrapper.split()[-1]
+    if exe == "claude":
+        return ""  # 默认 wrapper 本身可能再选账号，认不准就不搬
+    d = os.path.join(HOME, "." + exe)
+    return d if exe.startswith("claude-") and os.path.isdir(d) else ""
+
+
+def move_session(info, snap, dest):
+    """换账号重启：旧进程退出后、新进程起来前，把这个项目的会话记录（含子代理目录、记忆）和会话的 task 复制到新账号。
+    只复制、不删旧的；同名文件以旧账号这份为准（它是刚写完的）"""
+    src_proj = os.path.dirname(snap["transcript"])
+    dst_proj = os.path.join(dest, "projects", os.path.basename(src_proj))
+    os.makedirs(dst_proj, exist_ok=True)
+    subprocess.run(["/usr/bin/rsync", "-a", src_proj + "/", dst_proj + "/"], check=True, timeout=600)
+    src_tasks = os.path.join(info["configDir"], "tasks", info["session"])
+    if os.path.isdir(src_tasks):
+        dst_tasks = os.path.join(dest, "tasks", info["session"])
+        os.makedirs(dst_tasks, exist_ok=True)
+        subprocess.run(["/usr/bin/rsync", "-a", src_tasks + "/", dst_tasks + "/"], check=True, timeout=120)
+
+
 def restart_worker(pane, opts):
     set_status(pane, step="检查", done=False, error="", warning="", started=time.time())
     info = inspect(pane)
@@ -475,6 +501,10 @@ def restart_worker(pane, opts):
         # 带上屏幕末尾：下次排查有证据（退出时弹的东西不会写进会话记录）
         raise RuntimeError(f"{info['agent']}（PID {info['pid']}）35 秒没退出，停在这里没继续；快照已保存。屏幕末尾：\n{tail}")
     wait(lambda: pt.agent_of(pt.fg_procs(pane)[0]) == "", 5)  # 等 shell 回到前台
+    dest = wrapper_conf(wrapper) if info["agent"] == "claude" else ""
+    if dest and info.get("configDir") and os.path.realpath(dest) != os.path.realpath(info["configDir"]) and snap.get("transcript"):
+        set_status(pane, step="把会话搬到新账号")
+        move_session(info, snap, dest)
     time.sleep(0.4)
 
     def launch(with_plugin):

@@ -122,7 +122,8 @@
   // 全屏程序里右键是发给程序的，不弹浏览器菜单
   function onContextMenu(e: MouseEvent) { if (mouseMode() && realMouse(e)) e.preventDefault() }
 
-  const nearBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
+  // 组件刚卸载时还可能收到一次 scroll 事件（scroller 已经是 null）
+  const nearBottom = () => !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
   const setFont = (fs: number) => { if (term && term.options.fontSize !== fs) term.options.fontSize = fs }
 
   function layout() {
