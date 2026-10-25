@@ -114,6 +114,18 @@ pane-remote uninstall         # stop the service, remove tailscale serve, restor
 
 If the `pane-remote` command isn't on your PATH, use `~/pane-remote/bin/pane-remote`.
 
+### macOS menu bar
+
+Run `pane-remote menubar` to build and open `~/Applications/Pane Remote.app` using the system Swift compiler (requires Xcode Command Line Tools). The terminal icon offers service status, start / stop / restart, open page / copy URL, Herdr / WezTerm selection, configuration and logs.
+
+The app checks the service every 30 seconds without reading terminal contents or marking the phone active. It opens the actual Tailscale Serve URL; without a Serve mapping, opening the page is disabled. Controls support local-mode launchd services, not manually started services or relay servers.
+
+Changing terminal source preserves other settings and restarts a running service; a stopped service stays stopped. Herdr uses `paths.herdrSocket` (default `~/.config/herdr/herdr.sock`); WezTerm uses its configured path or a detected installation. Terminal apps and their agents keep running; the web session list updates after reconnection. CLI equivalents: `pane-remote terminal herdr` and `pane-remote terminal wezterm`.
+
+**Hide menu bar icon** hides only the icon; the app process and service keep running. Open `Pane Remote.app` again to restore the icon. Closing the page also keeps the service running. Choose **Stop service** or run `pane-remote stop` to stop it. Login startup is optional: add the app in macOS Login Items yourself. After moving the repository or changing the Node path, end `PaneRemote` in Activity Monitor. From the new repository location, run `./bin/pane-remote init` to retain the configuration and regenerate service, bridge and tool paths, then run `./bin/pane-remote menubar` to rebuild the app. To remove it, end `PaneRemote` in Activity Monitor and delete `~/Applications/Pane Remote.app`; manage the background service with the commands above.
+
+For development, run `npm test` and, from a macOS login session, `macos/test.sh`. The native tests cover hide/reopen and asynchronous refresh using a private fake CLI, without operating real services.
+
 ## Updating
 
 ```bash

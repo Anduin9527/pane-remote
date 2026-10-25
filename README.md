@@ -110,6 +110,19 @@ pane-remote uninstall         # 停服务、撤掉 tailscale serve、还原 hook
 
 没有 `pane-remote` 命令时用 `~/pane-remote/bin/pane-remote`。
 
+### macOS 菜单栏
+
+运行 `pane-remote menubar`，会用系统的 Swift 编译器构建并打开 `~/Applications/Pane Remote.app`（需要 Xcode Command Line Tools）。菜单栏的终端图标提供服务状态、启停 / 重启、打开页面 / 复制地址，以及 Herdr / WezTerm 切换。也可以直接打开配置文件和日志。
+
+每 30 秒检查一次服务响应，不读取终端内容，也不算作手机正在使用。打开页面使用 Tailscale Serve 实际配置的地址；没有配置 Serve 时该按钮不可用。菜单栏只控制本机 local 模式的 launchd 服务，不接管手动启动的服务或中转服务器。
+
+切换来源保留其他配置；服务运行中会重启连接，停止时只保存选择。Herdr 使用 `paths.herdrSocket`（默认 `~/.config/herdr/herdr.sock`），WezTerm 使用已有路径或自动查找安装位置。切换不会关闭终端应用或其中的 agent，会话列表在网页重连后更新。也可以用 `pane-remote terminal herdr` 或 `pane-remote terminal wezterm` 切换。
+
+「隐藏菜单栏图标」只隐藏图标，菜单栏进程和服务继续运行；重新打开 `Pane Remote.app` 即可恢复图标。关闭网页也不会停止服务；要停服务，请点击「停止服务」或运行 `pane-remote stop`。菜单栏不会自动加入登录项，如需开机显示，可自行在 macOS「登录项」里添加这个 App。移动仓库或更换 Node 路径后，先在「活动监视器」中结束 `PaneRemote` 进程；然后在新的仓库目录运行 `./bin/pane-remote init`，保留原配置并重新生成服务、bridge 和工具路径，最后运行 `./bin/pane-remote menubar` 重建菜单栏应用。移除菜单栏应用先在「活动监视器」中结束 `PaneRemote` 进程，再删除 `~/Applications/Pane Remote.app`，后台服务仍按上面的命令管理。
+
+开发验证：运行 `npm test`；在 macOS 登录会话中运行 `macos/test.sh` 可验证原生菜单的隐藏、恢复和异步刷新，测试使用独立的假 CLI，不操作真实服务。
+
+
 ## 更新
 
 ```bash
