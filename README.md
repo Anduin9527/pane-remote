@@ -13,7 +13,7 @@
 - 有 agent 会话的 pane 默认打开对话视图，「原始画面」一键切回终端；每个 pane 各自记住
 - **模型和思考等级**：会话栏的模型芯片一键切换 Claude Code / Codex / cursor-agent 的模型和思考等级（只在 agent 空闲时做，见 [docs/agent.md](docs/agent.md#模型和思考等级)）
 - 所有 WezTerm pane 的实时画面，手机上直接打字、按键（键盘栏、方向摇杆、Ctrl / Shift / Option）、滑动滚动、轻点
-- **电脑版**：在另一台电脑的浏览器里打开（宽屏 + 鼠标时自动切换）：会话列表常驻左边，终端直接用键盘打字（多行粘贴整段发送），看屏幕用真鼠标键盘；适合出门在外用笔记本连回家里的电脑
+- **电脑版**：在另一台电脑的浏览器里打开（宽屏 + 鼠标时自动切换）：会话列表常驻左边，终端直接用键盘打字（多行粘贴整段发送），看屏幕用真鼠标键盘；适合出门在外用笔记本连回家里的电脑。键盘、鼠标按设备认，不看窗口宽度：窗口拉窄、开了显示缩放照样能用，手机 / 平板接了键盘或鼠标、触控板也一样（全屏程序里左中右键、拖动、双指滚动都能发过去）
 - 新建标签页、拆分、关闭、重命名 pane，在电脑上切到某个 pane；电脑上把 pane 拖窄了，手机上一键调回「适合手机」的宽度（或均分整个标签页）
 - Claude Code / Codex：
   - 对话视图（按会话记录排版，比终端好读）
@@ -31,7 +31,7 @@
 
 | 模块 | 作用 | 开启 |
 |---|---|---|
-| 预览浏览器 | 手机上看电脑这边的网页（localhost、内网都行）和文件（文件夹、图片、视频、PDF、Markdown、代码），支持电脑模式（桌面 UA、横屏全屏） | 有 Chrome 时默认开；`pane-remote enable preview` |
+| 预览浏览器 | 手机上看电脑这边的网页（localhost、内网都行）和文件（文件夹、图片、视频、PDF、Markdown、代码），支持电脑模式（桌面 UA、横屏全屏）；网页里下载的文件、当前页（本机文件给原文件，网页存成 PDF）能存到手机 | 有 Chrome 时默认开；`pane-remote enable preview` |
 | 网址转手机 | 电脑上打开链接时，如果你正在用手机，就转到手机的预览里打开 | `pane-remote enable openUrl` |
 | Cursor 映射 | 手机上看和操作 Cursor IDE：会话、消息、待办 / 未读、命令输出、改动差异、内置浏览器 | `pane-remote enable cursor`，见 [docs/cursor.md](docs/cursor.md) |
 | 看屏幕 | 手机上看和操作电脑屏幕（一块显示器或单个窗口）：点、拖、滚动、触控板模式、打字（含中文）、多指手势、后台打开 app。登录走系统自带的屏幕共享，画面由 ScreenCaptureKit 录、在电脑上转码后再传；还能关窗口、退出 app、改窗口大小、点到输入框自动弹键盘、锁屏时打字 | `pane-remote enable screen`，见 [docs/screen.md](docs/screen.md) |
@@ -144,6 +144,8 @@ pane-remote update --rollback  # 回到上一次更新之前的版本
 **打开地址显示 forbidden**：手机上 Tailscale 登录的账号不在 `allowedLogins` 里，或者你是通过 IP 而不是 ts.net 地址打开的。
 
 **对话视图、推送没反应**：会话是装 hook 之前开的，重开一次；`pane-remote doctor` 看「hook 有在记录事件」那一项。
+
+**终端上面有一条黄色提示，说这个 Claude 没在保存会话记录**：Claude 带着 `CLAUDE_CODE_CHILD_SESSION`（WezTerm 是在另一个 Claude 会话里打开的）或 `CLAUDE_CODE_SKIP_PROMPT_HISTORY` 启动时不写会话记录，对话视图就出不来。⌘Q 退出 WezTerm、从程序坞重新打开，或者在 pane 里先 `unset CLAUDE_CODE_CHILD_SESSION` 再开 Claude；从手机上新开 / 分叉 / 重启的 Claude 会自动去掉前一个。`pane-remote doctor` 会查 WezTerm 和 mux 进程的环境里有没有这两个变量。
 
 **WezTerm 连不上**：电脑上要开着 WezTerm 窗口；想关窗口也能用，见 [docs/advanced.md](docs/advanced.md) 的持久化配置。
 

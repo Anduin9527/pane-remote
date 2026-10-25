@@ -54,6 +54,7 @@ async function cleanup() {
 try {
   for (let i = 0; i < 50; i++) { await sleep(200); try { if ((await fetch(`${BASE}/api/version`)).ok) break } catch {} }
   ok((await fetch(`${BASE}/api/version`).then((r) => r.json()).catch(() => ({}))).version, '服务端能启动')
+  ok((await fetch(`${BASE}/api/preview/file?id=x`).then((r) => r.status).catch(() => 0)) === 400, '预览下载接口在（坏 id 回 400）')
 
   // ---------- Chrome ----------
   const profile = path.join(TMP, 'chrome')
@@ -69,6 +70,7 @@ try {
   const sockets = [] // 页面开的 WebSocket
   const requests = [] // 页面发的请求
   const sends = [] // 发进 pane 的内容（/api/send 的请求体）
+  let dropChunks = false // 断网那一段：页面分块的请求一律失败
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data)
     if (m.method === 'Runtime.exceptionThrown') exceptions.push(m.params.exceptionDetails.exception?.description?.split('\n')[0] || m.params.exceptionDetails.text)
@@ -78,6 +80,10 @@ try {
       const s = m.params.sessionId
       cdp('Runtime.enable', {}, s).catch(() => {})
       cdp('Runtime.runIfWaitingForDebugger', {}, s).catch(() => {})
+    }
+    else if (m.method === 'Fetch.requestPaused' && m.params.request.url.includes('/assets/')) {
+      if (dropChunks) cdp('Fetch.failRequest', { requestId: m.params.requestId, errorReason: 'InternetDisconnected' }, m.sessionId).catch(() => {})
+      else cdp('Fetch.continueRequest', { requestId: m.params.requestId }, m.sessionId).catch(() => {})
     }
     else if (m.method === 'Fetch.requestPaused') {
       // 电脑版那一段：测试中转连不上 Mac（没有 bridge），pane 列表和发送由这里假装回答
@@ -184,6 +190,31 @@ try {
   const pasted = sends.slice(sent1).map((b) => { try { return JSON.parse(b).data } catch { return '' } }).join('')
   ok(pasted === '\x1b[200~line1\nline2\x1b[201~', '电脑版：多行粘贴包成括号粘贴', JSON.stringify(pasted))
   ok(await ev(C, `!document.querySelector('[data-testid=keybar]')`), '电脑版：不显示快捷键栏')
+  // 窗口拉窄（笔记本开了缩放、PWA 小窗口）：侧栏收起，但还是电脑，键盘照样直接打字（按设备认，不按宽度）
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 900, height: 800, deviceScaleFactor: 2, mobile: false }, C)
+  await sleep(1500)
+  await ev(C, `${ta}?.focus()`)
+  const sent2 = sends.length
+  await cdp('Input.insertText', { text: 'narrow' }, C)
+  await sleep(1200)
+  const narrow = sends.slice(sent2).map((b) => { try { return JSON.parse(b).data } catch { return '' } }).join('')
+  ok(!(await ev(C, `!!document.querySelector('[data-testid=session-sidebar]')`)) && narrow.includes('narrow'), '窗口拉窄：侧栏收起，键盘照样打字', JSON.stringify(narrow))
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }, C)
+  await sleep(1000)
+
+  // 5b. 打开时网络断了：终端那一块（懒加载的分块）载入失败，网络回来后自己补上，不用重开 App，也不报问题
+  await cdp('Fetch.enable', { patterns: [{ urlPattern: '*/api/panes*' }, { urlPattern: '*/api/send*' }, { urlPattern: '*/assets/c-TerminalView*' }] }, C)
+  await cdp('Network.setCacheDisabled', { cacheDisabled: true }, C)
+  dropChunks = true
+  await ev(C, 'location.reload()')
+  await sleep(3500)
+  const blank = await ev(C, `!document.querySelector('.xterm')`)
+  dropChunks = false
+  await ev(C, `dispatchEvent(new Event('online'))`)
+  let back = false
+  for (let i = 0; i < 20 && !back; i++) { await sleep(500); back = await ev(C, `!!document.querySelector('.xterm')`) }
+  ok(blank && back, '断网时终端分块载入失败，网络回来自己补上', `blank=${blank} back=${back}`)
+  await cdp('Network.setCacheDisabled', { cacheDisabled: false }, C)
 
   // 6. 全程的报错
   const ex = exceptions.filter((e) => !/Failed to fetch|NetworkError|Load failed/.test(e))

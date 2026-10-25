@@ -443,7 +443,9 @@ def launch_cmd(info, wrapper, with_plugin):
         cmd = ["cursor-agent", "--resume", sid, *info["flags"]]
     prefix = [shlex.quote(WITH_TOOLS)] if with_plugin else []
     env = wrapper.rpartition(" ")[0] + " " if a == "claude" and " " in wrapper else ""
-    return f"cd {shlex.quote(info['cwd'])} && {env}{' '.join(prefix + cmd)}"
+    # 继承来的 CLAUDE_CODE_CHILD_SESSION 会让 Claude 不写会话记录（见 with-tools），重启时顺手去掉
+    unset = "unset CLAUDE_CODE_CHILD_SESSION; " if a == "claude" else ""
+    return f"{unset}cd {shlex.quote(info['cwd'])} && {env}{' '.join(prefix + cmd)}"
 
 
 def restart_worker(pane, opts):

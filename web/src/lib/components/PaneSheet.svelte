@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { load } from '$lib/lazy'
   // 会话列表：WezTerm 的 pane（按窗口 / 标签页分组）和 Cursor 的会话（按项目分组）合在一起；点行打开，pane 点 ⋯ 管理。
   // 状态标记统一：等你操作 / 做完了 / 运行中 / 蓝点 = 有新内容
   import { onDestroy, untrack } from 'svelte'
@@ -148,7 +149,7 @@
         </button>
       {:else}
         {#if shown}
-          {#await import('$lib/cursor/UsageCard.svelte') then M}<M.default />{/await}
+          {#await load(() => import('$lib/cursor/UsageCard.svelte')) then M}<M.default />{/await}
         {/if}
         {#each cur.projects as p (p.id)}
           {#if p.sessions.length || p.uri}

@@ -8,6 +8,42 @@ earlier work predates the public repository.
 
 ## [Unreleased]
 
+## [0.15.3] - 2026-10-25 — Say why a Claude session has no chat view
+
+### Fixed
+- A Claude started with `CLAUDE_CODE_CHILD_SESSION` inherited (WezTerm opened from inside another Claude session) or with `CLAUDE_CODE_SKIP_PROMPT_HISTORY` set does not save a transcript, and does not write `sessions/<pid>.json` either. pane-remote then fell back to the transcript path recorded by the SessionStart hook, opened the chat view, and showed "no conversation yet" forever. `agent/pane-transcript` now reads the Claude process's environment, reports `noTranscript: child-session | skip-history`, and drops hook paths whose file does not exist; the phone shows a banner above the terminal with the cause and the fix.
+- Claude sessions that pane-remote starts (new / fork from the phone, restart, start with tools) unset `CLAUDE_CODE_CHILD_SESSION` first. `CLAUDE_CODE_SKIP_PROMPT_HISTORY` is left alone, since it may be deliberate.
+- On a phone or tablet with a hardware keyboard, the shortcut bar is hidden like on a computer.
+
+### Added
+- `pane-remote doctor` warns when the WezTerm GUI or the mux server was started with `CLAUDE_CODE_CHILD_SESSION` or `CLAUDE_CODE_SKIP_PROMPT_HISTORY` in its environment (every Claude opened inside it would save no transcript), and says how to fix it.
+
+## [0.15.2] - 2026-10-25 — Mouse and trackpad in the terminal on any device
+
+### Fixed
+- Cursor 3.27 (`cursor` module): conversations stopped updating on the phone. Cursor has stored the message list three ways (`fullConversationHeadersOnly` in composerData, the agent transcript file in 3.26, `composerConvHeaders:<id>:<chunk>` with 256 headers per chunk in 3.27), and old conversations keep the old format. The adapter now reads all three and uses whichever is newest; it switches source only when the other one is more than a minute newer. While a run is going, 3.27 keeps the previous run's status in composerData, so the sidebar status decides whether the conversation is busy. `agent/test/cursor-sources.test.mjs` (part of `npm test`, skipped without `node:sqlite`) covers each format and the switch.
+- Keyboard and mouse input in the terminal depended on the window being at least 1024px wide. A laptop with display scaling, or a narrow PWA window, got neither. Input now follows the device: a new device module (`web/src/lib/device.svelte.ts`) tells phone / tablet / computer apart from what the system reports (an iPad in desktop mode is recognised by its touch points), whether a mouse or trackpad is attached (including one connected to an iPhone or iPad), whether a hardware keyboard is in use, and whether each pointer event comes from a mouse or a finger. Window width now only decides the layout.
+- In full-screen programs, the mouse and trackpad now send everything a terminal does: left, middle and right buttons, dragging (motion while held), trackpad two-finger scrolling (xterm's own viewport was swallowing wheel events), and Shift / Option / Control as modifier bits. Right-click no longer opens the browser menu there.
+- Finger taps on a phone with a mouse attached are no longer sent twice: compatibility mouse events that follow a tap are ignored, in the terminal and in the screen view. The screen view takes the mouse whenever one is attached, not only in the desktop layout.
+- `scripts/smoke.mjs` narrows the desktop window and checks that typing still goes to the pane.
+
+## [0.15.1] - 2026-10-24 — Pages recover after a dropped connection
+
+### Fixed
+- When the connection dropped while a page or panel was loading (the terminal, chat, a sheet, a built-in plugin), that part stayed blank until the app was closed and reopened. It now waits for the network to come back and loads again; if retrying cannot help, the page reloads once.
+- These failed loads are no longer reported as problems (each was also reported twice, once by the fallback reporter in index.html).
+- `scripts/smoke.mjs` drops the terminal chunk on load and checks that the page recovers by itself.
+
+## [0.15.0] - 2026-10-24 — Save files from the preview to the phone
+
+### Added
+- Files from the browser preview can be saved to the phone.
+  - A download started inside the preview (a download link, or a URL that is a file) is kept on the computer, and the phone shows "Save to phone". Touch devices open the share sheet (Save to Files, Save Image, send to another app); desktops download the file.
+  - "Save page" in the tabs panel: a local file opened in the file browser is sent as the original file; a web page is saved as PDF.
+  - The file browser shows a "Download" link next to each file.
+  - The tabs panel lists recent downloads, and tapping one saves it again. Files kept on the computer are deleted after a day.
+- `GET /api/preview/file?id=…` streams a kept file as an attachment; the bridge reads it with the new `preview-get` command (works in local and relay mode).
+
 ## [0.14.0] - 2026-10-24 — Desktop layout
 
 ### Added

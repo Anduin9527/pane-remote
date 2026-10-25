@@ -15,7 +15,7 @@ No third-party server is involved: phone and Mac talk over your own Tailscale ne
 - Panes with an agent session open in the chat view by default; 「原始画面」 (Raw screen) switches back to the terminal, remembered per pane
 - **Model and reasoning effort**: the model chip in the session bar switches the model and effort of Claude Code / Codex / cursor-agent in one tap (only while the agent is idle; see [docs/en/agent.md](docs/en/agent.md#model-and-reasoning-effort))
 - Live view of every WezTerm pane; type and send keys from the phone (key bar, arrow joystick, Ctrl / Shift / Option), swipe to scroll, tap
-- **Desktop layout**: open it in a browser on another computer (switches automatically on a wide screen with a mouse): the session list stays on the left, the terminal takes the keyboard directly (multi-line paste arrives as one block), and screen view uses the real mouse and keyboard. Handy for reaching your home computer from a laptop while travelling
+- **Desktop layout**: open it in a browser on another computer (switches automatically on a wide screen with a mouse): the session list stays on the left, the terminal takes the keyboard directly (multi-line paste arrives as one block), and screen view uses the real mouse and keyboard. Handy for reaching your home computer from a laptop while travelling. Keyboard and mouse follow the device, not the window width: a narrow window or display scaling still works, and so does a phone or tablet with a keyboard, mouse or trackpad attached (full-screen programs get left / middle / right buttons, dragging and two-finger scrolling)
 - New tab, split, close and rename panes; focus a pane on the Mac; if a pane got dragged narrow on the Mac, widen it to fit your phone in one tap (or equalize the whole tab)
 - Claude Code / Codex:
   - Chat view (laid out from the session transcript, easier to read than the raw terminal)
@@ -33,7 +33,7 @@ No third-party server is involved: phone and Mac talk over your own Tailscale ne
 
 | Module | What it does | How to enable |
 |---|---|---|
-| Preview browser | View web pages reachable from the Mac (localhost, intranet) and files (folders, images, video, PDF, Markdown, code) on the phone, with a desktop mode (desktop UA, landscape full screen) | On by default when Chrome is installed; `pane-remote enable preview` |
+| Preview browser | View web pages reachable from the Mac (localhost, intranet) and files (folders, images, video, PDF, Markdown, code) on the phone, with a desktop mode (desktop UA, landscape full screen); files downloaded in a page and the current page (a local file as-is, a web page as PDF) can be saved to the phone | On by default when Chrome is installed; `pane-remote enable preview` |
 | Open URLs on phone | When something on the Mac opens a link while you are using the phone, open it in the phone's preview instead | `pane-remote enable openUrl` |
 | Cursor mapping | View and drive the Cursor IDE from the phone: sessions, messages, to-do / unread, command output, change diffs, built-in browser | `pane-remote enable cursor`, see [docs/en/cursor.md](docs/en/cursor.md) |
 | Screen view | View and control the Mac's screen (one display or a single window) from the phone: tap, drag, scroll, trackpad mode, typing (CJK included), multi-finger gestures, launching apps in the background. Signs in through macOS's built-in Screen Sharing; the picture is captured with ScreenCaptureKit and transcoded on the Mac before it travels. Also closes windows, quits apps, resizes windows, opens the keyboard on text fields and types on the lock screen | `pane-remote enable screen`, see [docs/en/screen.md](docs/en/screen.md) |
@@ -148,6 +148,8 @@ pane-remote update --rollback  # go back to the version before the last update
 **The address shows "forbidden"**: the Tailscale account on the phone isn't in `allowedLogins`, or you opened it by IP instead of the ts.net address.
 
 **Chat view or push does nothing**: the session was started before the hooks were installed; restart it. Check the hook item in `pane-remote doctor`.
+
+**A yellow banner above the terminal says this Claude isn't saving its transcript**: Claude saves no transcript when it starts with `CLAUDE_CODE_CHILD_SESSION` (WezTerm was opened from inside another Claude session) or `CLAUDE_CODE_SKIP_PROMPT_HISTORY`, so there is no chat view. Quit WezTerm with ⌘Q and reopen it from the Dock, or run `unset CLAUDE_CODE_CHILD_SESSION` in the pane before starting Claude; Claude sessions started, forked or restarted from the phone drop the first one automatically. `pane-remote doctor` checks the WezTerm and mux processes for both variables.
 
 **Can't connect to WezTerm**: a WezTerm window must be open on the Mac; to work with windows closed, see the persistent setup in [docs/en/advanced.md](docs/en/advanced.md).
 

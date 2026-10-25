@@ -1,6 +1,6 @@
 {
   "name": "pane-remote",
-  "version": "0.14.0",
+  "version": "0.15.3",
   "private": true,
   "description": "用手机查看和操作电脑上 WezTerm 里的终端、Claude Code / Codex 会话",
   "license": "MIT",
@@ -15,7 +15,7 @@
     "build": "cd web && npm ci && npm run build",
     "audit": "node scripts/audit.mjs",
     "start": "node server/server.mjs",
-    "test": "node --test host/test/*.test.mjs host/ai/test/unit.test.mjs host/ai/test/codex-home.test.mjs platform/test/*.test.mjs server/test/*.test.mjs"
+    "test": "node --test host/test/*.test.mjs host/ai/test/unit.test.mjs host/ai/test/codex-home.test.mjs platform/test/*.test.mjs server/test/*.test.mjs agent/test/*.test.mjs"
   },
   "dependencies": {
     "@highlightjs/cdn-assets": "^11.12.0",

@@ -2,6 +2,7 @@
   import ModelChip from '$lib/components/ModelChip.svelte'
   import LeaseGate from '$lib/components/LeaseGate.svelte'
   import { APP_VERSION } from '$lib/version'
+  import { load } from '$lib/lazy'
   import { onMount, untrack } from 'svelte'
   import { Toaster } from '$lib/components/ui/sonner'
   import { toast } from 'svelte-sonner'
@@ -36,13 +37,14 @@
   import { update } from '$lib/update.svelte'
   import { cn } from '$lib/utils'
   import { desk } from '$lib/desktop.svelte'
+  import { typesDirectly } from '$lib/device.svelte'
   import { t, tr } from '$lib/i18n'
 
   // 只在需要时下载的部分（首屏只有外壳、会话列表、发送栏）：对话视图（marked / DOMPurify）、终端（xterm）、Cursor、各种面板。
   // 预览、这台电脑、看屏幕（noVNC）是平台自带的插件（lib/plugins/builtin），由插件层打开、按需下载
-  const ChatView = () => import('$lib/claude/ChatView.svelte')
-  const TerminalView = () => import('$lib/term/TerminalView.svelte')
-  const CursorView = () => import('$lib/cursor/CursorView.svelte')
+  const ChatView = () => load(() => import('$lib/claude/ChatView.svelte'))
+  const TerminalView = () => load(() => import('$lib/term/TerminalView.svelte'))
+  const CursorView = () => load(() => import('$lib/cursor/CursorView.svelte'))
 
   let ctrl = $state(false)
   let actOpen = $state(false)
@@ -274,7 +276,7 @@
     <button class="flex-none rounded-full bg-warn px-2 text-[11px] leading-5 font-semibold text-black" title={t('别的 pane / Cursor 会话在等你操作')} onclick={() => openSheet('inbox')}>{t('{n} 待办', { n: waiting })}</button>
   {/if}
   {#if moreLoaded}
-    {#await import('$lib/components/MoreMenu.svelte') then M}
+    {#await load(() => import('$lib/components/MoreMenu.svelte')) then M}
       <M.default bind:open={moreOpen} class={iconBtn} {onPane} {pushOn}
         onplugins={() => (plugins.drawer = true)} onreader={() => (readerOpen = true)}
         onwidth={() => openWidth(ui.panes.find((p) => String(p.pane) === ui.current))} onincident={() => openIncident()} onnotify={() => (notifOpen = true)} onchangelog={() => (changelogOpen = true)} />
@@ -322,6 +324,14 @@
   {#if chatMode}
     {#await ChatView() then M}<M.default onpreview={previewUrl} />{/await}
   {:else if viewReady}
+    {#if ui.noTranscript}
+      <!-- Claude 没在保存会话记录：对话视图出不来，说清楚原因和怎么办，不然只看到一个终端不知道为什么 -->
+      <div class="flex-none border-b border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-300" data-testid="no-transcript">
+        {ui.noTranscript === 'child-session'
+          ? t('这个 Claude 没在保存会话记录，所以显示不了对话界面：它继承了 CLAUDE_CODE_CHILD_SESSION（WezTerm 是在另一个 Claude 会话里打开的）。⌘Q 退出 WezTerm、从程序坞重新打开后再开 Claude；或者在这个 pane 里先执行 unset CLAUDE_CODE_CHILD_SESSION。')
+          : t('这个 Claude 没在保存会话记录，所以显示不了对话界面：设置了 CLAUDE_CODE_SKIP_PROMPT_HISTORY（多半在 ~/.zshrc 里）。去掉它、重开终端后再开 Claude。')}
+      </div>
+    {/if}
     {#await TerminalView() then M}<M.default {viewportTick} onpreview={previewUrl} />{/await}
   {:else}
     <div class="min-h-0 flex-1"></div>
@@ -332,8 +342,8 @@
     <AgentFocusBar />
     <DraftBar chat={chatMode} />
     <!-- 快捷键是给终端设计的：对话模式下不显示 -->
-    <!-- 电脑上有实体键盘，终端里直接打字（见 TerminalView），不需要快捷键栏 -->
-    {#if !chatMode && !desk.on}<KeyBar bind:ctrl onedit={() => (keysOpen = true)} />{/if}
+    <!-- 有实体键盘（电脑，或手机 / 平板接了外接键盘），终端里直接打字（见 TerminalView），不需要快捷键栏 -->
+    {#if !chatMode && !typesDirectly()}<KeyBar bind:ctrl onedit={() => (keysOpen = true)} />{/if}
     <Composer bind:ctrl chat={chatMode} onresize={fitViewport} />
   </div>
 {:else if view.kind === 'cursor'}
@@ -347,7 +357,7 @@
 
 {#if !desk.on}<PaneSheet bind:open={sessionsSheet.get, sessionsSheet.set} onreconnect={reconnect} onactions={(p) => { actPane = p; sessionsSheet.set(false); actOpen = true }} oncreate={openCreate} />{/if}
 {#if once.act}
-  {#await import('$lib/components/PaneActions.svelte') then M}
+  {#await load(() => import('$lib/components/PaneActions.svelte')) then M}
     <M.default
       bind:open={actOpen}
       pane={actPane}
@@ -358,18 +368,18 @@
     />
   {/await}
 {/if}
-{#if once.width}{#await import('$lib/components/WidthSheet.svelte') then M}<M.default bind:open={widthOpen} pane={widthPane} />{/await}{/if}
-{#if once.create}{#await import('$lib/components/CreatePane.svelte') then M}<M.default bind:open={createOpen} target={createTarget} ondone={() => sessionsSheet.set(false)} />{/await}{/if}
-{#if once.rename}{#await import('$lib/components/RenameSheet.svelte') then M}<M.default bind:open={renameOpen} pane={actPane} />{/await}{/if}
-{#if once.changelog}{#await import('$lib/components/ChangelogSheet.svelte') then M}<M.default bind:open={changelogOpen} />{/await}{/if}
-{#if once.notif}{#await import('$lib/components/NotifySheet.svelte') then M}<M.default bind:open={notifOpen} bind:on={pushOn} />{/await}{/if}
-{#if once.keys}{#await import('$lib/components/KeyEditor.svelte') then M}<M.default bind:open={keysOpen} />{/await}{/if}
-{#if once.inbox}{#await import('$lib/components/Inbox.svelte') then M}<M.default bind:open={inboxSheet.get, inboxSheet.set} oncursor={openCursorSession} />{/await}{/if}
+{#if once.width}{#await load(() => import('$lib/components/WidthSheet.svelte')) then M}<M.default bind:open={widthOpen} pane={widthPane} />{/await}{/if}
+{#if once.create}{#await load(() => import('$lib/components/CreatePane.svelte')) then M}<M.default bind:open={createOpen} target={createTarget} ondone={() => sessionsSheet.set(false)} />{/await}{/if}
+{#if once.rename}{#await load(() => import('$lib/components/RenameSheet.svelte')) then M}<M.default bind:open={renameOpen} pane={actPane} />{/await}{/if}
+{#if once.changelog}{#await load(() => import('$lib/components/ChangelogSheet.svelte')) then M}<M.default bind:open={changelogOpen} />{/await}{/if}
+{#if once.notif}{#await load(() => import('$lib/components/NotifySheet.svelte')) then M}<M.default bind:open={notifOpen} bind:on={pushOn} />{/await}{/if}
+{#if once.keys}{#await load(() => import('$lib/components/KeyEditor.svelte')) then M}<M.default bind:open={keysOpen} />{/await}{/if}
+{#if once.inbox}{#await load(() => import('$lib/components/Inbox.svelte')) then M}<M.default bind:open={inboxSheet.get, inboxSheet.set} oncursor={openCursorSession} />{/await}{/if}
 <AgentAsk />
-{#if once.incident}{#await import('$lib/components/IncidentSheet.svelte') then M}<M.default bind:open={incidentSheet.get, incidentSheet.set} />{/await}{/if}
-{#if once.claude}{#await import('$lib/claude/ClaudeSheet.svelte') then M}<M.default bind:open={claudeOpen} />{/await}{/if}
-{#if once.cron}{#await import('$lib/claude/CronSheet.svelte') then M}<M.default bind:open={cronOpen} />{/await}{/if}
-{#if once.reader}{#await import('$lib/components/Reader.svelte') then M}<M.default bind:open={readerOpen} onpreview={() => go(pluginView('preview'))} />{/await}{/if}
+{#if once.incident}{#await load(() => import('$lib/components/IncidentSheet.svelte')) then M}<M.default bind:open={incidentSheet.get, incidentSheet.set} />{/await}{/if}
+{#if once.claude}{#await load(() => import('$lib/claude/ClaudeSheet.svelte')) then M}<M.default bind:open={claudeOpen} />{/await}{/if}
+{#if once.cron}{#await load(() => import('$lib/claude/CronSheet.svelte')) then M}<M.default bind:open={cronOpen} />{/await}{/if}
+{#if once.reader}{#await load(() => import('$lib/components/Reader.svelte')) then M}<M.default bind:open={readerOpen} onpreview={() => go(pluginView('preview'))} />{/await}{/if}
 <!-- 提示层避开 iPhone 的刘海 / 状态栏，并放在顶栏下面（不挡顶栏的按钮）；带关闭按钮，任何提示都能随手关掉 -->
 <Toaster theme="system" position="top-center" closeButton offset={{ top: 'calc(env(safe-area-inset-top) + 52px)' }} mobileOffset={{ top: 'calc(env(safe-area-inset-top) + 52px)' }} />
 <!-- 插件层：全局悬浮按钮 + 插件抽屉 / 容器（插件开在前台时盖住整个外壳，#/plugin/<id> 和它双向同步） -->

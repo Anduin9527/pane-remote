@@ -39,7 +39,7 @@
   import { postJson } from '$lib/api'
   import { watchRender } from './renderWatch'
   import LiveInput, { type LiveKey, type Mod } from '$lib/components/LiveInput.svelte'
-  import { desk } from '$lib/desktop.svelte'
+  import { device, realMouse } from '$lib/device.svelte'
 
   let { open = $bindable(false), active = true, onhide, onclose }: { open?: boolean; active?: boolean; onhide?: () => void; onclose?: () => void } = $props()
 
@@ -767,7 +767,7 @@
   // 浏览器自己占着的快捷键（⌘W、⌘T、⌘Q）拦不到；中文用底栏的输入栏
   const BTN: Record<number, number> = { 0: 1, 1: 2, 2: 4 }
   function onMouse(e: MouseEvent) {
-    if (!rfb || !canvas() || onOverlay(e as unknown as TouchEvent)) return
+    if (!rfb || !canvas() || onOverlay(e as unknown as TouchEvent) || !realMouse(e)) return // 手指轻点后浏览器补发的鼠标事件不算：触摸手势另外处理
     e.stopPropagation()
     if (e.type === 'contextmenu') { e.preventDefault(); return }
     const p = onCanvas(e.clientX, e.clientY)
@@ -786,7 +786,7 @@
   }
   $effect(() => {
     const el = stage
-    if (!el || !desk.on) return
+    if (!el || !device.mouse) return // 有鼠标 / 触控板就接（含 iPhone、iPad 外接的）；每个事件再看是不是真鼠标
     const opts = { passive: false, capture: true } as AddEventListenerOptions
     const evs = ['mousedown', 'mouseup', 'mousemove', 'contextmenu'] as const
     for (const ev of evs) el.addEventListener(ev, onMouse, opts)

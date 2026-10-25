@@ -1,6 +1,7 @@
 <script lang="ts">
   // 预览：看电脑上无界面 Chrome（或 Cursor 内置浏览器） 的实时画面（网络是电脑那边的：localhost、内网、代理都照用）。
   // 轻点 = 点击，拖动 = 滚动，双指 = 缩放 / 平移画面，底栏打字 = 输入到页面里当前聚焦的输入框。
+  // 下载：网页里触发的下载、标签页面板里的「保存当前页」，电脑那边存好后发 download，这里先把文件取下来，点「保存」时交给系统（分享面板 / 下载）。
   // 电脑模式：电脑那边按桌面浏览器（Mac Chrome 的 UA、1280 宽）渲染，这里等比缩放显示；长按 = 鼠标悬停。
   // 是平台自带的插件（lib/plugins/builtin）：切到后台时 active = false，连接不断，压着 ack 不让电脑截下一张（回前台补发）；
   // 睡眠卸载后电脑上的 Chrome 过 20 分钟会被回收，所以记下最后看的网页（previewLast:<来源>），重新打开时标签页都没了就再打开它。
@@ -19,6 +20,7 @@
   import LiveInput, { type LiveKey, type Mod } from '$lib/components/LiveInput.svelte'
   import Keyboard from '@lucide/svelte/icons/keyboard'
   import Globe from '@lucide/svelte/icons/globe'
+  import Download from '@lucide/svelte/icons/download'
   import CursorIcon from '$lib/cursor/CursorIcon.svelte'
   import { appConfig } from '$lib/appConfig.svelte'
   import * as Drawer from '$lib/components/ui/drawer'
@@ -153,6 +155,50 @@
 
   const send = (m: object) => { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m)) }
 
+  // ---------- 下载到手机 ----------
+  // 收到 download 就先把文件取下来（不太大的话）：iOS 的分享面板必须在点按的那一下同步调起，点了再去下载就来不及了
+  type Dl = { id: string; name: string; size: number; blob?: Blob; failed?: string }
+  const PREFETCH_MAX = 80 << 20
+  let downloads = $state<Dl[]>([])
+  const fmtSize = (n: number) => n < 1024 ? `${n} B` : n < 1 << 20 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`
+  const fileUrl = (d: Dl) => `api/preview/file?id=${d.id}`
+  async function onDownload(m: { id: string; name: string; size: number }) {
+    const d: Dl = { id: m.id, name: m.name, size: m.size }
+    downloads = [d, ...downloads.filter((x) => x.id !== d.id)].slice(0, 8)
+    toast(t('电脑上下载好了：{name}', { name: d.name }), { description: fmtSize(d.size), duration: 30000, action: { label: t('保存到手机'), onClick: () => saveFile(d.id) } })
+    if (d.size > PREFETCH_MAX) return
+    try {
+      const r = await fetch(fileUrl(d), { cache: 'no-store' })
+      if (!r.ok) throw new Error(((await r.json().catch(() => ({}))) as { error?: string }).error || `HTTP ${r.status}`)
+      const blob = await r.blob()
+      downloads = downloads.map((x) => (x.id === d.id ? { ...x, blob } : x))
+    } catch (e) {
+      downloads = downloads.map((x) => (x.id === d.id ? { ...x, failed: String((e as Error).message || e) } : x))
+    }
+  }
+  function clickLink(href: string, name: string) {
+    const a = document.createElement('a')
+    a.href = href
+    a.download = name
+    document.body.append(a)
+    a.click()
+    a.remove()
+  }
+  // 触屏设备走分享面板（存到「文件」、存图片、发给别的 App）；电脑上直接下载。文件还没取完就让浏览器直接下载那个地址
+  async function saveFile(id: string) {
+    const d = downloads.find((x) => x.id === id)
+    if (!d) return
+    if (d.failed) { toast.error(tr(d.failed)); return }
+    if (!d.blob) { clickLink(fileUrl(d), d.name); return }
+    const file = new File([d.blob], d.name, { type: d.blob.type || 'application/octet-stream' })
+    if (matchMedia('(pointer: coarse)').matches && navigator.canShare?.({ files: [file] })) {
+      try { await navigator.share({ files: [file] }); return } catch (e) { if ((e as Error).name === 'AbortError') return }
+    }
+    const u = URL.createObjectURL(file)
+    clickLink(u, d.name)
+    setTimeout(() => URL.revokeObjectURL(u), 60000)
+  }
+
   // 别处要求打开的地址（阅读模式里点的链接）：连上就打开。处理到第几个记在 previewRequest 里，睡眠后重新载入不会把旧的再开一遍
   function takeRequest() {
     if (previewRequest.n === previewRequest.handled || ws?.readyState !== WebSocket.OPEN) return
@@ -231,6 +277,7 @@
       if (m.t === 'frame') meta = m
       else if (m.t === 'nav') { nav = m; if (!editing) address = m.url === 'about:blank' ? '' : m.url; if (m.url && m.url !== 'about:blank') saveLast(m.url) }
       else if (m.t === 'tabs') { tabs = m; restoreLast(m.list) }
+      else if (m.t === 'download') onDownload(m)
       else if (m.t === 'error') { if (source === 'cursor' && /没打开网页|关掉了|没有接入/.test(m.msg)) note = tr(m.msg); else if (m.user) toast.warning(tr(m.msg)); else toast.error(tr(m.msg)) }
       else if (m.t === 'notice') { note = ''; toast(tr(m.msg)) }
       else if (m.t === 'opened') toast(t('电脑上要打开的网页，已在这里打开'), { description: m.url })
@@ -485,7 +532,10 @@
   <Drawer.Content>
     <Drawer.Header class="flex-row items-center justify-between border-b py-3">
       <Drawer.Title>{t('标签页')}</Drawer.Title>
-      {#if !isCursor}<Button size="sm" class="rounded-full" onclick={() => { send({ t: 'new' }); tabsOpen = false }}><Plus /> {t('新标签')}</Button>{:else}<span class="text-xs text-muted-foreground">{t('Cursor 浏览器的标签在 Cursor 里开关')}</span>{/if}
+      <div class="flex items-center gap-1.5">
+        <Button size="sm" variant="outline" class="rounded-full" onclick={() => { send({ t: 'save' }); tabsOpen = false }}><Download /> {t('保存当前页')}</Button>
+        {#if !isCursor}<Button size="sm" class="rounded-full" onclick={() => { send({ t: 'new' }); tabsOpen = false }}><Plus /> {t('新标签')}</Button>{/if}
+      </div>
     </Drawer.Header>
     <div class="grid px-1.5 pb-[calc(env(safe-area-inset-bottom)+8px)]">
       {#each tabs.list as tab (tab.id)}
@@ -497,6 +547,17 @@
           <Button variant="ghost" size="icon" aria-label={t('关闭标签')} onclick={() => send({ t: 'close', id: tab.id })}><X /></Button>
         </div>
       {/each}
+      {#if isCursor}<p class="px-3 py-2 text-xs text-muted-foreground">{t('Cursor 浏览器的标签在 Cursor 里开关')}</p>{/if}
+      {#if downloads.length}
+        <p class="px-3 pt-3 pb-1 text-xs font-medium text-muted-foreground">{t('下载（点一下存到手机）')}</p>
+        {#each downloads as d (d.id)}
+          <button class="flex min-w-0 items-center gap-2 rounded-[10px] px-3 py-2.5 text-left active:bg-accent" onclick={() => saveFile(d.id)}>
+            <Download class="size-4 flex-none text-muted-foreground" />
+            <span class="min-w-0 flex-1 truncate">{d.name}</span>
+            <span class="flex-none text-xs text-muted-foreground">{d.failed ? t('取不到') : d.blob || d.size > PREFETCH_MAX ? fmtSize(d.size) : t('传输中…')}</span>
+          </button>
+        {/each}
+      {/if}
     </div>
   </Drawer.Content>
 </Drawer.Root>

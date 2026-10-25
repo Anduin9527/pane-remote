@@ -145,4 +145,10 @@ export default {
   '从这一轮分叉出新会话？': 'Fork a new chat from this turn?',
   '分叉出新会话（带着全部上下文）？': 'Fork a new chat with the full context?',
   '会在电脑上的 Cursor 里新开一个会话并切过去': 'Cursor on the Mac opens the new chat and switches to it',
+  '电脑上下载好了：{name}': 'Downloaded on the computer: {name}',
+  保存到手机: 'Save to phone',
+  保存当前页: 'Save page',
+  '下载（点一下存到手机）': 'Downloads (tap to save to phone)',
+  取不到: 'Unavailable',
+  '传输中…': 'Transferring…',
 } as Record<string, string>

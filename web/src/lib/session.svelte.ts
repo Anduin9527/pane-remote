@@ -32,6 +32,7 @@ export const ui = $state({
   claudeChecked: false,
   /** 前台是哪个 agent（claude / codex / cursor-agent），没有会话记录时也有：输入框同步按它的格式读 */
   agent: '' as string,
+  noTranscript: '' as string, // Claude 在跑但没在保存会话记录的原因：child-session / skip-history（空 = 没问题或不知道）
 })
 
 /** 别的 pane 里有几个在等你操作 */
@@ -52,7 +53,7 @@ export async function refreshClaude() {
     const info = d?.session && d.transcript ? d : null // Claude / Codex / cursor-agent 都行
     claudeCache.set(pane, info)
     agentCache.set(pane, d?.agent || '')
-    if (ui.current === pane) { ui.claude = info; ui.agent = d?.agent || ''; ui.claudeChecked = true }
+    if (ui.current === pane) { ui.claude = info; ui.agent = d?.agent || ''; ui.noTranscript = info ? '' : d?.noTranscript || ''; ui.claudeChecked = true }
   } catch { if (ui.current === pane) ui.claudeChecked = true }
 }
 setInterval(() => { if (document.visibilityState === 'visible') refreshClaude() }, 15000)
@@ -142,6 +143,7 @@ export function select(pane: string | number, opts: { quiet?: boolean } = {}) {
   document.title = p ? `${label(p)} · Panes` : 'Pane Remote'
   ui.claude = claudeCache.get(id) ?? null
   ui.agent = agentCache.get(id) ?? ''
+  ui.noTranscript = ''
   ui.claudeChecked = claudeCache.has(id)
   refreshClaude()
   if (!paused) connect()

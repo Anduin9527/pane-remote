@@ -5,6 +5,7 @@
 </script>
 
 <script lang="ts">
+  import { load } from '$lib/lazy'
   // 插件层：全局悬浮按钮（可拖到左右边缘，位置存在这台手机上；有后台插件时显示数量）→ 底部抽屉 → 插件容器。
   // 首屏只有这个按钮；抽屉、容器、权限询问在第一次用到时才加载（PluginHost.svelte）。挂在 App.svelte 最后。
   import { onMount, untrack, type Component } from 'svelte'
@@ -28,7 +29,7 @@
 
   let Host = $state<Component | null>(null)
   const need = $derived(plugins.drawer || plugins.instances.length > 0 || platformUi.asks.length > 0 || platformUi.prompts.length > 0)
-  $effect(() => { if (need && !Host) import('./PluginHost.svelte').then((m) => (Host = m.default)) })
+  $effect(() => { if (need && !Host) load(() => import('./PluginHost.svelte')).then((m) => (Host = m.default)) })
   // 晚一点连上平台：插件之前在手机上问的、还没答的问题能显示出来
   onMount(() => { const id = setTimeout(warmup, 4000); return () => clearTimeout(id) })
 

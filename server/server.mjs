@@ -28,6 +28,7 @@
 //   GET  /api/config             给前端的配置：新建 pane 的启动命令、开了哪些模块
 //   GET|POST /api/push/prefs     推送偏好：{stop} 回合结束是否也推
 //   WS   /api/preview             预览：电脑上无界面 Chrome 的画面（二进制 JPEG，前面一条 JSON 帧头）和操作通道
+//   GET  /api/preview/file?id=…  预览里的下载 / 「保存当前页」存下的文件（附件），手机存到本地
 //   GET|POST /api/screen/…、WS /api/screen/vnc  看屏幕模块（可选，见 screen.mjs）
 //   GET|POST /api/mac/…                         mac 模块：性能、念一段话（可选，见 mac.mjs）
 //   POST /api/upload?name=…      请求体是文件原始字节（最大 25MB），存到电脑的 ~/Downloads/pane-remote/，返回 {path}
@@ -387,6 +388,8 @@ async function manage(action, b) {
     // 先查好恢复命令再开 pane：会话找不到时不留下一个空 pane
     let cmd = b.resume != null ? await resumeCommand(b.dir, b.resume) : typeof b.command === 'string' ? b.command.trim() : ''
     if (b.inject === true && cmd) cmd = injectCommand(cmd)
+    // 开 Claude：先去掉继承来的 CLAUDE_CODE_CHILD_SESSION（WezTerm 在 Claude 里打开时会一路传下来，Claude 看到就不写会话记录）
+    if (/(^|[\s/])claude(-[\w-]+)?(\s|$)/.test(cmd) && !cmd.includes(WITH_TOOLS)) cmd = `unset CLAUDE_CODE_CHILD_SESSION; ${cmd}`
     let out
     if (action === 'spawn') {
       if (b.window !== 'new' && !isId(b.window)) throw new Error('bad window')
@@ -568,7 +571,7 @@ setInterval(() => {
 // 每个来源一个 preview 代理（ssh 常驻）：chrome = 电脑上自己的无界面 Chrome；cursor = 接管 Cursor IDE 的内置浏览器。
 // 同一来源同一时间只服务一个手机连接，新连接顶掉旧的。手机断开 60 秒后关掉代理（停推流）；
 // chrome 来源 20 分钟没人用再把预览用的 Chrome 关掉省内存（cursor 来源不关任何东西，那是用户自己的 Cursor）。
-const PREVIEW_IN = new Set(['refresh', 'open', 'viewport', 'tap', 'hover', 'scroll', 'text', 'key', 'back', 'forward', 'reload', 'ack', 'tabs', 'switch', 'close', 'new'])
+const PREVIEW_IN = new Set(['refresh', 'open', 'viewport', 'tap', 'hover', 'scroll', 'text', 'key', 'back', 'forward', 'reload', 'ack', 'tabs', 'switch', 'close', 'new', 'save'])
 function makePreview(source, command) {
   const pv = { source, proc: null, client: null, buf: '', idleTimer: null, gcTimer: null, last: {} }
   // 预览用的 Chrome 脱离服务单独跑，没人看 20 分钟后关掉。服务刚起来时也排上一次：上一个服务进程排的回收
@@ -641,6 +644,39 @@ function makePreview(source, command) {
   return pv
 }
 const previews = { chrome: makePreview('chrome', 'preview'), cursor: makePreview('cursor', 'preview-cursor') }
+
+// 预览里的下载 → 手机：bridge 的 preview-get 先回一行 JSON（name、size），后面是文件内容，原样转给手机（附件）
+const DL_TYPES = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', mp4: 'video/mp4', mov: 'video/quicktime', mp3: 'audio/mpeg', m4a: 'audio/mp4', zip: 'application/zip', json: 'application/json', md: 'text/markdown; charset=utf-8', txt: 'text/plain; charset=utf-8', csv: 'text/csv; charset=utf-8', html: 'text/html; charset=utf-8' }
+function previewFile(req, res, id) {
+  const proc = bridgeProc(`preview-get ${id}`, ['ignore', 'pipe', 'pipe'])
+  let head = Buffer.alloc(0), started = false, err = ''
+  proc.stderr.on('data', (d) => { err += d })
+  proc.stdout.on('data', (chunk) => {
+    if (started) return
+    head = Buffer.concat([head, chunk])
+    const i = head.indexOf(10)
+    if (i < 0) { if (head.length > 4096) proc.kill(); return }
+    started = true
+    let meta
+    try { meta = JSON.parse(head.subarray(0, i).toString('utf8')) } catch { proc.kill(); return json(res, 502, { error: 'bad header' }) }
+    const name = String(meta.name || 'download')
+    const ext = name.toLowerCase().split('.').pop()
+    res.writeHead(200, {
+      'content-type': DL_TYPES[ext] || 'application/octet-stream',
+      'content-length': meta.size,
+      'content-disposition': `attachment; filename="${name.replace(/[^\x20-\x7e]|["\\]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+    })
+    res.write(head.subarray(i + 1))
+    proc.stdout.pipe(res)
+  })
+  proc.on('close', (code) => {
+    if (!started && !res.headersSent) json(res, code ? 404 : 502, { error: (err.trim().split('\n').pop() || `exit ${code}`).replace(/^error: /, '') })
+    else if (code) res.destroy() // 传到一半断了：别让手机以为文件是完整的
+  })
+  res.on('close', () => { if (proc.exitCode == null) proc.kill() })
+}
 const preview = previews.chrome
 const previewSend = preview.send
 
@@ -935,6 +971,11 @@ async function onRequest(req, res) {
       return json(res, 200, JSON.parse((await bridge(`ls ${b64(p)}`)) || '[]'))
     }
     if (url.pathname === '/api/dirs' && req.method === 'GET') return json(res, 200, await allDirs())
+    if (url.pathname === '/api/preview/file' && req.method === 'GET') {
+      const id = url.searchParams.get('id') || ''
+      if (!/^[0-9a-f]{32}$/.test(id)) return json(res, 400, { error: 'bad id' })
+      return previewFile(req, res, id)
+    }
     if (url.pathname === '/api/sessions' && req.method === 'GET') {
       const dir = url.searchParams.get('dir')
       if (!isDir(dir)) return json(res, 400, { error: 'bad dir' })

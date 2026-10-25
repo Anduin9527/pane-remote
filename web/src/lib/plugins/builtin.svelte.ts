@@ -8,6 +8,7 @@ import Globe from '@lucide/svelte/icons/globe'
 import Gauge from '@lucide/svelte/icons/gauge'
 import MonitorSmartphone from '@lucide/svelte/icons/monitor-smartphone'
 import { t } from '$lib/i18n'
+import { load as lazyLoad } from '$lib/lazy'
 import { appConfig, loadAppConfig } from '$lib/appConfig.svelte'
 import { previewUi } from '$lib/preview/request.svelte'
 import { adoptPageStyles, registerInnerView, refreshInnerViews, type InnerViewCtx } from './inner-view'
@@ -25,7 +26,7 @@ function mountView(root: ShadowRoot, ctx: InnerViewCtx, load: () => Promise<{ de
   let app: Record<string, any> | null = null
   let dead = false
   const stop = setup?.()
-  load().then((m) => {
+  lazyLoad(load).then((m) => {
     if (dead) return
     adoptPageStyles(root) // 组件分块带来的样式表这时才到
     app = mount(m.default, { target: root, props })

@@ -13,7 +13,7 @@
   import { mouseMods } from '$lib/mods.svelte'
   import { linkAt, resolveLink } from '$lib/links'
   import { t } from '$lib/i18n'
-  import { desk } from '$lib/desktop.svelte'
+  import { device, realMouse, typesDirectly } from '$lib/device.svelte'
 
   let { viewportTick = 0, onpreview }: { viewportTick?: number; onpreview?: (url: string) => void } = $props()
 
@@ -45,8 +45,9 @@
     term = new Terminal({
       cols: ui.cols + 1, rows: Math.max(1, session.lines.length || ui.rows),
       fontFamily: FONT, fontSize: prefs.fs, lineHeight: 1.15, scrollback: 0,
-      // 电脑版：实体键盘直接打字（xterm 把按键翻成控制序列，原样发进 pane）；手机上靠底部输入栏和快捷键栏
-      disableStdin: !desk.on, cursorBlink: false, cursorStyle: 'bar', theme: THEME,
+      // 有实体键盘（电脑，或手机 / 平板接了外接键盘）：直接在终端里打字（xterm 把按键翻成控制序列，原样发进 pane）；
+      // 没有就靠底部输入栏和快捷键栏。按设备认，不按窗口宽度（笔记本窗口拉窄、开了缩放照样是电脑）
+      disableStdin: !typesDirectly(), cursorBlink: false, cursorStyle: 'bar', theme: THEME,
       allowProposedApi: true, customGlyphs: true, drawBoldTextInBrightColors: false,
     })
     term.open(screenEl)
@@ -56,44 +57,70 @@
       try { const gl = new WebglAddon(); gl.onContextLoss(() => gl.dispose()); term.loadAddon(gl) } catch {}
     }
     term.write('\x1b[?25l\x1b[?7l') // 不显示 xterm 自己的光标，关掉自动换行（行宽以 WezTerm 为准）
-    if (desk.on) {
+    if (typesDirectly()) {
       term.onData((d) => sendRaw(ui.current, d))
       term.focus()
     }
   }
 
-  // ---------- 电脑版：粘贴、滚轮、鼠标点击 ----------
+  // ---------- 实体键盘、鼠标 / 触控板：粘贴、滚轮、点击、拖动 ----------
   // 粘贴：多行的包成括号粘贴（\e[200~…\e[201~），shell 和 Claude Code 会当成一整段，不会每行都执行。
   // 捕获阶段拦下，xterm 自己不再处理（它不知道程序有没有开括号粘贴，会直接把换行发出去）
   function onPaste(e: ClipboardEvent) {
-    if (!desk.on) return
+    if (!typesDirectly()) return
     const text = e.clipboardData?.getData('text/plain')
     e.preventDefault(); e.stopPropagation()
     if (!text) return
     const body = text.replace(/\r\n?/g, '\n')
     sendRaw(ui.current, /\n/.test(body) ? `\x1b[200~${body}\x1b[201~` : body)
   }
-  // 全屏程序（vim、less、Claude Code 的全屏界面）：滚轮 → SGR 滚轮，点击 → SGR 鼠标；普通画面滚轮照常滚动页面
+  // 全屏程序（vim、less、Claude Code 的全屏界面）：鼠标 / 触控板的操作原样转成 SGR 鼠标序列发给程序。
+  // 普通画面不转：滚轮照常滚动页面，拖动是 xterm 自己的选择文字（⌘C 复制）。
+  // 只认真的鼠标 / 触控板（pointerType = mouse），所以接了鼠标的 iPhone / iPad 也一样；手指操作走下面的触摸手势
+  const MOUSE_BTN: Record<number, number> = { 0: 0, 1: 1, 2: 2 } // 左 / 中 / 右
+  const sgrMods = (e: MouseEvent) => ((e.shiftKey ? 4 : 0) + (e.altKey ? 8 : 0) + (e.ctrlKey ? 16 : 0)) | mouseMods()
+  let held: { btn: number; mods: number; col: number; row: number } | null = null
+  // 滚轮：捕获阶段拦（xterm 自己的视口会吃掉滚轮事件）。触控板双指滑是一串很小的像素增量，累计够一格才发
   let wheelAcc = 0
   function onWheel(e: WheelEvent) {
-    if (!desk.on || !mouseMode()) return
-    e.preventDefault()
+    if (!mouseMode()) return
+    e.preventDefault(); e.stopPropagation()
     const cell = cellAt(e.clientX, e.clientY) || { col: Math.ceil(ui.cols / 2), row: Math.ceil(ui.rows / 2) }
-    wheelAcc += e.deltaMode === 1 ? e.deltaY * STEP : e.deltaY
+    wheelAcc += e.deltaMode === 1 ? e.deltaY * STEP : e.deltaMode === 2 ? e.deltaY * STEP * ui.rows : e.deltaY
+    const m = sgrMods(e)
     let seq = ''
-    while (wheelAcc >= STEP) { seq += `\x1b[<65;${cell.col};${cell.row}M`; wheelAcc -= STEP }
-    while (wheelAcc <= -STEP) { seq += `\x1b[<64;${cell.col};${cell.row}M`; wheelAcc += STEP }
+    while (wheelAcc >= STEP) { seq += `\x1b[<${65 + m};${cell.col};${cell.row}M`; wheelAcc -= STEP }
+    while (wheelAcc <= -STEP) { seq += `\x1b[<${64 + m};${cell.col};${cell.row}M`; wheelAcc += STEP }
     if (seq) sendRaw(ui.current, seq)
   }
-  function onMouse(e: MouseEvent) {
-    if (!desk.on) return
-    term?.focus()
-    if (!mouseMode() || e.button !== 0) return
+  function onPointerDown(e: PointerEvent) {
+    if (!realMouse(e)) return
+    if (typesDirectly()) term?.focus()
+    if (!mouseMode() || !(e.button in MOUSE_BTN)) return
     const cell = cellAt(e.clientX, e.clientY)
     if (!cell) return
-    const b = mouseMods()
-    sendRaw(ui.current, `\x1b[<${b};${cell.col};${cell.row}${e.type === 'mousedown' ? 'M' : 'm'}`)
+    e.preventDefault(); e.stopPropagation() // 不让 xterm 开始选择文字
+    held = { btn: MOUSE_BTN[e.button], mods: sgrMods(e), ...cell }
+    try { scroller.setPointerCapture(e.pointerId) } catch {} // 拖到终端外面松手也收得到
+    sendRaw(ui.current, `\x1b[<${held.btn + held.mods};${cell.col};${cell.row}M`)
   }
+  function onPointerMove(e: PointerEvent) {
+    if (!held || !realMouse(e)) return
+    e.preventDefault(); e.stopPropagation()
+    const cell = cellAt(e.clientX, e.clientY)
+    if (!cell || (cell.col === held.col && cell.row === held.row)) return // 只在换了格子时发
+    held.col = cell.col; held.row = cell.row
+    sendRaw(ui.current, `\x1b[<${32 + held.btn + held.mods};${cell.col};${cell.row}M`) // 按住拖动：按钮号 + 32
+  }
+  function onPointerUp(e: PointerEvent) {
+    if (!held || !realMouse(e)) return
+    e.preventDefault(); e.stopPropagation()
+    const cell = cellAt(e.clientX, e.clientY) || held
+    sendRaw(ui.current, `\x1b[<${held.btn + held.mods};${cell.col};${cell.row}m`)
+    held = null
+  }
+  // 全屏程序里右键是发给程序的，不弹浏览器菜单
+  function onContextMenu(e: MouseEvent) { if (mouseMode() && realMouse(e)) e.preventDefault() }
 
   const nearBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
   const setFont = (fs: number) => { if (term && term.options.fontSize !== fs) term.options.fontSize = fs }
@@ -162,10 +189,21 @@
     scroller.addEventListener('touchstart', onTouchStart, { passive: true })
     scroller.addEventListener('touchmove', onTouchMove, { passive: false })
     scroller.addEventListener('touchend', onTouchEnd, { passive: false })
-    scroller.addEventListener('wheel', onWheel, { passive: false })
+    const cap = { capture: true, passive: false }
+    scroller.addEventListener('wheel', onWheel, cap)
+    scroller.addEventListener('pointerdown', onPointerDown, cap)
+    scroller.addEventListener('pointermove', onPointerMove, cap)
+    scroller.addEventListener('pointerup', onPointerUp, cap)
+    scroller.addEventListener('pointercancel', onPointerUp, cap)
+    scroller.addEventListener('contextmenu', onContextMenu, cap)
     scroller.addEventListener('paste', onPaste, { capture: true })
     return () => {
-      scroller.removeEventListener('wheel', onWheel)
+      scroller.removeEventListener('wheel', onWheel, cap)
+      scroller.removeEventListener('pointerdown', onPointerDown, cap)
+      scroller.removeEventListener('pointermove', onPointerMove, cap)
+      scroller.removeEventListener('pointerup', onPointerUp, cap)
+      scroller.removeEventListener('pointercancel', onPointerUp, cap)
+      scroller.removeEventListener('contextmenu', onContextMenu, cap)
       scroller.removeEventListener('paste', onPaste, { capture: true })
       off(); ro.disconnect(); term?.dispose(); cancelAnimationFrame(rafId)
       scroller.removeEventListener('touchstart', onTouchStart)
@@ -175,9 +213,9 @@
   })
 
   // 切 pane：重建终端，避免上一个 pane 的残影
-  // 窗口拉宽 / 拉窄切换电脑版：键盘输入是建终端时定的，也要重建
+  // 认出了实体键盘（比如 iPad 刚接上键盘）：键盘输入是建终端时定的，也要重建
   $effect(() => {
-    ui.current; desk.on
+    ui.current; device.keyboard
     untrack(() => { if (screenEl) { makeTerm(); pending = null; layout(); schedule() } })
   })
   // 尺寸、全屏状态、显示设置、视口变化都要重新排版
@@ -296,8 +334,6 @@
   class="relative flex-1 overflow-auto overscroll-contain bg-[#1a1b26] text-[#c0caf5] select-none [color-scheme:dark] [-webkit-touch-callout:none]"
   style:touch-action={mouseMode() ? 'pan-x' : 'auto'}
   onscroll={() => (showToBottom = !ui.alt && !nearBottom())}
-  onmousedown={onMouse}
-  onmouseup={onMouse}
 >
   <div bind:this={screenEl} class="term-screen"></div>
   {#if ripple}

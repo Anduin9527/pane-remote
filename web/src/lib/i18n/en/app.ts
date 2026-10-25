@@ -82,4 +82,6 @@ export default {
   '加载中…': 'Loading…',
   '已更新到 v{v}': 'Updated to v{v}',
   '看看改了什么': "See what's new",
+  '这个 Claude 没在保存会话记录，所以显示不了对话界面：它继承了 CLAUDE_CODE_CHILD_SESSION（WezTerm 是在另一个 Claude 会话里打开的）。⌘Q 退出 WezTerm、从程序坞重新打开后再开 Claude；或者在这个 pane 里先执行 unset CLAUDE_CODE_CHILD_SESSION。': "This Claude isn't saving its transcript, so the chat view can't show it: it inherited CLAUDE_CODE_CHILD_SESSION (WezTerm was opened from inside another Claude session). Quit WezTerm with ⌘Q, reopen it from the Dock, then start Claude again; or run unset CLAUDE_CODE_CHILD_SESSION in this pane first.",
+  '这个 Claude 没在保存会话记录，所以显示不了对话界面：设置了 CLAUDE_CODE_SKIP_PROMPT_HISTORY（多半在 ~/.zshrc 里）。去掉它、重开终端后再开 Claude。': "This Claude isn't saving its transcript, so the chat view can't show it: CLAUDE_CODE_SKIP_PROMPT_HISTORY is set (usually in ~/.zshrc). Remove it, reopen the terminal, then start Claude again.",
 } as Record<string, string>

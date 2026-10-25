@@ -64,6 +64,38 @@ function metaFor(ids) {
   } catch (e) { log('meta', e.message) }
   return out
 }
+// 消息列表，Cursor 换过三次存法，三种都还在用（老会话不迁移），所以都读，哪个最新用哪个：
+//   1. composerData.fullConversationHeadersOnly（3.25 及以前的会话）
+//   2. ~/.cursor/projects/<项目>/agent-transcripts/<id>/<id>.jsonl（3.26：上面那个是空的）
+//   3. composerConvHeaders:<会话>:000000…，每块 256 条的 JSON 数组（3.27：1 是空的，2 不再追加，composerData 跑的过程中也不更新）
+/** 一条消息头的时间：完成 / 开始 / 创建里最晚的（毫秒） */
+const headerAt = (h) => Math.max(Number(h?.completedAtMs) || 0, Number(h?.startedAtMs) || 0, Date.parse(h?.createdAt || '') || 0)
+let qHeaders = null
+/** 数据库里的消息头（1 和 3 里更新的那份）。分块的只取最后两块（够 MAX_MSGS 条） */
+function headersOf(id, c) {
+  const inline = (c.fullConversationHeadersOnly || []).slice(-MAX_MSGS)
+  let chunked = []
+  if (openDb()) {
+    try {
+      qHeaders ||= db.prepare('SELECT value FROM cursorDiskKV WHERE key >= ? AND key < ? ORDER BY key DESC LIMIT 2')
+      chunked = qHeaders.all(`composerConvHeaders:${id}:`, `composerConvHeaders:${id};`).reverse().flatMap((r) => { try { return JSON.parse(r.value) } catch { return [] } }).slice(-MAX_MSGS)
+    } catch (e) { log('headers', e.message) }
+  }
+  if (!chunked.length) return inline
+  if (!inline.length) return chunked
+  return headerAt(chunked.at(-1)) >= headerAt(inline.at(-1)) ? chunked : inline
+}
+// 记录文件比数据库新出这么多才换过去（或者反过来）：两边都在写时不来回跳。两边一样新时用数据库（有 Cursor 自己的消息 id，分叉要用）
+const SOURCE_SLACK = 60000
+function useTranscript(id, c, headers, e) {
+  const file = transcriptPath(id)
+  if (!file) return false
+  if (!headers.length) return true
+  let tAt = 0
+  try { tAt = fs.statSync(file).mtimeMs } catch { return false }
+  const dbAt = Math.max(headerAt(headers.at(-1)), Number(c.lastUpdatedAt) || 0)
+  return e?.src === 't' ? !(dbAt > tAt + SOURCE_SLACK) : tAt > dbAt + SOURCE_SLACK
+}
 function bubble(cid, bid) {
   if (!openDb()) return null
   qBubble ||= db.prepare("SELECT value FROM cursorDiskKV WHERE key = ?")
@@ -273,13 +305,15 @@ function touch(id, entry) { cache.delete(id); cache.set(id, entry); while (cache
 function readSession(id) {
   const c = composer(id)
   if (!c) return null
-  const headers = (c.fullConversationHeadersOnly || []).slice(-MAX_MSGS)
+  const headers = headersOf(id, c)
   const generating = new Set(c.generatingBubbleIds || [])
   let e = cache.get(id)
+  const src = useTranscript(id, c, headers, e) ? 't' : 'db'
+  // 换了来源（比如 Cursor 升级后记录文件不再更新）：消息 id 两边不一样，整份重读重发
+  if (e && e.src !== src) e = null
   const fresh = !e
-  if (!e) e = { updated: 0, order: [], byId: new Map(), status: '', generating: new Set() }
-  // 新会话（数据库里没有消息列表）读记录文件
-  if (!headers.length || e.t) {
+  if (!e) e = { src, updated: 0, order: [], byId: new Map(), status: '', generating: new Set() }
+  if (src === 't') {
     const ups = readTranscript(id, e)
     if (ups) {
       const status = e.t.ended ? (e.t.ended === 'success' ? 'completed' : e.t.ended) : (c.status || '')
@@ -293,7 +327,8 @@ function readSession(id) {
   }
   const upserts = []
   // 会话还没结束（或页面上正在生成）时，最后几条每次都重读：Cursor 先写一条空消息，生成完再把内容填进去
-  const busy = generating.size > 0 || e.generating.size > 0 || !/^(completed|aborted|error)$/i.test(c.status || '') || (watching === id && !!lastLive?.streaming)
+  // 3.27 跑的过程中不再更新 composerData（status 可能还停在上一轮的 aborted、generatingBubbleIds 是空的）：侧边栏状态更准
+  const busy = generating.size > 0 || e.generating.size > 0 || !/^(completed|aborted|error)$/i.test(c.status || '') || (watching === id && !!lastLive?.streaming) || sidebarBusy(id)
   const tail = new Set(busy ? headers.slice(-3).map((h) => h.bubbleId) : [])
   const lastKey = headers.at(-1)?.bubbleId || ''
   // 状态已经是「完成」时，回复内容可能还没写进数据库：最后 5 条里有空的就继续读，直到有内容
@@ -320,6 +355,7 @@ function readSession(id) {
   e.changed = changedCount(id, c)
   return { fresh, upserts, statusChanged, entry: e, name: c.name || '' }
 }
+const sidebarBusy = (id) => /in progress|generat|running/i.test(projects.flatMap((p) => p.sessions).find((x) => x.id === id)?.status || '')
 const listOf = (e) => e.order.map((k) => e.byId.get(k)).filter(Boolean)
 // 空消息（还没填内容的）也占着位置，但不缓存成「已读」
 
@@ -560,7 +596,7 @@ function pump() {
   const r = readSession(id)
   if (!r) { out({ t: 'messages', id, list: [], status: '', missing: true }); return }
   const live = watching === activeId && lastLive ? lastLive : null
-  const extra = { loops: loopsOf(id), path: r.entry.path || '', changed: r.entry.changed || 0, status: r.entry.status, generating: r.entry.generating.size > 0 || !!live?.streaming, choices: live?.choices || [], streamText: live?.streaming ? live.text : '', streamId: live?.streaming ? live.lastId : '' }
+  const extra = { loops: loopsOf(id), path: r.entry.path || '', changed: r.entry.changed || 0, status: r.entry.status, generating: r.entry.generating.size > 0 || !!live?.streaming || sidebarBusy(id), choices: live?.choices || [], streamText: live?.streaming ? live.text : '', streamId: live?.streaming ? live.lastId : '' }
   if (r.fresh || pump.sent !== id) { pump.sent = id; out({ t: 'messages', id, list: listOf(r.entry), name: r.name, ...extra }) }
   else if (r.upserts.length || r.statusChanged || JSON.stringify(extra) !== pump.lastExtra) out({ t: 'delta', id, upserts: r.upserts, order: r.entry.order, ...extra })
   pump.lastExtra = JSON.stringify(extra)

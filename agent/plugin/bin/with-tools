@@ -3,6 +3,9 @@
 # 按命令名认 agent，加上各家加载插件的参数；认不出就原样执行。手机上新建 / 分叉 / 重启并注入都经过这里，
 # 各家的参数只在这一个地方维护。
 set -u
+# 从手机上开的会话都是用户自己的会话，不是哪个 Claude 的子进程：WezTerm 要是在 Claude 里打开的，这个标记会一路继承下来，
+# Claude 看到它就不写会话记录（手机上也就出不了对话视图）
+unset CLAUDE_CODE_CHILD_SESSION
 # 可能经软链接调用（init 建的 ~/.local/share/pane-remote/with-tools），先解析到真实位置
 P=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 [[ $# -ge 1 ]] || { echo "usage: with-tools <agent command> [args...]" >&2; exit 2; }

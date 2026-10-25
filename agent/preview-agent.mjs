@@ -3,8 +3,8 @@
 // stdin / stdout 是和中转服务器之间的通道，每行一个 JSON。
 //
 // 收（中转 → 这里）：open{url} viewport{w,h,dpr,desktop,lang} tap{x,y} hover{x,y} scroll{x,y,dy} text{s} key{key}
-//                   back forward reload ack{seq} tabs switch{id} close{id} new{url}
-// 发（这里 → 中转）：frame{seq,w,h,data(base64 jpeg)} nav{url,title,loading} tabs{list,current} error{msg} ready
+//                   back forward reload ack{seq} tabs switch{id} close{id} new{url} save
+// 发（这里 → 中转）：frame{seq,w,h,data(base64 jpeg)} nav{url,title,loading} tabs{list,current} download{id,name,size} error{msg} ready
 //
 // 出图：无界面 Chrome 的 screencast 只按 CSS 像素出图（手机上发糊），所以 screencast 只当「画面变了」的门铃
 // （最小尺寸、最低画质），真正的帧用 captureScreenshot 按手机像素密度截。
@@ -14,6 +14,7 @@
 // 关掉触屏模拟，轻点发鼠标点击；手机那头缩放显示。帧里的 w / h 都是页面的 CSS 尺寸，手机按它换算坐标。
 //
 // node preview-agent.mjs --stop  关掉预览用的 Chrome
+// node preview-agent.mjs --get <id>  输出一个登记过的下载（给手机取文件用）
 import { spawn } from 'node:child_process'
 import http from 'node:http'
 import crypto from 'node:crypto'
@@ -52,6 +53,33 @@ function stopChrome() {
   if (pid) { try { process.kill(pid) } catch {} }
   try { fs.unlinkSync(PIDFILE) } catch {}
   return pid
+}
+
+// ---------- 下载到手机 ----------
+// 网页里触发的下载、手机上点「保存当前页」都登记在 downloads/<id>.json（文件路径和文件名），手机凭 id 经服务端取文件。
+// Chrome 下载的文件也放在 downloads/ 里，一天后连同登记一起清掉；登记的是本机原文件时只删登记
+const DL_DIR = path.join(DIR, 'downloads')
+const DL_KEEP_MS = 24 * 3600e3
+// node preview-agent.mjs --get <id>：第一行 JSON（name、size），后面是文件内容。bridge 的 preview-get 调它
+if (process.argv[2] === '--get') {
+  try {
+    const id = process.argv[3] || ''
+    if (!/^[0-9a-f]{32}$/.test(id)) throw new Error('bad id')
+    const meta = JSON.parse(fs.readFileSync(path.join(DL_DIR, `${id}.json`), 'utf8'))
+    const real = fs.realpathSync(meta.path)
+    const home = os.homedir()
+    const own = (() => { try { return fs.realpathSync(DL_DIR) + '/' } catch { return DL_DIR + '/' } })()
+    if (!(real.startsWith(own) || real.startsWith(home + '/') || /^\/(private\/)?tmp\//.test(real))) throw new Error('bad path')
+    const st = fs.statSync(real)
+    if (!st.isFile()) throw new Error('not a file')
+    process.stdout.write(JSON.stringify({ name: meta.name, size: st.size }) + '\n')
+    const { pipeline } = await import('node:stream/promises')
+    await pipeline(fs.createReadStream(real), process.stdout)
+    process.exit(0)
+  } catch (e) {
+    process.stderr.write(`error: ${e.code === 'ENOENT' ? '文件已经过期或被删掉了' : e.message}\n`)
+    process.exit(1)
+  }
 }
 
 if (process.argv.includes('--stop') && CURSOR) { console.log('cursor source: nothing to stop'); process.exit(0) }
@@ -185,6 +213,7 @@ const PAGE_EN = {
   '{n} 行': '{n} rows',
   '正在打开网页文件…': 'Opening HTML file…',
   '只能看家目录和 /tmp 里的文件，或者文件不存在': 'Only files in your home folder and /tmp can be viewed, or the file does not exist',
+  '下载': 'Download',
 }
 /** 页面文案：中文原文当 key，英文模式查表；{x} 占位按 vars 填 */
 const L = (zh, vars) => {
@@ -302,8 +331,9 @@ function parseCsv(text, sep) {
 function filePage(p) {
   const st = fs.statSync(p)
   const name = path.basename(p), k = kindOf(p), e = extOf(p)
-  const meta = `${fmtSize(st.size)} · ${fmtTime(st.mtimeMs)} · <a href="${esc(viewUrl(path.dirname(p)))}">${esc(L('所在文件夹'))}</a>`
+  let meta = `${fmtSize(st.size)} · ${fmtTime(st.mtimeMs)} · <a href="${esc(viewUrl(path.dirname(p)))}">${esc(L('所在文件夹'))}</a>`
   const raw = esc(rawUrl(p))
+  meta += ` · <a href="${esc(rawUrl(p) + '&dl=1')}">${esc(L('下载'))}</a>`
   if (k === 'image') return htmlPage(name, p, meta, `<main class="media"><img src="${raw}"></main>`)
   if (k === 'video') return htmlPage(name, p, meta, `<main class="media"><video src="${raw}" controls playsinline preload="metadata"></video></main>`)
   if (k === 'audio') return htmlPage(name, p, meta, `<main><audio src="${raw}" controls preload="metadata" style="width:100%"></audio></main>`)
@@ -365,18 +395,20 @@ addEventListener('DOMContentLoaded', () => {
   return htmlPage(name, p, meta, `${cut}<pre><code class="${lang ? 'language-' + lang : ''}">${esc(shown)}</code></pre>`, hl)
 }
 
-function sendRaw(req, res, p) {
+function sendRaw(req, res, p, download = false) {
   const st = fs.statSync(p)
   const type = MIME[extOf(p)] || 'application/octet-stream'
+  // ?dl=1：当附件给出，Chrome 走下载（下载完由 Browser.downloadProgress 转给手机）
+  const disp = download ? { 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(path.basename(p))}` } : {}
   const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range || '')
   if (m && (m[1] || m[2])) {
     let start = m[1] ? Number(m[1]) : Math.max(0, st.size - Number(m[2]))
     let end = m[1] && m[2] ? Math.min(Number(m[2]), st.size - 1) : st.size - 1
     if (start >= st.size) { res.writeHead(416, { 'content-range': `bytes */${st.size}` }); return res.end() }
-    res.writeHead(206, { ...RAW_HEADERS, 'content-type': type, 'content-length': end - start + 1, 'content-range': `bytes ${start}-${end}/${st.size}`, 'accept-ranges': 'bytes' })
+    res.writeHead(206, { ...RAW_HEADERS, ...disp, 'content-type': type, 'content-length': end - start + 1, 'content-range': `bytes ${start}-${end}/${st.size}`, 'accept-ranges': 'bytes' })
     return fs.createReadStream(p, { start, end }).pipe(res)
   }
-  res.writeHead(200, { ...RAW_HEADERS, 'content-type': type, 'content-length': st.size, 'accept-ranges': 'bytes' })
+  res.writeHead(200, { ...RAW_HEADERS, ...disp, 'content-type': type, 'content-length': st.size, 'accept-ranges': 'bytes' })
   fs.createReadStream(p).pipe(res)
 }
 // 原始文件当成数据给出：直接打开时（比如 SVG）也在沙箱里，里面的脚本不能跑、不能读这个来源
@@ -410,7 +442,7 @@ const fileServer = http.createServer((req, res) => {
   const p = resolveSafe(u.searchParams.get('p'))
   if (!p) { res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' }); return res.end(L('只能看家目录和 /tmp 里的文件，或者文件不存在')) }
   try {
-    if (route === 'raw') return sendRaw(req, res, p)
+    if (route === 'raw') return sendRaw(req, res, p, u.searchParams.get('dl') === '1')
     if (route !== 'view') { res.writeHead(404); return res.end() }
     const isDir = fs.statSync(p).isDirectory()
     // 网页文件要用 file:// 打开（相对路径的图片、脚本才找得到，也照 Chrome 本地文件的规矩不能读别的文件）。
@@ -677,7 +709,8 @@ async function navigate(url) {
   if (!p) return newTab(url)
   const target = normalizeUrl(url)
   const res = await cdp('Page.navigate', { url: target }, p.sessionId)
-  if (res.errorText) out({ t: 'error', user: true, msg: navError(target, res.errorText) })
+  // 网址是个下载（附件、zip 之类）：导航会以 ERR_ABORTED 结束，文件由下面的下载事件处理，不算打不开
+  if (res.errorText && !/ERR_ABORTED/.test(res.errorText)) out({ t: 'error', user: true, msg: navError(target, res.errorText) })
 }
 // 网址本身打不开（本机开发服务器没起、域名错了）是用户这边的事，不是 pane-remote 的故障：带上地址说清楚，手机上不当故障上报（user: true）
 function navError(target, err) {
@@ -781,10 +814,78 @@ async function handle(msg) {
       await cdp('Input.dispatchKeyEvent', { type: 'keyUp', ...base }, sid)
       return
     }
+    case 'save': return saveCurrent()
     case 'tabs': return sendTabs()
     case 'switch': if (pages.has(msg.id)) await focus(msg.id); return
     case 'close': if (CURSOR) throw new Error('Cursor 的浏览器标签请在 Cursor 里关'); if (pages.has(msg.id)) await cdp('Target.closeTarget', { targetId: msg.id }); return
   }
+}
+
+// ---------- 下载到手机 ----------
+const dlName = (s) => String(s || '').replace(/[\/\\:*?"<>|\x00-\x1f]/g, '_').trim().slice(0, 120) || 'download'
+/** 登记一个可以给手机取的文件，告诉手机 */
+function offer(file, name) {
+  const id = crypto.randomBytes(16).toString('hex')
+  const size = fs.statSync(file).size
+  fs.writeFileSync(path.join(DL_DIR, `${id}.json`), JSON.stringify({ path: file, name: dlName(name), at: Date.now() }), { mode: 0o600 })
+  out({ t: 'download', id, name: dlName(name), size })
+}
+function pruneDownloads() {
+  let list = []
+  try { list = fs.readdirSync(DL_DIR) } catch { return }
+  const now = Date.now()
+  for (const f of list) {
+    const full = path.join(DL_DIR, f)
+    try {
+      if (now - fs.statSync(full).mtimeMs < DL_KEEP_MS) continue
+      fs.rmSync(full, { force: true }) // 登记、Chrome 下载的文件、存下来的 PDF 都在这个目录里；登记指向的本机原文件不在这里，不会删
+    } catch {} // ignore: 清不掉下次再清
+  }
+}
+fs.mkdirSync(DL_DIR, { recursive: true })
+pruneDownloads()
+setInterval(pruneDownloads, 3600e3).unref()
+
+// 网页里的下载：Chrome 存进 downloads/（文件名用 guid），下完登记给手机。Cursor 的浏览器是用户自己的，不改它的下载设置
+const downloading = new Map() // guid → 建议的文件名
+if (!CURSOR) {
+  await cdp('Browser.setDownloadBehavior', { behavior: 'allowAndName', downloadPath: DL_DIR, eventsEnabled: true }).catch((e) => log('downloads', e.message))
+  handlers.set('Browser.downloadWillBegin', ({ guid, suggestedFilename }) => {
+    downloading.set(guid, suggestedFilename)
+    out({ t: 'notice', msg: `正在下载 ${dlName(suggestedFilename)}…` })
+  })
+  handlers.set('Browser.downloadProgress', ({ guid, state }) => {
+    if (state === 'inProgress' || !downloading.has(guid)) return
+    const name = downloading.get(guid)
+    downloading.delete(guid)
+    if (state === 'completed') { try { offer(path.join(DL_DIR, guid), name) } catch (e) { out({ t: 'error', msg: `下载的文件找不到了：${e.message}` }) } }
+    else out({ t: 'error', user: true, msg: `下载取消了：${dlName(name)}` })
+  })
+}
+
+// 「保存当前页」：本机文件（文件浏览器里打开的、file:// 网页）给原文件；普通网页存成 PDF
+async function saveCurrent() {
+  const p = pages.get(current)
+  if (!p) throw new Error('没有打开的网页')
+  const u = fixStale(p.url) || p.url
+  let local = null
+  try {
+    if (filesBase && u.startsWith(filesBase + '/')) local = resolveSafe(new URL(u).searchParams.get('p'))
+    else if (/^file:\/\//i.test(u)) local = resolveSafe(decodeURIComponent(new URL(u).pathname))
+  } catch {} // ignore: 地址解析不了就按普通网页处理
+  if (local) {
+    if (fs.statSync(local).isDirectory()) throw new Error('这是文件夹：打开里面的文件再保存')
+    return offer(local, path.basename(local))
+  }
+  if (!/^https?:/i.test(u)) throw new Error('这个页面不能保存')
+  out({ t: 'notice', msg: '正在把网页存成 PDF…' })
+  const { data } = await cdp('Page.printToPDF', { printBackground: true, preferCSSPageSize: true }, p.sessionId)
+  const file = path.join(DL_DIR, `${crypto.randomUUID()}.pdf`)
+  fs.writeFileSync(file, Buffer.from(data, 'base64'))
+  let host = ''
+  try { host = new URL(u).host } catch {} // ignore
+  const title = (await cdp('Runtime.evaluate', { expression: 'document.title', returnByValue: true }, p.sessionId).catch(() => null))?.result?.value || p.title
+  offer(file, `${dlName(title || host).replace(/\.pdf$/i, '')}.pdf`)
 }
 
 // ---------- 启动：接管已有标签页（上次留下的），没有就新开 ----------

@@ -28,6 +28,7 @@
 #   dirs                    以前开过的目录（Claude 各配置目录里的项目），JSON 数组，只含还存在的
 #   preview                 常驻：手机预览用的无界面 Chrome 通道（stdin/stdout 每行一个 JSON，见 preview-agent.mjs）
 #   preview-stop            关掉预览用的 Chrome
+#   preview-get <id>        预览里登记的下载（第一行 JSON：name、size，后面是文件内容），给手机存文件
 #   preview-cursor          常驻：预览接管 Cursor IDE 的内置浏览器（stdin/stdout 同 preview）
 #   cursor-ide              常驻：Cursor IDE 映射（会话列表、消息、操作，见 cursor-agent.mjs）
 #   screen <屏序号,清晰>    常驻：手机看电脑屏幕的转码代理（screen 模块），stdin/stdout 是手机那头的 RFB 流（见 screen/proxy.mjs）
@@ -303,6 +304,11 @@ PY
     # 常驻：预览接管 Cursor IDE 的内置浏览器（不开自己的 Chrome，见 preview-agent.mjs 的 PREVIEW_SOURCE=cursor）
     [[ -x "$NODE" ]] || fail "找不到 node（${NODE}），跑 pane-remote doctor 看看"
     PREVIEW_SOURCE=cursor exec "$NODE" "$HERE/preview-agent.mjs"
+    ;;
+  preview-get)
+    [[ "${pane:-}" =~ ^[0-9a-f]{32}$ ]] || fail "bad id"
+    [[ -x "$NODE" ]] || fail "找不到 node（${NODE}），跑 pane-remote doctor 看看"
+    exec "$NODE" "$HERE/preview-agent.mjs" --get "$pane"
     ;;
   preview|preview-stop)
     [[ -x "$NODE" ]] || fail "找不到 node（${NODE}），跑 pane-remote doctor 看看"

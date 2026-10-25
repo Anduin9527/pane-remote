@@ -13,4 +13,12 @@ export default {
   '{host} 上没有服务在跑，开发服务器启动了吗？': 'Nothing is listening on {host}. Is the dev server running?',
   'Cursor 的浏览器标签请在 Cursor 里关': 'Close Cursor’s browser tabs in Cursor',
   'Cursor 的浏览器现在没打开网页：在 Cursor 里打开 Browser 面板访问一个网址，这里会自动接上': 'Cursor’s browser has no page open. Open the Browser panel in Cursor and visit a URL; it will connect here automatically',
+  '正在下载 {name}…': 'Downloading {name}…',
+  '下载的文件找不到了：{err}': 'The downloaded file is missing: {err}',
+  '下载取消了：{name}': 'Download canceled: {name}',
+  '没有打开的网页': 'No page is open',
+  '这是文件夹：打开里面的文件再保存': 'This is a folder. Open a file in it, then save',
+  '这个页面不能保存': 'This page can’t be saved',
+  '正在把网页存成 PDF…': 'Saving the page as PDF…',
+  '文件已经过期或被删掉了': 'The file has expired or was deleted',
 } as Record<string, string>

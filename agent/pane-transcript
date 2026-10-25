@@ -122,7 +122,33 @@ def claude_session(procs):
                 if transcripts:
                     return {"agent": "claude", "session": sid, "transcript": transcripts[0], "configDir": conf,
                             "cwd": info.get("cwd") or "", "status": info.get("status") or "", "t": (info.get("updatedAt") or 0) / 1000}
+                # 进程在、会话 ID 也有，就是没有会话记录：多半是 Claude 没在保存（看进程的环境变量找原因），前端据此提示
+                return {"agent": "claude", "session": sid, "configDir": conf, "cwd": info.get("cwd") or "",
+                        "status": info.get("status") or "", "noTranscript": transcript_off(pid)}
+    # 不写会话记录的 Claude 连 sessions/<pid>.json 也不写：看进程的环境变量，认出来就别再退回 hook 记下的路径（那个文件不会有）
+    for pid, args in procs:
+        if re.search(r"(^|/)claude(-[\w-]+)?(\s|$)", args.split(" ", 1)[0] + " "):
+            why = transcript_off(pid)
+            if why:
+                return {"agent": "claude", "noTranscript": why}
     return None
+
+
+def transcript_off(pid):
+    """Claude 为什么不写会话记录。只有两种情况（Claude Code 启动时也会提示「Transcript saving is off」）：
+    继承了 CLAUDE_CODE_CHILD_SESSION（WezTerm / 外层 shell 是在另一个 Claude 会话里启动的），或者设了 CLAUDE_CODE_SKIP_PROMPT_HISTORY。
+    环境变量用 ps eww 读（自己的进程读得到）；读不到、或者只是还没发第一条消息（那时也还没有记录）就回空"""
+    try:
+        env = set(re.findall(r"(?:^|\s)(CLAUDE_CODE_[A-Z_]+)=", subprocess.run(["/bin/ps", "eww", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=3).stdout))
+    except Exception:
+        env = set()
+    if "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE" in env:
+        return ""
+    if "CLAUDE_CODE_SKIP_PROMPT_HISTORY" in env:
+        return "skip-history"
+    if "CLAUDE_CODE_CHILD_SESSION" in env:
+        return "child-session"
+    return ""
 
 
 def session(pane):
@@ -134,6 +160,9 @@ def session(pane):
     except Exception:
         hooked = {}
     if hooked:
+        # hook 在会话开始时就记下了记录文件的路径，但 Claude 不一定真的写（见 transcript_off）：文件不在就不当成有记录
+        if hooked.get("transcript") and not os.path.isfile(hooked["transcript"]):
+            hooked = {k: v for k, v in hooked.items() if k != "transcript"}
         return hooked
     # 还没有会话记录（比如 Codex 发第一条消息前），也告诉前端前台是哪个 agent：输入框同步要按它的格式读
     try:
