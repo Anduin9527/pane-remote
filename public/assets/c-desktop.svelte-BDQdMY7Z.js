@@ -1,1 +1,0 @@
-import{ft as e}from"./c-i18n-C_KIBbUZ.js";var t=typeof matchMedia==`function`?matchMedia(`(min-width: 1024px) and (pointer: fine)`):null,n=e({on:!!t?.matches}),r=()=>{let e=!!t?.matches;n.on!==e&&(n.on=e)};t?.addEventListener(`change`,r),typeof window<`u`&&window.addEventListener(`resize`,r);export{n as t};
